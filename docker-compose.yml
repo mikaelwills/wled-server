@@ -8,10 +8,10 @@ services:
     container_name: wled-server
     restart: always
     ports:
-      - "3000:3000"  # Rust backend
-      - "3001:3001"  # SvelteKit frontend
+      - "3010:3010"  # Rust backend
+      - "3011:3001"  # SvelteKit frontend
     volumes:
-      - ./boards.toml:/app/boards.toml
+      - ./data:/app/data
     environment:
       - RUST_LOG=info
     networks:

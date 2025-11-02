@@ -49,7 +49,7 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - ✓ WebSocket connection management per board
 - ✓ Auto-reconnection logic (5-second delay)
 - ✓ WebSocket keepalive (10-second ping interval, 10-20s disconnect detection)
-- ✓ Toggle power endpoint
+- ✓ Toggle power endpoint (returns full BoardState after toggle)
 - ✓ Brightness control endpoint
 - ✓ Color control endpoint (RGB)
 - ✓ Effect selection endpoint
@@ -57,14 +57,21 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - ✓ Server-Sent Events (SSE) for real-time updates
 - ✓ Multi-board configuration from boards.toml
 - ✓ Dynamic board registration/deletion endpoints with persistence
+- ✓ Board edit/rename functionality (PUT endpoint)
 - ✓ CORS enabled for cross-origin requests (including DELETE)
 - ✓ Network-accessible server (0.0.0.0 binding)
 - ✓ Graceful fallback for unreachable boards in list_boards
 - ✓ SvelteKit frontend with static adapter
-- ✓ WLED-style HSV color wheel component
+- ✓ WLED-style HSV color wheel component with working selector circle
 - ✓ Complete effects list (186 effects, alphabetically sorted)
 - ✓ Touch-friendly mobile interface
 - ✓ Dark mode UI theme
+- ✓ **Board Groups** - Frontend-only feature for controlling multiple boards simultaneously
+  - Create groups with multiple member boards
+  - Group controls (power, color, brightness, effect) affect all members
+  - Groups persist in localStorage
+  - Toggle switch reflects group's actual LED color
+  - Group state derived from member board states (all ON = group ON)
 
 ### Key Rust Concepts Covered:
 - **Ownership & Borrowing**: RwLock for shared state
@@ -129,30 +136,43 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - [x] Step 38: Add board registration form (fullscreen modal)
 - [x] Step 39: Add board deletion with confirmation
 - [x] Step 40: Dark mode theme and mobile-friendly layout
-- [ ] Step 41: Integrate SSE for real-time updates (PENDING)
-- [ ] Step 42: Add PWA manifest and service worker (PENDING)
+- [x] Step 41: Integrate SSE for real-time updates
+- [x] Step 42: Board edit/rename functionality
+- [x] Step 43: Board groups feature (frontend-only)
+- [ ] Step 44: Add PWA manifest and service worker (PENDING)
 
 ## Current Progress:
-**Phase:** 7 - Web Interface (PWA) ✓ COMPLETED (with known issue)
-**Last Completed:** SSE integration, disconnected board UI, timeout fixes
-**Last Updated:** 2025-11-01
-**Next:** Debug slow disconnection detection (still taking >1min despite 5s timeout)
+**Phase:** 7 - Web Interface (PWA) ✓ COMPLETED
+**Last Completed:** Board groups feature with color-coded toggles
+**Last Updated:** 2025-11-02
+**Status:** Fully functional WLED control panel with groups support
 
-### Recent Session (2025-11-01):
+### Recent Session (2025-11-02):
 ✅ **Completed:**
-- Fixed SSE double-formatting bug (was prepending "data: " twice)
-- Integrated SSE for real-time board status updates
-- Added disabled state for disconnected boards (grayed out controls, hidden toggle)
-- Fixed shared broadcast channel architecture (no more per-client channels)
-- Added 5-second timeouts to all WebSocket write operations
-- Removed debug console.log statements from SSE handler
-
-⚠️ **Known Issue:**
-- Disconnection detection still takes >1 minute despite 5-second timeout on ping writes
-- Expected: 10s (ping interval) + 5s (timeout) = 15 seconds max
-- Actual: Still ~100 seconds
-- Hypothesis: TCP connection not actually "dead" until OS timeout, write doesn't fail even with timeout
-- **TODO Tomorrow:** Investigate alternative detection methods (read timeout, TCP_USER_TIMEOUT socket option, or reduce ping interval to 5s)
+- Implemented board groups feature (frontend-only, localStorage-based)
+  - Create groups with checkbox in add board form
+  - Select multiple boards as group members
+  - Group controls send commands to all member boards
+  - Groups persist across page reloads in localStorage
+  - Groups display "Group (X boards)" instead of IP
+- Fixed toggle endpoint to return full BoardState after toggle
+  - Backend now queries actor state after toggle
+  - Frontend receives actual board state (on/off) in response
+  - Group state accurately reflects member board states
+- Implemented color-coded toggle switches
+  - Toggle switches now display actual LED color (not just green)
+  - Uses CSS variables (--board-color) for dynamic color
+  - Works for both groups and regular boards
+  - Color updates in real-time
+- Fixed ColorWheel selector circle visibility issues
+  - Corrected Svelte reactive statement to properly track color prop changes
+  - Added color array validation and sanitization in loadGroups()
+  - Explicit Number() conversion to prevent [object Object] corruption
+  - Selector circle now visible and tracks color changes correctly
+- Added data validation to prevent color array corruption
+  - Type checking in template (Array.isArray, length check)
+  - Number conversion in setColor function
+  - Sanitization when loading from localStorage
 
 ## Technical Details:
 

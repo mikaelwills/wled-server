@@ -215,5 +215,28 @@ impl BoardActor {
         if let Some(bri) = json["state"]["bri"].as_u64() {
             self.state.brightness = bri as u8;
         }
+
+        // Parse color and effect from segment data
+        if let Some(seg) = json["state"]["seg"].as_array() {
+            if let Some(first_seg) = seg.get(0) {
+                // Parse color: state.seg[0].col[0] is the RGB array
+                if let Some(col) = first_seg["col"].as_array() {
+                    if let Some(color_array) = col.get(0).and_then(|c| c.as_array()) {
+                        if color_array.len() >= 3 {
+                            self.state.color = [
+                                color_array[0].as_u64().unwrap_or(255) as u8,
+                                color_array[1].as_u64().unwrap_or(255) as u8,
+                                color_array[2].as_u64().unwrap_or(255) as u8,
+                            ];
+                        }
+                    }
+                }
+
+                // Parse effect: state.seg[0].fx
+                if let Some(fx) = first_seg["fx"].as_u64() {
+                    self.state.effect = fx as u8;
+                }
+            }
+        }
     }
 }

@@ -1,12 +1,14 @@
-# Rust build artifacts
-target/
+# Rust build artifacts (but keep the release binary!)
+target/debug/
+target/*/incremental/
+target/*/deps/
+target/*/build/
 **/*.rs.bk
 *.pdb
 
-# Frontend dependencies and build artifacts
+# Frontend dependencies (but keep the build output!)
 frontend/node_modules/
 frontend/.svelte-kit/
-frontend/build/
 frontend/.env
 frontend/.env.local
 

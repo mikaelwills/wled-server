@@ -1,0 +1,10 @@
+# WLED Server Configuration
+# Copy this file to boards.toml and add your WLED boards
+
+[[boards]]
+id = "example-board"
+ip = "192.168.1.100"
+
+[[groups]]
+id = "example-group"
+members = ["example-board"]

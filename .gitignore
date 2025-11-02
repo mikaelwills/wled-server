@@ -27,3 +27,11 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Personal deployment scripts and config
+deploy-to-nas.sh
+restart.sh
+
+# Data directory (contains user-specific boards.toml)
+/data/boards.toml
+/data/boards.toml.tmp

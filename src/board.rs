@@ -9,6 +9,12 @@ pub struct BoardState {
     pub color: [u8; 3],
     pub effect: u8,
     pub connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "isGroup")]
+    pub is_group: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "memberIds")]
+    pub member_ids: Option<Vec<String>>,
 }
 
 impl BoardState {
@@ -21,6 +27,22 @@ impl BoardState {
             color: [255, 255, 255],
             effect: 0,
             connected: false,
+            is_group: None,
+            member_ids: None,
+        }
+    }
+
+    pub fn new_group(id: String, members: Vec<String>) -> Self {
+        Self {
+            id,
+            ip: String::new(),
+            on: false,
+            brightness: 128,
+            color: [255, 255, 255],
+            effect: 0,
+            connected: true,
+            is_group: Some(true),
+            member_ids: Some(members),
         }
     }
 }

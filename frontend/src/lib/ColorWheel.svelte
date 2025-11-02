@@ -152,9 +152,8 @@
 		drawColorWheel();
 	});
 
-	$: {
-		color;
-		if (canvas) drawColorWheel();
+	$: if (canvas && color) {
+		drawColorWheel();
 	}
 </script>
 

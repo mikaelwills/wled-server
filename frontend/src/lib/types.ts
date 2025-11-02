@@ -6,4 +6,6 @@ export interface BoardState {
   color: [number, number, number];
   effect: number;
   connected: boolean;
+  isGroup?: boolean;
+  memberIds?: string[];
 }

@@ -13,6 +13,12 @@
 	let showAddForm = false;
 	let newBoardId = '';
 	let newBoardIp = '';
+	let isCreatingGroup = false;
+	let selectedMemberIds: string[] = [];
+	let showEditForm = false;
+	let editBoardId = '';
+	let editBoardIp = '';
+	let editingBoardId = ''; // Original ID being edited
 	let sseConnection: EventSource | null = null;
 
 	async function fetchBoards() {
@@ -20,6 +26,36 @@
 			const response = await fetch(`${API_URL}/boards`);
 			if (!response.ok) throw new Error('Failed to fetch boards');
 			boards = await response.json();
+
+			// Derive group state from member boards
+			boards = boards.map(board => {
+				if (board.isGroup && board.memberIds) {
+					const members = boards.filter(b =>
+						!b.isGroup && board.memberIds?.includes(b.id)
+					);
+
+					if (members.length > 0) {
+						// Derive state from members
+						const firstMember = members[0];
+						return {
+							...board,
+							color: firstMember.color,
+							brightness: firstMember.brightness,
+							effect: firstMember.effect,
+							on: members.every(m => m.on)
+						};
+					}
+				}
+				return board;
+			});
+
+			// Sort: groups first, then regular boards
+			boards.sort((a, b) => {
+				if (a.isGroup && !b.isGroup) return -1;
+				if (!a.isGroup && b.isGroup) return 1;
+				return 0;
+			});
+
 			loading = false;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Unknown error';
@@ -28,56 +64,151 @@
 	}
 
 	async function togglePower(boardId: string) {
-		try {
-			const response = await fetch(`${API_URL}/board/${boardId}/toggle`, {
-				method: 'POST'
+		const board = boards.find(b => b.id === boardId);
+		if (board?.isGroup && board.memberIds) {
+			// Toggle all members in parallel and collect their states
+			const memberStatesPromises = board.memberIds.map(async (memberId) => {
+				try {
+					const response = await fetch(`${API_URL}/board/${memberId}/toggle`, {
+						method: 'POST'
+					});
+					if (!response.ok) throw new Error(`Failed to toggle power for ${memberId}`);
+					return await response.json();
+				} catch (e) {
+					console.error(`Error toggling power for ${memberId}:`, e);
+					return null;
+				}
 			});
-			if (!response.ok) throw new Error('Failed to toggle power');
-			await fetchBoards();
-		} catch (e) {
-			console.error('Error toggling power:', e);
+
+			const memberStates = (await Promise.all(memberStatesPromises)).filter((state): state is BoardState => state !== null);
+
+			// Update group's state based on member states (all must be ON for group to show ON)
+			const allOn = memberStates.length > 0 && memberStates.every(m => m.on);
+			boards = boards.map(b => b.id === boardId ? {...b, on: allOn} : b);
+		} else {
+			// Regular board
+			try {
+				const response = await fetch(`${API_URL}/board/${boardId}/toggle`, {
+					method: 'POST'
+				});
+				if (!response.ok) throw new Error('Failed to toggle power');
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error toggling power:', e);
+			}
 		}
 	}
 
 	async function setColor(boardId: string, r: number, g: number, b: number) {
-		try {
-			const response = await fetch(`${API_URL}/board/${boardId}/color`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ r, g, b })
-			});
-			if (!response.ok) throw new Error('Failed to set color');
-			await fetchBoards();
-		} catch (e) {
-			console.error('Error setting color:', e);
+		// Ensure r, g, b are actually numbers
+		const red = Number(r);
+		const green = Number(g);
+		const blue = Number(b);
+
+		const board = boards.find(b => b.id === boardId);
+		if (board?.isGroup && board.memberIds) {
+			// Set color for all members in parallel
+			await Promise.all(
+				board.memberIds.map(async (memberId) => {
+					try {
+						const response = await fetch(`${API_URL}/board/${memberId}/color`, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ r: red, g: green, b: blue })
+						});
+						if (!response.ok) throw new Error(`Failed to set color for ${memberId}`);
+					} catch (e) {
+						console.error(`Error setting color for ${memberId}:`, e);
+					}
+				})
+			);
+			// Update the group's own state
+			boards = boards.map(b => b.id === boardId ? {...b, color: [red, green, blue] as [number, number, number]} : b);
+		} else {
+			// Regular board
+			try {
+				const response = await fetch(`${API_URL}/board/${boardId}/color`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ r, g, b })
+				});
+				if (!response.ok) throw new Error('Failed to set color');
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error setting color:', e);
+			}
 		}
 	}
 
 	async function setBrightness(boardId: string, brightness: number) {
-		try {
-			const response = await fetch(`${API_URL}/board/${boardId}/brightness`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ brightness })
-			});
-			if (!response.ok) throw new Error('Failed to set brightness');
-			await fetchBoards();
-		} catch (e) {
-			console.error('Error setting brightness:', e);
+		const board = boards.find(b => b.id === boardId);
+		if (board?.isGroup && board.memberIds) {
+			// Set brightness for all members in parallel
+			await Promise.all(
+				board.memberIds.map(async (memberId) => {
+					try {
+						const response = await fetch(`${API_URL}/board/${memberId}/brightness`, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ brightness })
+						});
+						if (!response.ok) throw new Error(`Failed to set brightness for ${memberId}`);
+					} catch (e) {
+						console.error(`Error setting brightness for ${memberId}:`, e);
+					}
+				})
+			);
+			// Update the group's own state
+			boards = boards.map(b => b.id === boardId ? {...b, brightness} : b);
+		} else {
+			// Regular board
+			try {
+				const response = await fetch(`${API_URL}/board/${boardId}/brightness`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ brightness })
+				});
+				if (!response.ok) throw new Error('Failed to set brightness');
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error setting brightness:', e);
+			}
 		}
 	}
 
 	async function setEffect(boardId: string, effect: number) {
-		try {
-			const response = await fetch(`${API_URL}/board/${boardId}/effect`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ effect })
-			});
-			if (!response.ok) throw new Error('Failed to set effect');
-			await fetchBoards();
-		} catch (e) {
-			console.error('Error setting effect:', e);
+		const board = boards.find(b => b.id === boardId);
+		if (board?.isGroup && board.memberIds) {
+			// Set effect for all members in parallel
+			await Promise.all(
+				board.memberIds.map(async (memberId) => {
+					try {
+						const response = await fetch(`${API_URL}/board/${memberId}/effect`, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ effect })
+						});
+						if (!response.ok) throw new Error(`Failed to set effect for ${memberId}`);
+					} catch (e) {
+						console.error(`Error setting effect for ${memberId}:`, e);
+					}
+				})
+			);
+			// Update the group's own state
+			boards = boards.map(b => b.id === boardId ? {...b, effect} : b);
+		} else {
+			// Regular board
+			try {
+				const response = await fetch(`${API_URL}/board/${boardId}/effect`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ effect })
+				});
+				if (!response.ok) throw new Error('Failed to set effect');
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error setting effect:', e);
+			}
 		}
 	}
 
@@ -85,62 +216,205 @@
 		expandedBoard = expandedBoard === boardId ? null : boardId;
 	}
 
+	// One-time migration: move groups from localStorage to backend
+	async function migrateLocalStorageGroups() {
+		try {
+			const stored = localStorage.getItem('wled-groups');
+			if (!stored) return; // No groups to migrate
+
+			const groups = JSON.parse(stored);
+			console.log(`Migrating ${groups.length} group(s) from localStorage to backend...`);
+
+			for (const group of groups) {
+				try {
+					const response = await fetch(`${API_URL}/groups`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							id: group.id,
+							members: group.memberIds || []
+						})
+					});
+
+					if (response.ok) {
+						console.log(`Migrated group: ${group.id}`);
+					} else if (response.status === 409) {
+						console.log(`Group ${group.id} already exists, skipping`);
+					} else {
+						console.error(`Failed to migrate group ${group.id}`);
+					}
+				} catch (e) {
+					console.error(`Error migrating group ${group.id}:`, e);
+				}
+			}
+
+			// Clear localStorage after successful migration
+			localStorage.removeItem('wled-groups');
+			console.log('Migration complete, localStorage cleared');
+		} catch (e) {
+			console.error('Error during migration:', e);
+		}
+	}
+
 	async function addBoard() {
-		if (!newBoardId.trim() || !newBoardIp.trim()) {
-			alert('Please enter both ID and IP address');
+		// Validation
+		if (!newBoardId.trim()) {
+			alert('Please enter an ID');
 			return;
 		}
 
-		try {
-			const response = await fetch(`${API_URL}/boards`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id: newBoardId, ip: newBoardIp })
-			});
-
-			if (!response.ok) {
-				if (response.status === 409) {
-					alert('A board with this ID already exists');
-				} else {
-					throw new Error('Failed to add board');
-				}
+		if (isCreatingGroup) {
+			// Creating a group
+			if (selectedMemberIds.length === 0) {
+				alert('Please select at least one board for the group');
 				return;
 			}
 
-			// Clear form and refresh boards
-			newBoardId = '';
-			newBoardIp = '';
-			showAddForm = false;
-			await fetchBoards();
-		} catch (e) {
-			console.error('Error adding board:', e);
-			alert('Failed to add board');
+			try {
+				const response = await fetch(`${API_URL}/groups`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						id: newBoardId,
+						members: selectedMemberIds
+					})
+				});
+
+				if (!response.ok) {
+					if (response.status === 409) {
+						alert('A group with this ID already exists');
+					} else if (response.status === 400) {
+						alert('One or more member boards not found');
+					} else {
+						throw new Error('Failed to create group');
+					}
+					return;
+				}
+
+				// Clear form and refresh boards
+				newBoardId = '';
+				selectedMemberIds = [];
+				isCreatingGroup = false;
+				showAddForm = false;
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error creating group:', e);
+				alert('Failed to create group');
+			}
+		} else {
+			// Creating a regular board
+			if (!newBoardIp.trim()) {
+				alert('Please enter an IP address');
+				return;
+			}
+
+			try {
+				const response = await fetch(`${API_URL}/boards`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ id: newBoardId, ip: newBoardIp })
+				});
+
+				if (!response.ok) {
+					if (response.status === 409) {
+						alert('A board with this ID already exists');
+					} else {
+						throw new Error('Failed to add board');
+					}
+					return;
+				}
+
+				// Clear form and refresh boards
+				newBoardId = '';
+				newBoardIp = '';
+				showAddForm = false;
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error adding board:', e);
+				alert('Failed to add board');
+			}
 		}
 	}
 
 	async function deleteBoard(boardId: string) {
+		const board = boards.find(b => b.id === boardId);
+
 		if (!confirm(`Are you sure you want to delete "${boardId}"?`)) {
 			return;
 		}
 
+		if (board?.isGroup) {
+			// Delete group from backend
+			try {
+				const response = await fetch(`${API_URL}/groups/${boardId}`, {
+					method: 'DELETE'
+				});
+
+				if (!response.ok) throw new Error('Failed to delete group');
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error deleting group:', e);
+				alert('Failed to delete group');
+			}
+		} else {
+			// Delete regular board from backend
+			try {
+				const response = await fetch(`${API_URL}/boards/${boardId}`, {
+					method: 'DELETE'
+				});
+
+				if (!response.ok) {
+					if (response.status === 404) {
+						alert('Board not found');
+					} else {
+						throw new Error('Failed to delete board');
+					}
+					return;
+				}
+
+				await fetchBoards();
+			} catch (e) {
+				console.error('Error deleting board:', e);
+				alert('Failed to delete board');
+			}
+		}
+	}
+
+	function openEditForm(board: BoardState) {
+		editingBoardId = board.id;
+		editBoardId = board.id;
+		editBoardIp = board.ip;
+		showEditForm = true;
+	}
+
+	async function updateBoard() {
+		if (!editBoardId.trim() || !editBoardIp.trim()) {
+			alert('Board ID and IP are required');
+			return;
+		}
+
 		try {
-			const response = await fetch(`${API_URL}/boards/${boardId}`, {
-				method: 'DELETE'
+			const response = await fetch(`${API_URL}/boards/${editingBoardId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					new_id: editBoardId !== editingBoardId ? editBoardId : undefined,
+					new_ip: editBoardIp
+				})
 			});
 
-			if (!response.ok) {
-				if (response.status === 404) {
-					alert('Board not found');
-				} else {
-					throw new Error('Failed to delete board');
-				}
-				return;
+			if (response.ok) {
+				showEditForm = false;
+				editBoardId = '';
+				editBoardIp = '';
+				editingBoardId = '';
+				await fetchBoards();
+			} else {
+				throw new Error('Failed to update board');
 			}
-
-			await fetchBoards();
 		} catch (e) {
-			console.error('Error deleting board:', e);
-			alert('Failed to delete board');
+			console.error('Error updating board:', e);
+			alert('Failed to update board');
 		}
 	}
 
@@ -165,7 +439,10 @@
 		boards = boards.map((b) => (b.id === boardId ? { ...b, connected } : b));
 	}
 
-	onMount(() => {
+	onMount(async () => {
+		// Migrate localStorage groups to backend (one-time operation)
+		await migrateLocalStorageGroups();
+
 		fetchBoards();
 
 		// Connect to SSE for real-time updates
@@ -180,29 +457,94 @@
 </script>
 
 <main>
-	{#if showAddForm}
+	{#if showEditForm}
 		<div class="add-board-fullscreen">
-			<h2>Add New Board</h2>
+			<h2>Edit Board</h2>
 			<div class="form-group">
-				<label for="board-id">Board ID:</label>
+				<label for="edit-board-id">Board ID:</label>
 				<input
-					id="board-id"
+					id="edit-board-id"
 					type="text"
-					bind:value={newBoardId}
+					bind:value={editBoardId}
 					placeholder="e.g., bedroom-lights"
 					class="form-input"
 				/>
 			</div>
 			<div class="form-group">
-				<label for="board-ip">IP Address:</label>
+				<label for="edit-board-ip">IP Address:</label>
 				<input
-					id="board-ip"
+					id="edit-board-ip"
 					type="text"
-					bind:value={newBoardIp}
+					bind:value={editBoardIp}
 					placeholder="e.g., 192.168.1.100"
 					class="form-input"
 				/>
 			</div>
+			<div class="form-actions">
+				<button class="submit-btn" on:click={updateBoard}>Update Board</button>
+				<button class="cancel-btn" on:click={() => (showEditForm = false)}>Cancel</button>
+			</div>
+		</div>
+	{:else if showAddForm}
+		<div class="add-board-fullscreen">
+			<h2>Add New {isCreatingGroup ? 'Group' : 'Board'}</h2>
+
+			<!-- Group checkbox -->
+			<div class="form-group" style="margin-bottom: 1.5rem;">
+				<label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+					<input type="checkbox" bind:checked={isCreatingGroup} />
+					<span>This is a group</span>
+				</label>
+			</div>
+
+			<div class="form-group">
+				<label for="board-id">{isCreatingGroup ? 'Group' : 'Board'} ID:</label>
+				<input
+					id="board-id"
+					type="text"
+					bind:value={newBoardId}
+					placeholder={isCreatingGroup ? 'e.g., all-lights' : 'e.g., bedroom-lights'}
+					class="form-input"
+				/>
+			</div>
+
+			{#if isCreatingGroup}
+				<!-- Member selection for groups -->
+				<div class="form-group">
+					<label>Select Boards:</label>
+					<div style="max-height: 200px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 0.5rem;">
+						{#each boards.filter(b => !b.isGroup) as board}
+							<label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer; border-radius: 4px;" class:selected={selectedMemberIds.includes(board.id)}>
+								<input
+									type="checkbox"
+									value={board.id}
+									checked={selectedMemberIds.includes(board.id)}
+									on:change={(e) => {
+										if (e.currentTarget.checked) {
+											selectedMemberIds = [...selectedMemberIds, board.id];
+										} else {
+											selectedMemberIds = selectedMemberIds.filter(id => id !== board.id);
+										}
+									}}
+								/>
+								<span>{board.id} ({board.ip})</span>
+							</label>
+						{/each}
+					</div>
+				</div>
+			{:else}
+				<!-- IP field for regular boards -->
+				<div class="form-group">
+					<label for="board-ip">IP Address:</label>
+					<input
+						id="board-ip"
+						type="text"
+						bind:value={newBoardIp}
+						placeholder="e.g., 192.168.1.100"
+						class="form-input"
+					/>
+				</div>
+			{/if}
 			<div class="form-actions">
 				<button class="submit-btn" on:click={addBoard}>Add Board</button>
 				<button class="cancel-btn" on:click={() => (showAddForm = false)}>Cancel</button>
@@ -212,7 +554,7 @@
 		<h1>WLED Control Panel</h1>
 
 		<!-- Loopy Pro Test Button -->
-		<div style="margin: 20px 0; padding: 20px; background: #2a2a2a; border-radius: 8px;">
+		<!-- <div style="margin: 20px 0; padding: 20px; background: #2a2a2a; border-radius: 8px;">
 			<h3 style="margin-top: 0;">Loopy Pro + LED Control</h3>
 			<button
 				class="loopy-btn"
@@ -220,7 +562,7 @@
 			>
 				▶ Play Track 6 + Purple Lights
 			</button>
-		</div>
+		</div> -->
 
 		{#if loading}
 			<p>Loading boards...</p>
@@ -236,8 +578,12 @@
 							<div on:click={() => toggleExpanded(board.id)} style="flex: 1; cursor: pointer;">
 								<h2>{board.id}</h2>
 								<p class="ip-text">
-									<span class="connection-dot {board.connected ? 'connected' : 'disconnected'}"></span>
-									IP: {board.ip}
+									{#if board.isGroup}
+										Group ({board.memberIds?.length || 0} boards)
+									{:else}
+										<span class="connection-dot {board.connected ? 'connected' : 'disconnected'}"></span>
+										{board.ip}
+									{/if}
 								</p>
 							</div>
 							{#if board.connected}
@@ -247,7 +593,10 @@
 										checked={board.on}
 										on:change={() => togglePower(board.id)}
 									/>
-									<span class="toggle-slider"></span>
+									<span
+										class="toggle-slider color-toggle"
+										style={Array.isArray(board.color) && board.color.length === 3 ? `--board-color: rgb(${Number(board.color[0])}, ${Number(board.color[1])}, ${Number(board.color[2])})` : ''}
+									></span>
 								</label>
 							{/if}
 							<span class="expand-icon" on:click={() => toggleExpanded(board.id)} style="cursor: pointer;">
@@ -260,7 +609,7 @@
 								<div class="color-section">
 									<ColorWheel
 										color={board.color}
-										disabled={!board.connected}
+										disabled={board.isGroup ? false : !board.connected}
 										onColorChange={(r, g, b) => setColor(board.id, r, g, b)}
 									/>
 								</div>
@@ -272,7 +621,7 @@
 										min="0"
 										max="255"
 										value={board.brightness}
-										disabled={!board.connected}
+										disabled={board.isGroup ? false : !board.connected}
 										on:change={(e) => setBrightness(board.id, parseInt(e.currentTarget.value))}
 										class="brightness-slider"
 									/>
@@ -281,7 +630,7 @@
 								<div class="effects-section">
 									<select
 										value={board.effect}
-										disabled={!board.connected}
+										disabled={board.isGroup ? false : !board.connected}
 										on:change={(e) => setEffect(board.id, parseInt(e.currentTarget.value))}
 										class="effects-dropdown"
 									>
@@ -291,9 +640,16 @@
 									</select>
 								</div>
 
-								<button class="delete-btn" on:click={() => deleteBoard(board.id)}>
-									Delete Board
-								</button>
+								<div style="display: flex; gap: 10px; margin-top: 20px;">
+									{#if !board.isGroup}
+										<button class="edit-btn" on:click={() => openEditForm(board)}>
+											Edit Board
+										</button>
+									{/if}
+									<button class="delete-btn" on:click={() => deleteBoard(board.id)}>
+										Delete {board.isGroup ? 'Group' : 'Board'}
+									</button>
+								</div>
 							</div>
 						{/if}
 					</div>
@@ -323,7 +679,8 @@
 	}
 
 	h1 {
-		margin-bottom: 2rem;
+		margin-top: 0;
+		margin-bottom: 1.5rem;
 		color: #ffffff;
 	}
 
@@ -426,10 +783,30 @@
 		background: #555;
 	}
 
-	.delete-btn {
-		width: 100%;
+	.edit-btn {
+		flex: 1;
 		padding: 0.75rem;
-		margin-top: 1rem;
+		border: none;
+		border-radius: 6px;
+		font-size: 1rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+		background: #1976d2;
+		color: white;
+	}
+
+	.edit-btn:hover {
+		background: #1565c0;
+	}
+
+	.edit-btn:active {
+		transform: scale(0.98);
+	}
+
+	.delete-btn {
+		flex: 1;
+		padding: 0.75rem;
 		border: none;
 		border-radius: 6px;
 		font-size: 1rem;
@@ -465,20 +842,20 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 1rem;
-		gap: 1rem;
+		padding: 0.75rem;
+		gap: 0.75rem;
 		transition: background 0.2s;
 	}
 
 	.board-header h2 {
-		margin: 0 0 0.25rem 0;
-		font-size: 1.2rem;
+		margin: 0 0 0.2rem 0;
+		font-size: 1rem;
 		color: #ffffff;
 	}
 
 	.ip-text {
 		margin: 0;
-		font-size: 0.85rem;
+		font-size: 0.75rem;
 		color: #888;
 		display: flex;
 		align-items: center;
@@ -510,14 +887,14 @@
 	}
 
 	.board-controls {
-		padding: 1rem;
+		padding: 0.75rem;
 		border-top: 1px solid #333;
 	}
 
 	.color-section {
 		display: flex;
 		justify-content: center;
-		margin-bottom: 1.5rem;
+		margin-bottom: 1rem;
 	}
 
 	.toggle-switch {
@@ -557,8 +934,8 @@
 		border-radius: 50%;
 	}
 
-	.toggle-switch input:checked + .toggle-slider {
-		background-color: #4caf50;
+	.toggle-switch input:checked + .toggle-slider.color-toggle {
+		background-color: var(--board-color, #4caf50);
 	}
 
 	.toggle-switch input:checked + .toggle-slider:before {
