@@ -1,0 +1,47 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Frontend dependencies and build artifacts
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.env
+frontend/.env.local
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Scripts (except docker-start.sh which is needed)
+restart.sh
+deploy.sh
+
+# Documentation
+*.md
+!README.md
+
+# Claude
+.claude/
+CLAUDE.md

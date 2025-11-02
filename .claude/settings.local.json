@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/mikaelwills/.claude/**)",
+      "Bash(~/.dotfiles/sync-claude.sh)",
+      "Bash(source:*)",
+      "Bash(cargo build:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(cargo run)",
+      "Bash(./sync-claude.sh)",
+      "Skill(teacher-skill)",
+      "WebSearch",
+      "Bash(bun:*)",
+      "Bash(curl:*)",
+      "Bash(bash)",
+      "Bash(~/.bun/bin/bun:*)",
+      "Bash(~/.bun/bin/bunx:*)",
+      "WebFetch(domain:wiki.loopypro.com)",
+      "WebFetch(domain:forum.loopypro.com)",
+      "WebFetch(domain:www.gl-inet.com)",
+      "WebFetch(domain:mididesigner.com)",
+      "WebFetch(domain:loopypro.com)",
+      "Bash(pkill:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)",
+      "Bash(chmod:*)",
+      "Bash(./restart.sh:*)",
+      "Bash(sudo /usr/libexec/ApplicationFirewall/socketfilterfw:*)",
+      "Bash(python3:*)",
+      "Bash(timeout 5 curl:*)",
+      "Bash(git remote add:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

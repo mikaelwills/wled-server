@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  wled-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wled-server
+    restart: always
+    ports:
+      - "3000:3000"  # Rust backend
+      - "3001:3001"  # SvelteKit frontend
+    volumes:
+      - ./boards.toml:/app/boards.toml
+    environment:
+      - RUST_LOG=info
+    networks:
+      - wled-network
+
+networks:
+  wled-network:
+    driver: bridge
