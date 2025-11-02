@@ -125,7 +125,7 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - [ ] Step 29: Implement scenes (multi-board synchronized control) - SKIPPED FOR NOW
 - [x] Step 30: Add error handling improvements (graceful config/binding failures)
 
-### Phase 7: Web Interface (PWA) ✓ MOSTLY COMPLETED
+### Phase 7: Web Interface (PWA) ✓ COMPLETED
 - [x] Step 31: Create SvelteKit project with static adapter
 - [x] Step 32: Configure CORS in Rust backend
 - [x] Step 33: Network accessibility (0.0.0.0 binding, --host flag)
@@ -141,38 +141,126 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - [x] Step 43: Board groups feature (frontend-only)
 - [ ] Step 44: Add PWA manifest and service worker (PENDING)
 
+### Phase 8: Light Sequencer - Loopy Pro Integration ✓ FRONTEND COMPLETE
+- [x] Step 45: Create `/sequencer` route with WaveSurfer.js integration
+- [x] Step 46: Implement drag-and-drop WAV file loading
+- [x] Step 47: Add click-to-create marker functionality
+- [x] Step 48: Build cue configuration controls (boards, preset, color, effect, brightness)
+- [x] Step 49: Add program metadata inputs (song name, Loopy Pro track)
+- [x] Step 50: Implement custom multi-select dropdown for boards/groups
+- [x] Step 51: Save program to localStorage with validation
+- [x] Step 52: Add cue label editing functionality
+- [x] Step 53: Implement Clear Cues button with confirmation
+- [x] Step 54: Implement audio compression (WebM/Opus at 64kbps, ~95% size reduction)
+- [x] Step 55: Continuous program list view (all programs visible)
+- [x] Step 56: Delete program functionality with event dispatcher fix
+- [x] Step 57: Play button for browser audio preview
+- [x] Step 58: UI refinements (dark mode buttons, compact spacing, inline cues header)
+- [x] Step 59: Program playback with OSC/LED cue triggering (from parent page)
+
+### Phase 9: Backend Program Storage (NEXT)
+- [ ] Step 60: Add Program struct and JSON serialization in Rust
+- [ ] Step 61: Implement file-based storage for programs (programs/*.json)
+- [ ] Step 62: Add POST /programs endpoint (save program)
+- [ ] Step 63: Add GET /programs endpoint (list all programs)
+- [ ] Step 64: Add GET /programs/:id endpoint (get single program)
+- [ ] Step 65: Add DELETE /programs/:id endpoint (delete program)
+- [ ] Step 66: Add PUT /programs/:id endpoint (update program)
+- [ ] Step 67: Update frontend to use API instead of localStorage
+- [ ] Step 68: Add error handling and validation in backend
+
 ## Current Progress:
-**Phase:** 7 - Web Interface (PWA) ✓ COMPLETED
-**Last Completed:** Board groups feature with color-coded toggles
+**Phase:** 8 - Light Sequencer ✓ FRONTEND COMPLETE | Phase 9 - Backend Storage (NEXT)
+**Last Completed:** Full sequencer frontend with audio compression, program management, and playback
 **Last Updated:** 2025-11-02
-**Status:** Fully functional WLED control panel with groups support
+**Status:** Sequencer frontend complete with localStorage. Next: Rust backend API for program persistence.
+
+### Light Sequencer - Complete Feature Set (Phase 8):
+**✅ Core Functionality:**
+- WaveSurfer.js integration with drag-and-drop WAV loading
+- Click-to-create cue markers on waveform with draggable regions
+- Full cue configuration (boards/groups, preset, color, effect, brightness)
+- Audio compression (WebM/Opus at 64kbps, ~95% file size reduction)
+- Program metadata (song name, Loopy Pro track number)
+- Save/load programs to/from localStorage with validation
+- Delete programs with confirmation dialog
+- Continuous scrollable list view (all programs visible)
+- Browser audio preview playback per program
+- Program playback with OSC/LED cue triggering via parent page
+
+**✅ UI/UX Improvements:**
+- Dark mode interface with colored text buttons
+- Compact, dense cue rows without dividers
+- Inline cues dropdown header
+- Loading indicator as program card during compression
+- Play button controls WaveSurfer audio playback
+- Balanced waveform padding
+- Fixed delete button event handling
+
+**📋 Next Phase: Backend Storage (Phase 9)**
+- Rust REST API for program CRUD operations
+- File-based or SQLite storage for programs
+- Replace frontend localStorage with API calls
+- Program JSON structure already defined and ready for backend
+
+## Current Progress Summary:
+**Main App:** Fully functional WLED control panel with groups support
+**Sequencer:** Frontend complete with localStorage - ready for backend integration
 
 ### Recent Session (2025-11-02):
-✅ **Completed:**
-- Implemented board groups feature (frontend-only, localStorage-based)
-  - Create groups with checkbox in add board form
-  - Select multiple boards as group members
-  - Group controls send commands to all member boards
-  - Groups persist across page reloads in localStorage
-  - Groups display "Group (X boards)" instead of IP
-- Fixed toggle endpoint to return full BoardState after toggle
-  - Backend now queries actor state after toggle
-  - Frontend receives actual board state (on/off) in response
-  - Group state accurately reflects member board states
-- Implemented color-coded toggle switches
-  - Toggle switches now display actual LED color (not just green)
-  - Uses CSS variables (--board-color) for dynamic color
-  - Works for both groups and regular boards
-  - Color updates in real-time
-- Fixed ColorWheel selector circle visibility issues
-  - Corrected Svelte reactive statement to properly track color prop changes
-  - Added color array validation and sanitization in loadGroups()
-  - Explicit Number() conversion to prevent [object Object] corruption
-  - Selector circle now visible and tracks color changes correctly
-- Added data validation to prevent color array corruption
-  - Type checking in template (Array.isArray, length check)
-  - Number conversion in setColor function
-  - Sanitization when loading from localStorage
+✅ **Light Sequencer - Frontend Complete:**
+
+**Audio Compression Implementation:**
+- Implemented MediaRecorder API to compress WAV to WebM/Opus at 64kbps
+- Achieved ~95% file size reduction (e.g., 15MB → 0.74MB)
+- Added loading spinner shown as program card during compression
+- Existing programs remain visible while new file compresses
+- Audio stored as base64 data URL in localStorage
+
+**UI/UX Refinements:**
+- Refactored to continuous program list view (removed card view)
+- All programs visible simultaneously in scrollable list
+- Dark mode buttons with colored text instead of colored backgrounds
+- Reduced spacing in cue rows for more dense layout
+- Removed divider lines between cue items
+- Inline "Cues" dropdown header (removed redundant hint text)
+- Fixed track input field width
+- Balanced waveform top/bottom padding
+- Reduced gaps between Save/Clear/Delete buttons
+
+**Functionality Fixes:**
+- Fixed Play button to play browser audio (WaveSurfer) instead of triggering Loopy Pro
+- Changed from `playingProgramId === programId` to `isPlaying` state
+- Fixed Delete button using proper Svelte event dispatcher (`on:delete` instead of `ondelete`)
+- Delete now properly removes program from view and localStorage
+
+**Program Data Structure (Ready for Backend):**
+```json
+{
+  "id": "song-name-track-timestamp",
+  "songName": "Song Title",
+  "loopyProTrack": "06",
+  "fileName": "audio.wav",
+  "audioData": "data:audio/webm;codecs=opus;base64,...",
+  "cues": [
+    {
+      "time": 18.26,
+      "label": "Cue 1",
+      "boards": ["board-id-1", "group-id-1"],
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    }
+  ],
+  "createdAt": "2025-11-02T..."
+}
+```
+- Programs stored as JSON array in localStorage (key: `light-programs`)
+- Audio compressed to WebM/Opus at 64kbps (~95% size reduction)
+- Validation: song name required, at least 1 cue, boards selection warned
+- Unique ID format: `{sanitized-song-name}-{track}-{timestamp}`
 
 ## Technical Details:
 
@@ -211,12 +299,16 @@ HTTP Request → BoardCommand::GetState(oneshot::Sender)
 frontend/
 ├── src/
 │   ├── routes/
-│   │   ├── +page.svelte       # Main UI (board controls)
-│   │   └── +layout.ts         # Prerender config
+│   │   ├── +page.svelte           # Main UI (board controls)
+│   │   ├── sequencer/
+│   │   │   └── +page.svelte       # Light sequencer editor
+│   │   ├── programs/              # TODO: Programs management (Phase 2)
+│   │   ├── performance/           # TODO: Performance/trigger page (Phase 3)
+│   │   └── +layout.ts             # Prerender config
 │   └── lib/
-│       └── ColorWheel.svelte  # HSV color picker component
-├── .env                       # API URL configuration
-└── svelte.config.js          # Static adapter config
+│       └── ColorWheel.svelte      # HSV color picker component
+├── .env                           # API URL configuration
+└── svelte.config.js              # Static adapter config
 ```
 
 ### Connection Monitoring:
@@ -237,9 +329,57 @@ frontend/
 TCP connections don't immediately close when devices power off. Without active pings, the actor won't detect the disconnection until it tries to read/write, which could take a long time if the board is idle.
 
 ### Current Limitations:
-- SSE not yet integrated in frontend (uses polling via fetchBoards)
+- **Sequencer Programs:** Currently localStorage-only (not synced across devices or persisted server-side)
+- **Main App:** SSE not yet integrated in frontend (uses polling via fetchBoards)
 - No PWA manifest/service worker (not installable as app)
 - No graceful shutdown handling
 - No logging/tracing infrastructure
 - No Docker deployment setup
 - No nginx reverse proxy configuration
+
+### Phase 9 Backend Implementation Plan:
+
+**Program Storage Structure:**
+- File-based: Store each program as `programs/{program-id}.json`
+- Or SQLite: Single database with programs table
+- Audio data stored as base64 string (already compressed)
+
+**Rust API Endpoints:**
+```rust
+POST   /programs         // Create new program
+GET    /programs         // List all programs
+GET    /programs/:id     // Get single program
+PUT    /programs/:id     // Update program
+DELETE /programs/:id     // Delete program
+```
+
+**Program Struct (Rust):**
+```rust
+#[derive(Serialize, Deserialize, Clone)]
+struct Program {
+    id: String,
+    song_name: String,
+    loopy_pro_track: String,
+    file_name: String,
+    audio_data: String,  // base64 WebM/Opus
+    cues: Vec<Cue>,
+    created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Cue {
+    time: f64,
+    label: String,
+    boards: Vec<String>,
+    preset: u8,
+    color: String,
+    effect: u8,
+    brightness: u8,
+    transition: u8,
+}
+```
+
+**Frontend Migration:**
+- Replace `localStorage.setItem()` with `fetch()` POST to `/programs`
+- Replace `localStorage.getItem()` with `fetch()` GET from `/programs`
+- Keep same JSON structure (already compatible)
