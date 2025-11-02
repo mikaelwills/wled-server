@@ -1,6 +1,6 @@
 # WLED Server - Docker Deployment Guide
 
-This guide covers deploying the WLED Server in Docker on a remote machine.
+This guide covers deploying the WLED Server in Docker on a Synology NAS or remote machine.
 
 ## Architecture
 
@@ -12,67 +12,48 @@ This guide covers deploying the WLED Server in Docker on a remote machine.
 
 ## Prerequisites
 
-### On Remote Machine (192.168.1.161)
-- Docker installed
-- Docker Compose installed
-- Git installed
-- SSH access configured
+### On Synology NAS (192.168.1.161)
+- Docker package installed (via Package Center)
+- SSH access enabled
+- User: `mikael`
+- Deploy path: `/volume1/docker/wled-server`
 
 ### On Development Laptop
-- Git repository set up with remote
+- SSH access to NAS configured
+- rsync installed (comes with macOS/Linux)
 
-## Initial Setup
+## Deployment to Synology NAS
 
-### 1. Set Up Git Remote
+### Initial Setup (First Time)
 
-**Option A: Using GitHub/GitLab**
+**1. Deploy to NAS:**
 ```bash
-# Create a new repository on GitHub/GitLab, then:
-git remote add origin https://github.com/yourusername/rust-wled-server.git
-git branch -M main
-git push -u origin main
+./deploy-to-nas.sh
 ```
 
-**Option B: Using Remote Machine as Git Server**
-```bash
-# On remote machine (.161)
-mkdir -p ~/git/wled-server.git
-cd ~/git/wled-server.git
-git init --bare
+This will:
+- Create `/volume1/docker/wled-server` on the NAS
+- Sync all project files via rsync
+- Build Docker images
+- Start containers
 
-# On laptop
-git remote add origin user@192.168.1.161:~/git/wled-server.git
-git push -u origin main
+**2. Create/Edit boards.toml on NAS:**
+```bash
+ssh mikael@192.168.1.161
+cd /volume1/docker/wled-server
+nano boards.toml
 ```
 
-### 2. Clone on Remote Machine
-
-SSH to remote machine:
-```bash
-ssh user@192.168.1.161
-```
-
-Clone the repository:
-```bash
-git clone <your-git-url> rust-wled-server
-cd rust-wled-server
-```
-
-### 3. Create boards.toml
-
-Create a `boards.toml` file if it doesn't exist:
-```bash
-cat > boards.toml << 'EOF'
+Add your WLED boards:
+```toml
 [[boards]]
 id = "bedroom"
 ip = "192.168.1.172"
-EOF
 ```
 
-### 4. Build and Run
-
+**3. Restart if needed:**
 ```bash
-docker-compose up -d --build
+docker-compose restart
 ```
 
 ## Development Workflow
@@ -84,36 +65,33 @@ docker-compose up -d --build
    ```bash
    ./restart.sh
    ```
-3. **Commit changes**:
+3. **Commit to git** (optional, for version control):
    ```bash
    git add .
    git commit -m "Your commit message"
-   ```
-4. **Push to remote**:
-   ```bash
    git push
    ```
-
-### On Remote Machine (.161)
-
-1. **SSH to machine**:
+4. **Deploy to NAS**:
    ```bash
-   ssh user@192.168.1.161
-   cd rust-wled-server
+   ./deploy-to-nas.sh
    ```
 
-2. **Deploy updates**:
-   ```bash
-   ./deploy.sh
-   ```
+The deploy script automatically:
+- Syncs all code changes to NAS via rsync
+- Stops existing containers
+- Rebuilds Docker images
+- Starts new containers
+- Shows status
 
-   This script automatically:
-   - Pulls latest code from git
-   - Stops existing containers
-   - Rebuilds images
-   - Starts new containers
+**That's it!** One command deployment.
 
-## Common Commands
+## Common Commands (on NAS)
+
+SSH to NAS first:
+```bash
+ssh mikael@192.168.1.161
+cd /volume1/docker/wled-server
+```
 
 ### View Logs
 ```bash
@@ -151,6 +129,12 @@ docker-compose up -d --build
 ### Access Container Shell
 ```bash
 docker exec -it wled-server bash
+```
+
+### Edit boards.toml
+```bash
+nano boards.toml
+docker-compose restart
 ```
 
 ## Accessing the Application
