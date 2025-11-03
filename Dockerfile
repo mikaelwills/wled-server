@@ -17,10 +17,11 @@ COPY target/x86_64-unknown-linux-gnu/release/rust-wled-server /app/backend
 COPY frontend/build /app/frontend/build
 COPY frontend/package.json /app/frontend/
 
-# Copy startup script
+# Copy startup script and SPA server
 COPY docker-start.sh /app/
+COPY spa-server.py /app/
 
-RUN chmod +x /app/docker-start.sh /app/backend
+RUN chmod +x /app/docker-start.sh /app/backend /app/spa-server.py
 
 # Expose ports
 EXPOSE 3010 3001

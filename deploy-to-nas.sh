@@ -53,6 +53,7 @@ COPYFILE_DISABLE=1 tar czf - \
   .dockerignore \
   docker-compose.yml \
   docker-start.sh \
+  spa-server.py \
   data \
   | ssh ${NAS_USER}@${NAS_IP} "cd ${NAS_PATH} && tar xzf - 2>/dev/null"
 echo "✅ Copy complete"

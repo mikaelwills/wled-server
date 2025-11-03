@@ -1,14 +1,39 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { API_URL } from '$lib/api';
+	import { boards, boardsLoading, boardsError } from '$lib/store';
+	import {
+		toggleBoardPower,
+		setBoardColor,
+		setBoardBrightness,
+		setBoardEffect,
+		setBoardPreset,
+		addBoard,
+		updateBoard,
+		deleteBoard as deleteBoardService,
+	} from '$lib/boards-db';
+	import { addGroup, deleteGroup } from '$lib/groups-db';
+	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import ColorWheel from '$lib/ColorWheel.svelte';
-	import { sendOSC } from '$lib/osc';
-	import { createSseConnection } from '$lib/sse';
 	import type { BoardState } from '$lib/types';
 
-	let boards: BoardState[] = [];
-	let loading = true;
-	let error = '';
+	// WLED Presets (1-15 from presets.json)
+	const WLED_PRESETS = [
+		{ id: 0, name: 'None (Manual Control)' },
+		{ id: 1, name: 'Lightning Cyan' },
+		{ id: 2, name: 'Lightning Cyan' },
+		{ id: 3, name: 'Lightning Red' },
+		{ id: 4, name: 'Lightning Green' },
+		{ id: 5, name: 'Puddles Green' },
+		{ id: 7, name: 'Puddles Cyan' },
+		{ id: 8, name: 'Puddles Red' },
+		{ id: 9, name: 'Candles' },
+		{ id: 11, name: 'Puddles Pink' },
+		{ id: 12, name: 'Wipe Cyan' },
+		{ id: 13, name: 'Wipe White' },
+		{ id: 14, name: 'Wipe Red' },
+		{ id: 15, name: 'Wipe Green' },
+	];
+
+	// UI state (local to component)
 	let expandedBoard: string | null = null;
 	let showAddForm = false;
 	let newBoardId = '';
@@ -19,364 +44,63 @@
 	let editBoardId = '';
 	let editBoardIp = '';
 	let editingBoardId = ''; // Original ID being edited
-	let sseConnection: EventSource | null = null;
 
-	async function fetchBoards() {
-		try {
-			const response = await fetch(`${API_URL}/boards`);
-			if (!response.ok) throw new Error('Failed to fetch boards');
-			boards = await response.json();
-
-			// Derive group state from member boards
-			boards = boards.map(board => {
-				if (board.isGroup && board.memberIds) {
-					const members = boards.filter(b =>
-						!b.isGroup && board.memberIds?.includes(b.id)
-					);
-
-					if (members.length > 0) {
-						// Derive state from members
-						const firstMember = members[0];
-						return {
-							...board,
-							color: firstMember.color,
-							brightness: firstMember.brightness,
-							effect: firstMember.effect,
-							on: members.every(m => m.on)
-						};
-					}
-				}
-				return board;
-			});
-
-			// Sort: groups first, then regular boards
-			boards.sort((a, b) => {
-				if (a.isGroup && !b.isGroup) return -1;
-				if (!a.isGroup && b.isGroup) return 1;
-				return 0;
-			});
-
-			loading = false;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Unknown error';
-			loading = false;
-		}
-	}
-
-	async function togglePower(boardId: string) {
-		const board = boards.find(b => b.id === boardId);
-		if (board?.isGroup && board.memberIds) {
-			// Toggle all members in parallel and collect their states
-			const memberStatesPromises = board.memberIds.map(async (memberId) => {
-				try {
-					const response = await fetch(`${API_URL}/board/${memberId}/toggle`, {
-						method: 'POST'
-					});
-					if (!response.ok) throw new Error(`Failed to toggle power for ${memberId}`);
-					return await response.json();
-				} catch (e) {
-					console.error(`Error toggling power for ${memberId}:`, e);
-					return null;
-				}
-			});
-
-			const memberStates = (await Promise.all(memberStatesPromises)).filter((state): state is BoardState => state !== null);
-
-			// Update group's state based on member states (all must be ON for group to show ON)
-			const allOn = memberStates.length > 0 && memberStates.every(m => m.on);
-			boards = boards.map(b => b.id === boardId ? {...b, on: allOn} : b);
-		} else {
-			// Regular board
-			try {
-				const response = await fetch(`${API_URL}/board/${boardId}/toggle`, {
-					method: 'POST'
-				});
-				if (!response.ok) throw new Error('Failed to toggle power');
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error toggling power:', e);
-			}
-		}
-	}
-
-	async function setColor(boardId: string, r: number, g: number, b: number) {
-		// Ensure r, g, b are actually numbers
-		const red = Number(r);
-		const green = Number(g);
-		const blue = Number(b);
-
-		const board = boards.find(b => b.id === boardId);
-		if (board?.isGroup && board.memberIds) {
-			// Set color for all members in parallel
-			await Promise.all(
-				board.memberIds.map(async (memberId) => {
-					try {
-						const response = await fetch(`${API_URL}/board/${memberId}/color`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ r: red, g: green, b: blue })
-						});
-						if (!response.ok) throw new Error(`Failed to set color for ${memberId}`);
-					} catch (e) {
-						console.error(`Error setting color for ${memberId}:`, e);
-					}
-				})
-			);
-			// Update the group's own state
-			boards = boards.map(b => b.id === boardId ? {...b, color: [red, green, blue] as [number, number, number]} : b);
-		} else {
-			// Regular board
-			try {
-				const response = await fetch(`${API_URL}/board/${boardId}/color`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ r, g, b })
-				});
-				if (!response.ok) throw new Error('Failed to set color');
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error setting color:', e);
-			}
-		}
-	}
-
-	async function setBrightness(boardId: string, brightness: number) {
-		const board = boards.find(b => b.id === boardId);
-		if (board?.isGroup && board.memberIds) {
-			// Set brightness for all members in parallel
-			await Promise.all(
-				board.memberIds.map(async (memberId) => {
-					try {
-						const response = await fetch(`${API_URL}/board/${memberId}/brightness`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ brightness })
-						});
-						if (!response.ok) throw new Error(`Failed to set brightness for ${memberId}`);
-					} catch (e) {
-						console.error(`Error setting brightness for ${memberId}:`, e);
-					}
-				})
-			);
-			// Update the group's own state
-			boards = boards.map(b => b.id === boardId ? {...b, brightness} : b);
-		} else {
-			// Regular board
-			try {
-				const response = await fetch(`${API_URL}/board/${boardId}/brightness`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ brightness })
-				});
-				if (!response.ok) throw new Error('Failed to set brightness');
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error setting brightness:', e);
-			}
-		}
-	}
-
-	async function setEffect(boardId: string, effect: number) {
-		const board = boards.find(b => b.id === boardId);
-		if (board?.isGroup && board.memberIds) {
-			// Set effect for all members in parallel
-			await Promise.all(
-				board.memberIds.map(async (memberId) => {
-					try {
-						const response = await fetch(`${API_URL}/board/${memberId}/effect`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ effect })
-						});
-						if (!response.ok) throw new Error(`Failed to set effect for ${memberId}`);
-					} catch (e) {
-						console.error(`Error setting effect for ${memberId}:`, e);
-					}
-				})
-			);
-			// Update the group's own state
-			boards = boards.map(b => b.id === boardId ? {...b, effect} : b);
-		} else {
-			// Regular board
-			try {
-				const response = await fetch(`${API_URL}/board/${boardId}/effect`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ effect })
-				});
-				if (!response.ok) throw new Error('Failed to set effect');
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error setting effect:', e);
-			}
-		}
-	}
-
+	// Event handlers that call service functions
 	function toggleExpanded(boardId: string) {
 		expandedBoard = expandedBoard === boardId ? null : boardId;
 	}
 
-	// One-time migration: move groups from localStorage to backend
-	async function migrateLocalStorageGroups() {
-		try {
-			const stored = localStorage.getItem('wled-groups');
-			if (!stored) return; // No groups to migrate
-
-			const groups = JSON.parse(stored);
-			console.log(`Migrating ${groups.length} group(s) from localStorage to backend...`);
-
-			for (const group of groups) {
-				try {
-					const response = await fetch(`${API_URL}/groups`, {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							id: group.id,
-							members: group.memberIds || []
-						})
-					});
-
-					if (response.ok) {
-						console.log(`Migrated group: ${group.id}`);
-					} else if (response.status === 409) {
-						console.log(`Group ${group.id} already exists, skipping`);
-					} else {
-						console.error(`Failed to migrate group ${group.id}`);
-					}
-				} catch (e) {
-					console.error(`Error migrating group ${group.id}:`, e);
-				}
-			}
-
-			// Clear localStorage after successful migration
-			localStorage.removeItem('wled-groups');
-			console.log('Migration complete, localStorage cleared');
-		} catch (e) {
-			console.error('Error during migration:', e);
-		}
-	}
-
-	async function addBoard() {
-		// Validation
+	async function handleAddBoard() {
 		if (!newBoardId.trim()) {
 			alert('Please enter an ID');
 			return;
 		}
 
-		if (isCreatingGroup) {
-			// Creating a group
-			if (selectedMemberIds.length === 0) {
-				alert('Please select at least one board for the group');
-				return;
-			}
-
-			try {
-				const response = await fetch(`${API_URL}/groups`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						id: newBoardId,
-						members: selectedMemberIds
-					})
-				});
-
-				if (!response.ok) {
-					if (response.status === 409) {
-						alert('A group with this ID already exists');
-					} else if (response.status === 400) {
-						alert('One or more member boards not found');
-					} else {
-						throw new Error('Failed to create group');
-					}
+		try {
+			if (isCreatingGroup) {
+				if (selectedMemberIds.length === 0) {
+					alert('Please select at least one board for the group');
 					return;
 				}
 
-				// Clear form and refresh boards
+				await addGroup(newBoardId, selectedMemberIds);
+
 				newBoardId = '';
 				selectedMemberIds = [];
 				isCreatingGroup = false;
 				showAddForm = false;
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error creating group:', e);
-				alert('Failed to create group');
-			}
-		} else {
-			// Creating a regular board
-			if (!newBoardIp.trim()) {
-				alert('Please enter an IP address');
-				return;
-			}
-
-			try {
-				const response = await fetch(`${API_URL}/boards`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ id: newBoardId, ip: newBoardIp })
-				});
-
-				if (!response.ok) {
-					if (response.status === 409) {
-						alert('A board with this ID already exists');
-					} else {
-						throw new Error('Failed to add board');
-					}
+			} else {
+				if (!newBoardIp.trim()) {
+					alert('Please enter an IP address');
 					return;
 				}
 
-				// Clear form and refresh boards
+				await addBoard(newBoardId, newBoardIp);
+
 				newBoardId = '';
 				newBoardIp = '';
 				showAddForm = false;
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error adding board:', e);
-				alert('Failed to add board');
 			}
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to add board/group');
 		}
 	}
 
-	async function deleteBoard(boardId: string) {
-		const board = boards.find(b => b.id === boardId);
+	async function handleDeleteBoard(boardId: string) {
+		const board = $boards.find((b) => b.id === boardId);
 
 		if (!confirm(`Are you sure you want to delete "${boardId}"?`)) {
 			return;
 		}
 
-		if (board?.isGroup) {
-			// Delete group from backend
-			try {
-				const response = await fetch(`${API_URL}/groups/${boardId}`, {
-					method: 'DELETE'
-				});
-
-				if (!response.ok) throw new Error('Failed to delete group');
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error deleting group:', e);
-				alert('Failed to delete group');
+		try {
+			if (board?.isGroup) {
+				await deleteGroup(boardId);
+			} else {
+				await deleteBoardService(boardId);
 			}
-		} else {
-			// Delete regular board from backend
-			try {
-				const response = await fetch(`${API_URL}/boards/${boardId}`, {
-					method: 'DELETE'
-				});
-
-				if (!response.ok) {
-					if (response.status === 404) {
-						alert('Board not found');
-					} else {
-						throw new Error('Failed to delete board');
-					}
-					return;
-				}
-
-				await fetchBoards();
-			} catch (e) {
-				console.error('Error deleting board:', e);
-				alert('Failed to delete board');
-			}
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to delete board/group');
 		}
 	}
 
@@ -387,73 +111,47 @@
 		showEditForm = true;
 	}
 
-	async function updateBoard() {
+	async function handleSyncPresets(boardId: string) {
+		if (!confirm(`Load all presets to board "${boardId}"? This will overwrite existing presets on the board.`)) {
+			return;
+		}
+
+		try {
+			const response = await fetch(`http://localhost:3010/board/${boardId}/presets/sync`, {
+				method: 'POST'
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text();
+				throw new Error(`Failed to sync presets: ${errorText}`);
+			}
+
+			const result = await response.json();
+			alert(`Successfully loaded ${result.synced} of ${result.total} presets to board "${boardId}"`);
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to sync presets');
+		}
+	}
+
+	async function handleUpdateBoard() {
 		if (!editBoardId.trim() || !editBoardIp.trim()) {
 			alert('Board ID and IP are required');
 			return;
 		}
 
 		try {
-			const response = await fetch(`${API_URL}/boards/${editingBoardId}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					new_id: editBoardId !== editingBoardId ? editBoardId : undefined,
-					new_ip: editBoardIp
-				})
-			});
+			await updateBoard(editingBoardId, editBoardId, editBoardIp);
 
-			if (response.ok) {
-				showEditForm = false;
-				editBoardId = '';
-				editBoardIp = '';
-				editingBoardId = '';
-				await fetchBoards();
-			} else {
-				throw new Error('Failed to update board');
-			}
+			// Clear form
+			showEditForm = false;
+			editBoardId = '';
+			editBoardIp = '';
+			editingBoardId = '';
 		} catch (e) {
-			console.error('Error updating board:', e);
-			alert('Failed to update board');
+			alert(e instanceof Error ? e.message : 'Failed to update board');
 		}
 	}
 
-	// Combined Loopy Pro + LED control
-	function triggerLoopyAndLED(boardId: string, oscAddress: string, r: number, g: number, b: number) {
-		// Send OSC to Loopy Pro
-		sendOSC(oscAddress);
-
-		// Set LED color
-		setColor(boardId, r, g, b);
-	}
-
-	// WLED effects list (from your device)
-	const effectsRaw = ["Solid","Blink","Breathe","Wipe","Wipe Random","Random Colors","Sweep","Dynamic","Colorloop","Rainbow","Scan","Scan Dual","Fade","Theater","Theater Rainbow","Running","Saw","Twinkle","Dissolve","Dissolve Rnd","Sparkle","Sparkle Dark","Sparkle+","Strobe","Strobe Rainbow","Strobe Mega","Blink Rainbow","Android","Chase","Chase Random","Chase Rainbow","Chase Flash","Chase Flash Rnd","Rainbow Runner","Colorful","Traffic Light","Sweep Random","Chase 2","Aurora","Stream","Scanner","Lighthouse","Fireworks","Rain","Tetrix","Fire Flicker","Gradient","Loading","Rolling Balls","Fairy","Two Dots","Fairytwinkle","Running Dual","RSVD","Chase 3","Tri Wipe","Tri Fade","Lightning","ICU","Multi Comet","Scanner Dual","Stream 2","Oscillate","Pride 2015","Juggle","Palette","Fire 2012","Colorwaves","Bpm","Fill Noise","Noise 1","Noise 2","Noise 3","Noise 4","Colortwinkles","Lake","Meteor","Meteor Smooth","Railway","Ripple","Twinklefox","Twinklecat","Halloween Eyes","Solid Pattern","Solid Pattern Tri","Spots","Spots Fade","Glitter","Candle","Fireworks Starburst","Fireworks 1D","Bouncing Balls","Sinelon","Sinelon Dual","Sinelon Rainbow","Popcorn","Drip","Plasma","Percent","Ripple Rainbow","Heartbeat","Pacifica","Candle Multi","Solid Glitter","Sunrise","Phased","Twinkleup","Noise Pal","Sine","Phased Noise","Flow","Chunchun","Dancing Shadows","Washing Machine","Rotozoomer","Blends","TV Simulator","Dynamic Smooth","Spaceships","Crazy Bees","Ghost Rider","Blobs","Scrolling Text","Drift Rose","Distortion Waves","Soap","Octopus","Waving Cell","Pixels","Pixelwave","Juggles","Matripix","Gravimeter","Plasmoid","Puddles","Midnoise","Noisemeter","Freqwave","Freqmatrix","GEQ","Waterfall","Freqpixels","RSVD","Noisefire","Puddlepeak","Noisemove","Noise2D","Perlin Move","Ripple Peak","Firenoise","Squared Swirl","RSVD","DNA","Matrix","Metaballs","Freqmap","Gravcenter","Gravcentric","Gravfreq","DJ Light","Funky Plank","RSVD","Pulser","Blurz","Drift","Waverly","Sun Radiation","Colored Bursts","Julia","RSVD","RSVD","RSVD","Game Of Life","Tartan","Polar Lights","Swirl","Lissajous","Frizzles","Plasma Ball","Flow Stripe","Hiphotic","Sindots","DNA Spiral","Black Hole","Wavesins","Rocktaves","Akemi"];
-	const effects = effectsRaw.map((name, id) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-
-	function updateBoardState(boardId: string, state: BoardState) {
-		boards = boards.map((b) => (b.id === boardId ? state : b));
-	}
-
-	function updateBoardConnectionStatus(boardId: string, connected: boolean) {
-		boards = boards.map((b) => (b.id === boardId ? { ...b, connected } : b));
-	}
-
-	onMount(async () => {
-		// Migrate localStorage groups to backend (one-time operation)
-		await migrateLocalStorageGroups();
-
-		fetchBoards();
-
-		// Connect to SSE for real-time updates
-		sseConnection = createSseConnection(updateBoardState, updateBoardConnectionStatus);
-	});
-
-	onDestroy(() => {
-		if (sseConnection) {
-			sseConnection.close();
-		}
-	});
 </script>
 
 <main>
@@ -481,7 +179,7 @@
 				/>
 			</div>
 			<div class="form-actions">
-				<button class="submit-btn" on:click={updateBoard}>Update Board</button>
+				<button class="submit-btn" on:click={handleUpdateBoard}>Update Board</button>
 				<button class="cancel-btn" on:click={() => (showEditForm = false)}>Cancel</button>
 			</div>
 		</div>
@@ -512,9 +210,14 @@
 				<!-- Member selection for groups -->
 				<div class="form-group">
 					<label>Select Boards:</label>
-					<div style="max-height: 200px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 0.5rem;">
-						{#each boards.filter(b => !b.isGroup) as board}
-							<label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer; border-radius: 4px;" class:selected={selectedMemberIds.includes(board.id)}>
+					<div
+						style="max-height: 200px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 0.5rem;"
+					>
+						{#each $boards.filter((b) => !b.isGroup) as board}
+							<label
+								style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer; border-radius: 4px;"
+								class:selected={selectedMemberIds.includes(board.id)}
+							>
 								<input
 									type="checkbox"
 									value={board.id}
@@ -523,7 +226,7 @@
 										if (e.currentTarget.checked) {
 											selectedMemberIds = [...selectedMemberIds, board.id];
 										} else {
-											selectedMemberIds = selectedMemberIds.filter(id => id !== board.id);
+											selectedMemberIds = selectedMemberIds.filter((id) => id !== board.id);
 										}
 									}}
 								/>
@@ -546,33 +249,22 @@
 				</div>
 			{/if}
 			<div class="form-actions">
-				<button class="submit-btn" on:click={addBoard}>Add Board</button>
+				<button class="submit-btn" on:click={handleAddBoard}>Add Board</button>
 				<button class="cancel-btn" on:click={() => (showAddForm = false)}>Cancel</button>
 			</div>
 		</div>
 	{:else}
 		<h1>WLED Control Panel</h1>
 
-		<!-- Loopy Pro Test Button -->
-		<!-- <div style="margin: 20px 0; padding: 20px; background: #2a2a2a; border-radius: 8px;">
-			<h3 style="margin-top: 0;">Loopy Pro + LED Control</h3>
-			<button
-				class="loopy-btn"
-				on:click={() => triggerLoopyAndLED('mikaels-bed', '/PlayStop/06', 255, 0, 255)}
-			>
-				▶ Play Track 6 + Purple Lights
-			</button>
-		</div> -->
-
-		{#if loading}
+		{#if $boardsLoading}
 			<p>Loading boards...</p>
-		{:else if error}
-			<p class="error">Error: {error}</p>
-		{:else if boards.length === 0}
-			<p>No boards configured. Add boards in boards.toml</p>
+		{:else if $boardsError}
+			<p class="error">Error: {$boardsError}</p>
+		{:else if $boards.length === 0}
+			<p>No boards configured. Add boards using the button below.</p>
 		{:else}
 			<div class="boards">
-				{#each boards as board}
+				{#each $boards as board}
 					<div class="board-card">
 						<div class="board-header">
 							<div on:click={() => toggleExpanded(board.id)} style="flex: 1; cursor: pointer;">
@@ -581,25 +273,33 @@
 									{#if board.isGroup}
 										Group ({board.memberIds?.length || 0} boards)
 									{:else}
-										<span class="connection-dot {board.connected ? 'connected' : 'disconnected'}"></span>
+										<span
+											class="connection-dot {board.connected ? 'connected' : 'disconnected'}"
+										></span>
 										{board.ip}
 									{/if}
 								</p>
 							</div>
-							{#if board.connected}
+							{#if board.connected || board.isGroup}
 								<label class="toggle-switch" on:click={(e) => e.stopPropagation()}>
 									<input
 										type="checkbox"
 										checked={board.on}
-										on:change={() => togglePower(board.id)}
+										on:change={() => toggleBoardPower(board.id)}
 									/>
 									<span
 										class="toggle-slider color-toggle"
-										style={Array.isArray(board.color) && board.color.length === 3 ? `--board-color: rgb(${Number(board.color[0])}, ${Number(board.color[1])}, ${Number(board.color[2])})` : ''}
+										style={Array.isArray(board.color) && board.color.length === 3
+											? `--board-color: rgb(${Number(board.color[0])}, ${Number(board.color[1])}, ${Number(board.color[2])})`
+											: ''}
 									></span>
 								</label>
 							{/if}
-							<span class="expand-icon" on:click={() => toggleExpanded(board.id)} style="cursor: pointer;">
+							<span
+								class="expand-icon"
+								on:click={() => toggleExpanded(board.id)}
+								style="cursor: pointer;"
+							>
 								{expandedBoard === board.id ? '▼' : '▶'}
 							</span>
 						</div>
@@ -610,7 +310,7 @@
 									<ColorWheel
 										color={board.color}
 										disabled={board.isGroup ? false : !board.connected}
-										onColorChange={(r, g, b) => setColor(board.id, r, g, b)}
+										onColorChange={(r, g, b) => setBoardColor(board.id, r, g, b)}
 									/>
 								</div>
 
@@ -622,19 +322,33 @@
 										max="255"
 										value={board.brightness}
 										disabled={board.isGroup ? false : !board.connected}
-										on:change={(e) => setBrightness(board.id, parseInt(e.currentTarget.value))}
+										on:change={(e) =>
+											setBoardBrightness(board.id, parseInt(e.currentTarget.value))}
 										class="brightness-slider"
 									/>
+								</div>
+
+								<div class="preset-section">
+									<select
+										value={0}
+										disabled={board.isGroup ? false : !board.connected}
+										on:change={(e) => setBoardPreset(board.id, parseInt(e.currentTarget.value))}
+										class="preset-dropdown"
+									>
+										{#each WLED_PRESETS as preset}
+											<option value={preset.id}>{preset.name}</option>
+										{/each}
+									</select>
 								</div>
 
 								<div class="effects-section">
 									<select
 										value={board.effect}
 										disabled={board.isGroup ? false : !board.connected}
-										on:change={(e) => setEffect(board.id, parseInt(e.currentTarget.value))}
+										on:change={(e) => setBoardEffect(board.id, parseInt(e.currentTarget.value))}
 										class="effects-dropdown"
 									>
-										{#each effects as effect}
+										{#each WLED_EFFECTS as effect}
 											<option value={effect.id}>{effect.name}</option>
 										{/each}
 									</select>
@@ -645,8 +359,11 @@
 										<button class="edit-btn" on:click={() => openEditForm(board)}>
 											Edit Board
 										</button>
+										<button class="sync-presets-btn" on:click={() => handleSyncPresets(board.id)}>
+											Load Presets
+										</button>
 									{/if}
-									<button class="delete-btn" on:click={() => deleteBoard(board.id)}>
+									<button class="delete-btn" on:click={() => handleDeleteBoard(board.id)}>
 										Delete {board.isGroup ? 'Group' : 'Board'}
 									</button>
 								</div>
@@ -804,6 +521,27 @@
 		transform: scale(0.98);
 	}
 
+	.sync-presets-btn {
+		flex: 1;
+		padding: 0.75rem;
+		border: none;
+		border-radius: 6px;
+		font-size: 1rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+		background: #388e3c;
+		color: white;
+	}
+
+	.sync-presets-btn:hover {
+		background: #2e7d32;
+	}
+
+	.sync-presets-btn:active {
+		transform: scale(0.98);
+	}
+
 	.delete-btn {
 		flex: 1;
 		padding: 0.75rem;
@@ -951,13 +689,14 @@
 		margin-bottom: 1rem;
 	}
 
-	.effects-section {
-		margin-bottom: 1.5rem;
+	.preset-section {
+		margin-bottom: 0.75rem;
 	}
 
-	.effects-dropdown {
+	.preset-dropdown {
 		width: 100%;
 		padding: 0.75rem;
+		padding-right: 0.75rem;
 		background: #333;
 		color: #e0e0e0;
 		border: 1px solid #444;
@@ -965,6 +704,44 @@
 		font-size: 1rem;
 		cursor: pointer;
 		outline: none;
+		appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23e0e0e0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 0.75rem center;
+	}
+
+	.preset-dropdown:hover {
+		background: #3a3a3a;
+	}
+
+	.preset-dropdown:focus {
+		border-color: #4caf50;
+	}
+
+	.preset-dropdown:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.effects-section {
+		margin-bottom: 1.5rem;
+	}
+
+	.effects-dropdown {
+		width: 100%;
+		padding: 0.75rem;
+		padding-right: 0.75rem;
+		background: #333;
+		color: #e0e0e0;
+		border: 1px solid #444;
+		border-radius: 6px;
+		font-size: 1rem;
+		cursor: pointer;
+		outline: none;
+		appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23e0e0e0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 0.75rem center;
 	}
 
 	.effects-dropdown:hover {

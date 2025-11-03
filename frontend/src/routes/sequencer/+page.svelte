@@ -2,21 +2,18 @@
 	import { onMount } from 'svelte';
 	import Program from '$lib/Program.svelte';
 	import { API_URL } from '$lib/api';
+	import { programs, programsLoading, programsError } from '$lib/store';
+	import { initPrograms, saveProgram, deleteProgram } from '$lib/programs-db';
+	import { Program as ProgramModel } from '$lib/models/Program';
 
-	let programs = $state([]);
 	let isDragging = $state(false);
-	let playingProgramId = $state(null);
-	let activeTimeouts = $state([]);
 	let isCompressing = $state(false);
 
-	onMount(() => {
-		loadPrograms();
+	onMount(async () => {
+		// Initialize programs from API (page-specific data)
+		// Note: boards and presets are initialized in +layout.svelte and shared across all pages
+		await initPrograms();
 	});
-
-	function loadPrograms() {
-		const storedPrograms = JSON.parse(localStorage.getItem('light-programs') || '[]');
-		programs = storedPrograms;
-	}
 
 	function handleDragOver(event) {
 		event.preventDefault();
@@ -130,154 +127,41 @@
 		try {
 			isCompressing = true;
 
-			// Compress audio file
-			const compressedAudio = await compressAudio(file);
+			// Convert audio file to base64 data URL (no compression)
+			const reader = new FileReader();
+			const audioDataURL = await new Promise((resolve, reject) => {
+				reader.onloadend = () => resolve(reader.result);
+				reader.onerror = reject;
+				reader.readAsDataURL(file);
+			});
 
-			const newProgram = {
+			// Create Program using factory method
+			const newProgramData = {
 				id: `new-program-${timestamp}`,
 				songName: fileName.replace(/\.[^/.]+$/, ''), // Remove extension
 				loopyProTrack: '',
 				fileName: fileName,
-				audioData: compressedAudio, // Compressed audio as base64
+				audioData: audioDataURL, // Uncompressed audio as base64 data URL
 				cues: [],
 				createdAt: new Date().toISOString()
 			};
 
-			const existingPrograms = JSON.parse(localStorage.getItem('light-programs') || '[]');
-			existingPrograms.push(newProgram);
-			localStorage.setItem('light-programs', JSON.stringify(existingPrograms));
+			const newProgram = ProgramModel.fromJson(newProgramData);
 
-			console.log('Program saved with compressed audio');
-			programs = existingPrograms;
+			if (newProgram) {
+				// Save through service layer
+				saveProgram(newProgram);
+				console.log('Program saved with uncompressed audio');
+			}
+
 			isCompressing = false;
 		} catch (err) {
 			console.error('Failed to create program:', err);
 			isCompressing = false;
-			alert('Failed to compress audio file. Please try a smaller file.');
+			alert('Failed to save audio file.');
 		}
 	}
 
-	function handleProgramSaved() {
-		loadPrograms();
-	}
-
-	function handleProgramDeleted(programId) {
-		const filtered = programs.filter(p => p.id !== programId);
-		localStorage.setItem('light-programs', JSON.stringify(filtered));
-		programs = filtered;
-	}
-
-	function formatDate(isoString) {
-		const date = new Date(isoString);
-		return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-	}
-
-	async function playProgram(program) {
-		console.log('playProgram called with:', {
-			id: program.id,
-			cueCount: program.cues?.length,
-			cues: program.cues
-		});
-
-		// Stop any currently playing program
-		if (playingProgramId) {
-			stopPlayback();
-		}
-
-		playingProgramId = program.id;
-
-		// Sort cues by time
-		const sortedCues = [...program.cues].sort((a, b) => a.time - b.time);
-		console.log('Sorted cues:', sortedCues);
-
-		// Send OSC to start Loopy Pro track
-		if (program.loopyProTrack) {
-			try {
-				await fetch(`${API_URL}/osc`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						address: `/PlayStop/${program.loopyProTrack.padStart(2, '0')}`
-					})
-				});
-			} catch (err) {
-				console.error('Failed to send OSC:', err);
-			}
-		}
-
-		// Schedule all cues
-		sortedCues.forEach((cue, index) => {
-			const timeoutId = setTimeout(async () => {
-				console.log(`Triggering cue at ${cue.time}s: ${cue.label}`);
-
-				// Send commands to all boards in this cue
-				for (const boardId of cue.boards) {
-					try {
-						// Set preset if specified
-						if (cue.preset > 0) {
-							await fetch(`${API_URL}/board/${boardId}/preset`, {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ preset: cue.preset })
-							});
-						} else {
-							// Set color
-							const rgb = hexToRgb(cue.color);
-							await fetch(`${API_URL}/board/${boardId}/color`, {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ r: rgb.r, g: rgb.g, b: rgb.b })
-							});
-
-							// Set effect
-							await fetch(`${API_URL}/board/${boardId}/effect`, {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ effect: cue.effect })
-							});
-						}
-
-						// Set brightness
-						await fetch(`${API_URL}/board/${boardId}/brightness`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ brightness: cue.brightness })
-						});
-					} catch (err) {
-						console.error(`Failed to send commands to board ${boardId}:`, err);
-					}
-				}
-			}, cue.time * 1000); // Convert to milliseconds
-
-			activeTimeouts = [...activeTimeouts, timeoutId];
-		});
-
-		// Auto-stop after last cue + 1 second
-		if (sortedCues.length > 0) {
-			const lastCueTime = sortedCues[sortedCues.length - 1].time;
-			const stopTimeoutId = setTimeout(() => {
-				playingProgramId = null;
-				activeTimeouts = [];
-			}, (lastCueTime + 1) * 1000);
-			activeTimeouts = [...activeTimeouts, stopTimeoutId];
-		}
-	}
-
-	function stopPlayback() {
-		// Clear all scheduled timeouts
-		activeTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
-		activeTimeouts = [];
-		playingProgramId = null;
-	}
-
-	function hexToRgb(hex) {
-		const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-		return result ? {
-			r: parseInt(result[1], 16),
-			g: parseInt(result[2], 16),
-			b: parseInt(result[3], 16)
-		} : { r: 0, g: 0, b: 0 };
-	}
 </script>
 
 <div class="sequencer-page">
@@ -303,7 +187,15 @@
 	</div>
 
 	<!-- All Programs Displayed Continuously -->
-	{#if programs.length === 0 && !isCompressing}
+	{#if $programsLoading}
+		<div class="empty-state">
+			<p class="empty-text">Loading programs...</p>
+		</div>
+	{:else if $programsError}
+		<div class="empty-state">
+			<p class="empty-text" style="color: #ef4444;">{$programsError}</p>
+		</div>
+	{:else if $programs.length === 0 && !isCompressing}
 		<div class="empty-state">
 			<p class="empty-text">No light programs yet</p>
 			<p class="empty-hint">Drop a WAV file above to create your first program</p>
@@ -322,16 +214,11 @@
 			{/if}
 
 			<!-- Existing Programs -->
-			{#each programs as program (program.id)}
+			{#each $programs as program (program.id)}
 				<div class="program-wrapper">
 					<Program
 						programId={program.id}
 						initialData={program}
-						onsave={handleProgramSaved}
-						on:delete={(e) => handleProgramDeleted(e.detail)}
-						{playingProgramId}
-						onstop={stopPlayback}
-						onplay={() => playProgram(program)}
 					/>
 				</div>
 			{/each}

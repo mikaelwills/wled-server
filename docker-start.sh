@@ -10,10 +10,9 @@ echo "Starting Rust backend on port 3000..."
 /app/backend &
 BACKEND_PID=$!
 
-# Start frontend in background (serving static files with Python)
+# Start frontend in background (serving static files with SPA support)
 echo "Starting SvelteKit frontend on port 3001..."
-cd /app/frontend/build
-python3 -m http.server 3001 --bind 0.0.0.0 &
+python3 /app/spa-server.py 3001 /app/frontend/build &
 FRONTEND_PID=$!
 
 # Function to handle shutdown

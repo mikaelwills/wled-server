@@ -32,7 +32,7 @@ sleep 2
 echo ""
 echo "✅ WLED Server is running!"
 echo ""
-echo "📡 Backend:  http://0.0.0.0:3000"
+echo "📡 Backend:  http://0.0.0.0:3010"
 echo "🌐 Frontend: http://localhost:3011"
 echo ""
 echo "To view logs:"

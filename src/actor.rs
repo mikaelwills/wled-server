@@ -153,35 +153,35 @@ impl BoardActor {
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetBrightness(bri)) => {
+                            Some(BoardCommand::SetBrightness(bri, transition)) => {
                                 self.state.brightness = bri;
-                                let msg = Message::Text(format!(r#"{{"bri":{}}}"#, bri));
+                                let msg = Message::Text(format!(r#"{{"bri":{},"tt":{}}}"#, bri, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetColor { r, g, b }) => {
+                            Some(BoardCommand::SetColor { r, g, b, transition }) => {
                                 self.state.color = [r, g, b];
                                 let msg = Message::Text(format!(
-                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}]}}"#,
-                                    r, g, b
+                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":{}}}"#,
+                                    r, g, b, transition
                                 ));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetEffect(effect)) => {
+                            Some(BoardCommand::SetEffect(effect, transition)) => {
                                 self.state.effect = effect;
-                                let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}]}}"#, effect));
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}],"tt":{}}}"#, effect, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetPreset(preset)) => {
-                                let msg = Message::Text(format!(r#"{{"ps":{}}}"#, preset));
+                            Some(BoardCommand::SetPreset(preset, transition)) => {
+                                let msg = Message::Text(format!(r#"{{"ps":{},"tt":{}}}"#, preset, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;

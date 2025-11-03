@@ -49,10 +49,10 @@ impl BoardState {
 
 pub enum BoardCommand {
     TogglePower,
-    SetBrightness(u8),
-    SetColor { r: u8, g: u8, b: u8 },
-    SetEffect(u8),
-    SetPreset(u8),
+    SetBrightness(u8, u8), // brightness, transition
+    SetColor { r: u8, g: u8, b: u8, transition: u8 },
+    SetEffect(u8, u8), // effect, transition
+    SetPreset(u8, u8), // preset, transition
     GetState(tokio::sync::oneshot::Sender<BoardState>),
     Shutdown,
 }

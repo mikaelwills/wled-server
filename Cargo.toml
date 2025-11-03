@@ -17,3 +17,4 @@ toml = "0.8"
 tower-http = { version = "0.5", features = ["cors"] }
 http = "1.0"
 rosc = "0.10"
+reqwest = { version = "0.11", features = ["json"] }

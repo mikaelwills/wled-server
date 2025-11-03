@@ -1,8 +1,8 @@
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use futures::Stream;
@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 mod actor;
 mod board;
 mod config;
+mod program;
 mod sse;
 mod types;
 
@@ -22,7 +23,10 @@ use actor::BoardActor;
 use board::{BoardCommand, BoardState};
 use config::Config;
 use sse::SseEvent;
-use types::{AppState, BoardEntry, CreateGroupRequest, OscRequest, RegisterBoardRequest, SharedState, UpdateBoardRequest, UpdateGroupRequest};
+use types::{
+    AppState, BoardEntry, CreateGroupRequest, OscRequest, RegisterBoardRequest, SharedState,
+    UpdateBoardRequest, UpdateGroupRequest,
+};
 
 use http::Method;
 use tower_http::cors::CorsLayer;
@@ -54,11 +58,8 @@ async fn main() {
                         },
                     );
                 }
-                let actor = BoardActor::new(
-                    board_config.id,
-                    board_config.ip,
-                    state.broadcast_tx.clone(),
-                );
+                let actor =
+                    BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone());
                 tokio::spawn(async move {
                     if let Err(e) = actor.run(rx).await {
                         eprintln!("Actor error: {}", e);
@@ -88,8 +89,16 @@ async fn main() {
         .route("/board/:id/color", post(set_color))
         .route("/board/:id/effect", post(set_effect))
         .route("/board/:id/preset", post(set_preset))
+        .route("/board/:id/presets/sync", post(sync_presets_to_board))
         .route("/events", get(sse_handler))
+        .route("/programs", post(save_program))
+        .route("/programs", get(list_programs))
+        .route("/programs/:id", get(get_program))
+        .route("/programs/:id", delete(delete_program))
+        .route("/programs/:id", put(update_program))
+
         .route("/osc", post(send_osc))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit for audio files
         .layer(cors)
         .with_state(state.clone());
 
@@ -113,6 +122,56 @@ async fn main() {
 
 async fn hello() -> &'static str {
     "WLED Server Running"
+}
+
+async fn update_program(
+    Path(id): Path<String>,
+    Json(program): Json<program::Program>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if id != program.id {
+        return Err((StatusCode::BAD_REQUEST, "ID mismatch".to_string()));
+    }
+
+    program
+        .save_to_file()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn get_program(
+    Path(id): Path<String>,
+) -> Result<Json<program::Program>, (StatusCode, String)> {
+    let program = program::Program::load_from_file(&id)
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+
+    Ok(Json(program))
+}
+
+async fn delete_program(Path(id): Path<String>) -> Result<StatusCode, (StatusCode, String)> {
+    let file_path = format!("programs/{}.json", id);
+
+    std::fs::remove_file(&file_path)
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn save_program(
+    Json(program): Json<program::Program>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    program
+        .save_to_file()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::CREATED)
+}
+
+async fn list_programs() -> Result<Json<Vec<program::Program>>, (StatusCode, String)> {
+    let programs = program::Program::load_all()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(programs))
 }
 
 async fn register_board(
@@ -359,11 +418,7 @@ async fn list_boards(
     for (board_id, ip, sender) in board_entries {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        if sender
-            .send(BoardCommand::GetState(tx))
-            .await
-            .is_err()
-        {
+        if sender.send(BoardCommand::GetState(tx)).await.is_err() {
             eprintln!("Failed to send GetState to board {}", board_id);
             // Return fallback state for unresponsive actor
             states.push(BoardState {
@@ -457,6 +512,7 @@ async fn set_brightness(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<StatusCode, StatusCode> {
     let bri = payload["brightness"].as_u64().unwrap_or(128) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
         let senders_lock = match state.boards.read() {
@@ -471,7 +527,7 @@ async fn set_brightness(
     };
 
     sender
-        .send(BoardCommand::SetBrightness(bri))
+        .send(BoardCommand::SetBrightness(bri, transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -486,6 +542,7 @@ async fn set_color(
     let r = payload["r"].as_u64().unwrap_or(255) as u8;
     let g = payload["g"].as_u64().unwrap_or(255) as u8;
     let b = payload["b"].as_u64().unwrap_or(255) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
         let senders_lock = match state.boards.read() {
@@ -500,7 +557,7 @@ async fn set_color(
     };
 
     sender
-        .send(BoardCommand::SetColor { r, g, b })
+        .send(BoardCommand::SetColor { r, g, b, transition })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -513,6 +570,7 @@ async fn set_effect(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<StatusCode, StatusCode> {
     let effect = payload["effect"].as_u64().unwrap_or(0) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
         let senders_lock = match state.boards.read() {
@@ -527,7 +585,7 @@ async fn set_effect(
     };
 
     sender
-        .send(BoardCommand::SetEffect(effect))
+        .send(BoardCommand::SetEffect(effect, transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -540,6 +598,7 @@ async fn set_preset(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<StatusCode, StatusCode> {
     let preset = payload["preset"].as_u64().unwrap_or(1) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
         let senders_lock = match state.boards.read() {
@@ -554,11 +613,92 @@ async fn set_preset(
     };
 
     sender
-        .send(BoardCommand::SetPreset(preset))
+        .send(BoardCommand::SetPreset(preset, transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::OK)
+}
+
+async fn sync_presets_to_board(
+    State(state): State<SharedState>,
+    Path(board_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Read presets.json file
+    let presets_content = std::fs::read_to_string("presets.json")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read presets.json: {}", e)))?;
+
+    let presets: serde_json::Value = serde_json::from_str(&presets_content)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to parse presets.json: {}", e)))?;
+
+    // Get board IP from state
+    let board_ip = {
+        let senders_lock = state.boards.read()
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Lock error".to_string()))?;
+
+        senders_lock.get(&board_id)
+            .map(|entry| entry.ip.clone())
+            .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
+    };
+
+    let client = reqwest::Client::new();
+    let mut results = Vec::new();
+    let mut success_count = 0;
+
+    // Iterate through all presets and push each one
+    if let Some(presets_obj) = presets.as_object() {
+        for (preset_id_str, preset_data) in presets_obj {
+            // Skip empty preset slot 0
+            if preset_id_str == "0" || preset_data.is_null() || preset_data.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                continue;
+            }
+
+            let preset_id: u8 = preset_id_str.parse().unwrap_or(0);
+            if preset_id == 0 {
+                continue;
+            }
+
+            // Add "psave" to the preset data
+            let mut payload = preset_data.as_object().cloned().unwrap_or_default();
+            payload.insert("psave".to_string(), serde_json::json!(preset_id));
+
+            // Send to WLED board
+            let url = format!("http://{}/json/state", board_ip);
+            match client.post(&url).json(&payload).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        success_count += 1;
+                        results.push(serde_json::json!({
+                            "preset_id": preset_id,
+                            "status": "success"
+                        }));
+                    } else {
+                        results.push(serde_json::json!({
+                            "preset_id": preset_id,
+                            "status": "failed",
+                            "error": format!("HTTP {}", response.status())
+                        }));
+                    }
+                }
+                Err(e) => {
+                    results.push(serde_json::json!({
+                        "preset_id": preset_id,
+                        "status": "failed",
+                        "error": e.to_string()
+                    }));
+                }
+            }
+
+            // Small delay to avoid overwhelming the board
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "synced": success_count,
+        "total": results.len(),
+        "results": results
+    })))
 }
 
 async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusCode> {

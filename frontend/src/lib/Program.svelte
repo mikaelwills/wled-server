@@ -1,18 +1,18 @@
 <script>
-	import { onMount, createEventDispatcher } from 'svelte';
+	import { onMount } from 'svelte';
 	import WaveSurfer from 'wavesurfer.js';
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
-
-	const dispatch = createEventDispatcher();
+	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/playback-db';
+	import { Program as ProgramModel } from '$lib/models/Program';
+	import { programs as programsStore, boards, presets, currentlyPlayingProgramId } from '$lib/store';
+	import { WLED_EFFECTS } from '$lib/wled-effects';
 
 	// Props
 	let {
 		programId = null,
-		initialData = null,
-		playingProgramId = null,
-		onplay = null,
-		onstop = null
+		initialData = null
 	} = $props();
 
 	let wavesurfer = $state(null);
@@ -27,51 +27,21 @@
 	let songName = $state('');
 	let loopyProTrack = $state('');
 
-	// Boards and groups
-	let boards = $state([]);
-	let groups = $state([]);
-	let presets = $state([]);
-
 	// Dropdown state
 	let openDropdownId = $state(null);
 
-	// WLED effects list
-	const effects = [
-		'Solid', 'Blink', 'Breathe', 'Wipe', 'Wipe Random', 'Random Colors', 'Sweep', 'Dynamic', 'Colorloop', 'Rainbow',
-		'Scan', 'Dual Scan', 'Fade', 'Theater Chase', 'Theater Chase Rainbow', 'Running', 'Saw', 'Twinkle', 'Dissolve', 'Dissolve Rnd',
-		'Sparkle', 'Sparkle Dark', 'Sparkle+', 'Strobe', 'Strobe Rainbow', 'Strobe Mega', 'Blink Rainbow', 'Android', 'Chase', 'Chase Random',
-		'Chase Rainbow', 'Chase Flash', 'Chase Flash Rnd', 'Rainbow Runner', 'Colorful', 'Traffic Light', 'Sweep Random', 'Running 2', 'Red & Blue', 'Stream',
-		'Scanner', 'Lighthouse', 'Fireworks', 'Rain', 'Merry Christmas', 'Fire Flicker', 'Gradient', 'Loading', 'Police', 'Police All',
-		'Two Dots', 'Two Areas', 'Circus', 'Halloween', 'Tri Chase', 'Tri Wipe', 'Tri Fade', 'Lightning', 'ICU', 'Multi Comet',
-		'Scanner Dual', 'Stream 2', 'Oscillate', 'Pride 2015', 'Juggle', 'Palette', 'Fire 2012', 'Colorwaves', 'Bpm', 'Fill Noise',
-		'Noise 1', 'Noise 2', 'Noise 3', 'Noise 4', 'Colortwinkles', 'Lake', 'Meteor', 'Meteor Smooth', 'Railway', 'Ripple',
-		'Twinklefox', 'Twinklecat', 'Halloween Eyes', 'Solid Pattern', 'Solid Pattern Tri', 'Spots', 'Spots Fade', 'Glitter', 'Candle', 'Fireworks Starburst',
-		'Fireworks 1D', 'Bouncing Balls', 'Sinelon', 'Sinelon Dual', 'Sinelon Rainbow', 'Popcorn', 'Drip', 'Plasma', 'Percent', 'Ripple Rainbow',
-		'Heartbeat', 'Pacifica', 'Candle Multi', 'Solid Glitter', 'Sunrise', 'Phased', 'Twinkleup', 'Noise Pal', 'Sine', 'Phased Noise',
-		'Flow', 'Chunchun', 'Dancing Shadows', 'Washing Machine', 'Candy Cane', 'Blends', 'TV Simulator', 'Dynamic Smooth'
-	];
-
 	onMount(async () => {
-		// Fetch boards and groups
-		try {
-			const res = await fetch(`${API_URL}/boards`);
-			const data = await res.json();
-
-			// Backend returns array of boards directly
-			boards = Array.isArray(data) ? data : [];
-
-			// Groups are stored in localStorage (frontend-only)
-			const storedGroups = JSON.parse(localStorage.getItem('board-groups') || '[]');
-			groups = storedGroups;
-
-			// Fetch presets (0-16 for WLED)
-			presets = Array.from({ length: 17 }, (_, i) => ({ id: i, name: i === 0 ? 'None' : `Preset ${i}` }));
-		} catch (err) {
-			console.error('Failed to fetch boards:', err);
-		}
+		// Boards, groups, and presets are now loaded via stores in parent component
+		// No need to fetch here
 
 		// Load initial data if provided
 		if (initialData) {
+			console.log(`[Program.svelte] onMount - initialData for ${initialData.id}:`, {
+				hasAudioData: !!initialData.audioData,
+				audioDataLength: initialData.audioData?.length || 0,
+				audioDataPrefix: initialData.audioData?.substring(0, 50)
+			});
+
 			loadProgramData(initialData);
 
 			// Auto-load audio if compressed audio data is present
@@ -121,7 +91,7 @@
 
 				// Create WaveSurfer instance
 				wavesurfer = WaveSurfer.create({
-					container: '#waveform',
+					container: `#waveform-${programId}`,
 					waveColor: 'rgb(147, 51, 234)',
 					progressColor: 'rgb(168, 85, 247)',
 					cursorColor: 'rgb(192, 132, 252)',
@@ -138,9 +108,10 @@
 					// Restore pending cues if any
 					if (window._pendingCues && window._pendingCues.length > 0) {
 						window._pendingCues.forEach(cue => {
+							const labelElement = createRegionLabel(cue.label, cue.time);
 							const markerRegion = regions.addRegion({
 								start: cue.time,
-								content: cue.label,
+								content: labelElement,
 								color: 'rgba(168, 85, 247, 0.3)',
 								drag: true,
 								resize: false
@@ -210,16 +181,34 @@
 	}
 
 	function loadCompressedAudio(audioDataURL) {
-		console.log('Loading compressed audio from localStorage');
+		console.log('[Program.svelte] Loading compressed audio, data URL length:', audioDataURL?.length);
+		console.log('[Program.svelte] programId:', programId);
+
+		// Check if container exists
+		const container = document.querySelector(`#waveform-${programId}`);
+		if (!container) {
+			console.error('[Program.svelte] Waveform container not found:', `#waveform-${programId}`);
+			return;
+		}
+		console.log('[Program.svelte] Container found:', container);
 
 		// Convert base64 data URL back to blob
 		fetch(audioDataURL)
-			.then(res => res.blob())
+			.then(res => {
+				console.log('[Program.svelte] fetch() response:', res.status, res.statusText);
+				return res.blob();
+			})
 			.then(blob => {
+				console.log('[Program.svelte] Blob created:', blob.size, 'bytes, type:', blob.type);
+
+				// Create blob URL
 				const url = URL.createObjectURL(blob);
+				window._currentAudioUrl = url; // Store for later reload
 
 				// Initialize Regions plugin
 				regions = RegionsPlugin.create();
+
+				try {
 
 				// Create WaveSurfer instance
 				wavesurfer = WaveSurfer.create({
@@ -240,9 +229,10 @@
 					// Restore pending cues if any
 					if (window._pendingCues && window._pendingCues.length > 0) {
 						window._pendingCues.forEach(cue => {
+							const labelElement = createRegionLabel(cue.label, cue.time);
 							const markerRegion = regions.addRegion({
 								start: cue.time,
-								content: cue.label,
+								content: labelElement,
 								color: 'rgba(168, 85, 247, 0.3)',
 								drag: true,
 								resize: false
@@ -296,19 +286,70 @@
 					markers = markers.filter(m => m.id !== region.id);
 				});
 
-				// Load the compressed audio
-				wavesurfer.load(url);
+					// Load the compressed audio (WaveSurfer will decode it)
+					console.log('[Program.svelte] Loading audio URL into WaveSurfer:', url);
+					wavesurfer.load(url);
+				} catch (err) {
+					console.error('[Program.svelte] Failed to create WaveSurfer instance:', err);
+				}
 			})
 			.catch(err => {
-				console.error('Failed to load compressed audio:', err);
+				console.error('[Program.svelte] Failed to load compressed audio:', err);
 			});
+	}
+
+	// Helper function to create styled label elements with vertical staggering
+	function createRegionLabel(text, time) {
+		const label = document.createElement('div');
+		label.textContent = text;
+		label.title = text; // Tooltip for full text
+
+		// Calculate vertical offset based on nearby markers
+		// No nearby markers: center the label (0px)
+		// Nearby markers exist: use staggering (5px / 25px below)
+		const overlapping = markers.filter(m => Math.abs(m.time - time) < 2.0);
+		let verticalOffset;
+		if (overlapping.length === 0) {
+			// No nearby markers - center the label
+			verticalOffset = 0;
+		} else {
+			// Nearby markers exist - use staggering
+			verticalOffset = (overlapping.length % 2 === 0) ? 5 : 25;
+		}
+
+		label.style.cssText = `
+			position: absolute;
+			transform: translateY(${verticalOffset}px);
+			background-color: rgba(20, 20, 20, 0.95);
+			color: #e5e5e5 !important;
+			padding: 3px 8px;
+			border-radius: 4px;
+			font-size: 11px;
+			font-weight: 500;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			max-width: 120px;
+			min-height: 18px;
+			line-height: 1.2;
+			border: 1px solid rgba(168, 85, 247, 0.5);
+			box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+			pointer-events: none;
+			display: block;
+		`;
+
+		return label;
 	}
 
 	function addMarker(time) {
 		const currentCount = markers.length;
+		const labelText = `Cue ${currentCount + 1}`;
+		const labelElement = createRegionLabel(labelText, time);
+
 		const markerRegion = regions.addRegion({
 			start: time,
-			content: `Cue ${currentCount + 1}`,
+			content: labelElement,
 			color: 'rgba(168, 85, 247, 0.3)',
 			drag: true,
 			resize: false
@@ -349,6 +390,33 @@
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker.preset = presetId;
+
+			// Update label to preset name
+			const preset = $presets.find(p => p.id === presetId);
+			if (preset) {
+				console.log('Updating marker with preset:', markerId, preset.name);
+				marker.label = preset.name;
+
+				// Update WaveSurfer region label (HTML element)
+				if (regions) {
+					const allRegions = regions.getRegions();
+					console.log('All regions:', allRegions.map(r => ({ id: r.id, content: r.content })));
+					const region = allRegions.find(r => r.id === markerId);
+					if (region && region.content) {
+						console.log('Updating region content to:', preset.name);
+						// Update the text content of the HTML element
+						if (region.content.textContent !== undefined) {
+							region.content.textContent = preset.name;
+							region.content.title = preset.name; // Update tooltip too
+						}
+					} else {
+						console.warn('Region not found for marker:', markerId);
+					}
+				} else {
+					console.warn('Regions plugin not available');
+				}
+			}
+
 			markers = [...markers];
 		}
 	}
@@ -357,6 +425,14 @@
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker.brightness = brightness;
+			markers = [...markers];
+		}
+	}
+
+	function updateMarkerTransition(markerId, transition) {
+		const marker = markers.find(m => m.id === markerId);
+		if (marker) {
+			marker.transition = transition;
 			markers = [...markers];
 		}
 	}
@@ -374,6 +450,24 @@
 		if (marker) {
 			marker.label = newLabel;
 			markers = [...markers];
+
+			// Update WaveSurfer region label (HTML element)
+			if (regions) {
+				const allRegions = regions.getRegions();
+				const region = allRegions.find(r => r.id === markerId);
+				if (region && region.content) {
+					console.log('Updating region label:', markerId, newLabel);
+					// Update the text content of the HTML element
+					if (region.content.textContent !== undefined) {
+						region.content.textContent = newLabel;
+						region.content.title = newLabel; // Update tooltip too
+					}
+				} else {
+					console.warn('Region not found:', markerId);
+				}
+			} else {
+				console.warn('Regions plugin not available');
+			}
 		}
 	}
 
@@ -396,8 +490,8 @@
 	function getBoardsLabel(selectedBoards) {
 		if (selectedBoards.length === 0) return 'Select boards...';
 		if (selectedBoards.length === 1) {
-			const board = [...boards, ...groups].find(b => b.id === selectedBoards[0]);
-			return board ? board.name : '1 selected';
+			const board = $boards.find(b => b.id === selectedBoards[0]);
+			return board ? board.id : '1 selected';
 		}
 		return `${selectedBoards.length} selected`;
 	}
@@ -418,55 +512,53 @@
 
 
 function playFullProgram() {
-		// Clear LED cue timeouts
-		if (onstop) {
-			onstop();
-		}
-		// Stop and reset to beginning, then play
+		// Get the current program data from store
+		let currentProgram = null;
+		const unsubscribe = programsStore.subscribe(programs => {
+			currentProgram = programs.find(p => p.id === programId);
+		});
+		unsubscribe();
+
+		if (!currentProgram) return;
+
+		// Get current playback position
+		const currentTime = wavesurfer ? wavesurfer.getCurrentTime() : 0;
+		console.log('▶️ PLAY pressed - starting from position:', currentTime);
+
+		// Play from current position (or from start if at beginning)
 		if (wavesurfer) {
-			// Store current URL to force reload
-			const currentUrl = wavesurfer.getMediaElement?.()?.src || 
-							 (window._currentAudioUrl || '');
-			
-			if (currentUrl) {
-				// Force complete reload to reset everything
-				window._currentAudioUrl = currentUrl;
-				wavesurfer.load(currentUrl);
-				
-				// Wait for decode, then play from beginning
-				wavesurfer.once('decode', () => {
-					wavesurfer.play();
-				});
-			} else {
-				// Fallback
-				wavesurfer.stop();
-				wavesurfer.play();
-			}
+			wavesurfer.play();
 		}
-		// Schedule fresh LED cues
-		if (onplay) {
-			onplay();
-		}
+
+		// Play program via service layer (schedules LED cues from current position)
+		playProgramService(currentProgram, currentTime);
 	}
 
 	function stopFullProgram() {
+		const pausePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
+		console.log('⏸ PAUSE pressed - paused at position:', pausePosition);
+
 		if (wavesurfer) {
 			wavesurfer.pause();
 		}
-		if (onstop) {
-			onstop();
-		}
+		// Stop LED cue playback via service layer
+		stopPlaybackService();
 	}
 
-	function returnToStart() {
-		// Stop playback and clear LED cue timeouts
-		if (onstop) {
-			onstop();
-		}
-		// Pause and reset to start
+	function stopAndReset() {
+		const beforePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
+		console.log('⏹ STOP pressed - position before:', beforePosition);
+
+		// Stop LED cue playback via service layer
+		stopPlaybackService();
+
+		// Stop and reset to start
 		if (wavesurfer) {
-			wavesurfer.pause();
-			wavesurfer.setTime(0);
+			wavesurfer.stop();  // Should stop playback and reset to 0
+			setTimeout(() => {
+				const afterPosition = wavesurfer.getCurrentTime();
+				console.log('⏹ Position after stop():', afterPosition);
+			}, 50);
 		}
 	}
 
@@ -474,11 +566,6 @@ function playFullProgram() {
 		// Validation
 		if (!songName.trim()) {
 			alert('Please enter a song name');
-			return;
-		}
-
-		if (markers.length === 0) {
-			alert('Please add at least one cue marker');
 			return;
 		}
 
@@ -497,13 +584,21 @@ function playFullProgram() {
 		const trackSuffix = loopyProTrack.trim() ? `-${loopyProTrack.trim()}` : '';
 		const newProgramId = programId || `${sanitizedSongName}${trackSuffix}-${timestamp}`;
 
-		// Create program object
-		const program = {
+		// Get existing program data to preserve audioData
+		let existingProgram = null;
+		if (programId) {
+			programsStore.subscribe(programs => {
+				existingProgram = programs.find(p => p.id === programId);
+			})();
+		}
+
+		// Create program data
+		const programData = {
 			id: newProgramId,
 			songName: songName.trim(),
 			loopyProTrack: loopyProTrack.trim(),
 			fileName: fileName,
-			audioData: initialData?.audioData, // Preserve audio data
+			audioData: existingProgram?.audioData || initialData?.audioData || '', // Preserve audio data
 			cues: markers.map(m => ({
 				time: m.time,
 				label: m.label,
@@ -514,46 +609,32 @@ function playFullProgram() {
 				brightness: m.brightness,
 				transition: m.transition
 			})),
-			createdAt: new Date().toISOString()
+			createdAt: existingProgram?.createdAt || new Date().toISOString()
 		};
 
-		// Save to localStorage
-		const existingPrograms = JSON.parse(localStorage.getItem('light-programs') || '[]');
+		// Create Program model using factory
+		const program = ProgramModel.fromJson(programData);
 
-		if (programId) {
-			// Update existing program - preserve audioData from existing
-			const index = existingPrograms.findIndex(p => p.id === programId);
-			if (index !== -1) {
-				program.audioData = existingPrograms[index].audioData; // Keep existing audio
-				existingPrograms[index] = program;
+		if (program) {
+			// Save through service layer - store will update automatically
+			saveProgramToStore(program);
+
+			// Update local programId if new
+			if (!programId) {
+				programId = newProgramId;
 			}
-		} else {
-			// Add new program
-			existingPrograms.push(program);
-			programId = newProgramId;
 		}
-
-		localStorage.setItem('light-programs', JSON.stringify(existingPrograms));
-
-		alert(`Program saved: ${newProgramId}.json`);
-		dispatch('save', program);
 	}
 
 	function clearCues() {
 		if (markers.length === 0) return;
 
-		const confirmed = confirm(
-			`Are you sure you want to clear all ${markers.length} cue(s)? This cannot be undone.`
-		);
+		// Remove all regions from waveform
+		const allRegions = regions.getRegions();
+		allRegions.forEach(region => region.remove());
 
-		if (confirmed) {
-			// Remove all regions from waveform
-			const allRegions = regions.getRegions();
-			allRegions.forEach(region => region.remove());
-
-			// Clear markers array
-			markers = [];
-		}
+		// Clear markers array
+		markers = [];
 	}
 
 	function deleteProgram() {
@@ -564,11 +645,8 @@ function playFullProgram() {
 		);
 
 		if (confirmed) {
-			const existingPrograms = JSON.parse(localStorage.getItem('light-programs') || '[]');
-			const filtered = existingPrograms.filter(p => p.id !== programId);
-			localStorage.setItem('light-programs', JSON.stringify(filtered));
-
-			dispatch('delete', programId);
+			// Delete through service layer - store will update automatically
+			deleteProgramFromStore(programId);
 		}
 	}
 </script>
@@ -576,8 +654,8 @@ function playFullProgram() {
 <div class="program-editor">
 	<div class="waveform-container">
 		<div class="waveform-header">
-			{#if playingProgramId === programId}
-				<button class="btn-program-stop" onclick={stopFullProgram}>
+			{#if isPlaying}
+				<button class="btn-program-pause" onclick={stopFullProgram}>
 					⏸
 				</button>
 			{:else}
@@ -585,8 +663,8 @@ function playFullProgram() {
 					▶
 				</button>
 			{/if}
-			<button class="btn-return-start" onclick={returnToStart} title="Return to start">
-				⏮
+			<button class="btn-program-stop" onclick={stopAndReset} title="Stop and reset to start">
+				⏹
 			</button>
 			<input
 				type="text"
@@ -659,22 +737,10 @@ function playFullProgram() {
 										<span class="dropdown-arrow">▼</span>
 									</button>
 									{#if openDropdownId === marker.id}
+										{@const regularBoards = $boards.filter(b => !b.isGroup)}
+										{@const groups = $boards.filter(b => b.isGroup)}
+
 										<div class="boards-dropdown-menu">
-											{#if boards.length > 0}
-												<div class="dropdown-section">
-													<div class="dropdown-section-label">Boards</div>
-													{#each boards as board}
-														<label class="dropdown-option">
-															<input
-																type="checkbox"
-																checked={marker.boards.includes(board.id)}
-																onchange={() => toggleBoardSelection(marker.id, board.id)}
-															/>
-															<span>{board.id}</span>
-														</label>
-													{/each}
-												</div>
-											{/if}
 											{#if groups.length > 0}
 												<div class="dropdown-section">
 													<div class="dropdown-section-label">Groups</div>
@@ -685,7 +751,23 @@ function playFullProgram() {
 																checked={marker.boards.includes(group.id)}
 																onchange={() => toggleBoardSelection(marker.id, group.id)}
 															/>
-															<span>{group.name}</span>
+															<span>{group.id}</span>
+														</label>
+													{/each}
+												</div>
+											{/if}
+
+											{#if regularBoards.length > 0}
+												<div class="dropdown-section">
+													<div class="dropdown-section-label">Boards</div>
+													{#each regularBoards as board}
+														<label class="dropdown-option">
+															<input
+																type="checkbox"
+																checked={marker.boards.includes(board.id)}
+																onchange={() => toggleBoardSelection(marker.id, board.id)}
+															/>
+															<span>{board.id}</span>
 														</label>
 													{/each}
 												</div>
@@ -699,29 +781,29 @@ function playFullProgram() {
 									onchange={(e) => updateMarkerPreset(marker.id, parseInt(e.target.value))}
 									class="preset-select"
 								>
-									{#each presets as preset}
+									{#each $presets as preset}
 										<option value={preset.id}>{preset.name}</option>
 									{/each}
 								</select>
 
-								<input
-									type="color"
-									value={marker.color}
-									onchange={(e) => updateMarkerColor(marker.id, e.target.value)}
-									class="color-picker"
-									disabled={marker.preset > 0}
-								/>
+								{#if marker.preset === 0}
+									<input
+										type="color"
+										value={marker.color}
+										onchange={(e) => updateMarkerColor(marker.id, e.target.value)}
+										class="color-picker"
+									/>
 
-								<select
-									value={marker.effect}
-									onchange={(e) => updateMarkerEffect(marker.id, parseInt(e.target.value))}
-									class="effect-select"
-									disabled={marker.preset > 0}
-								>
-									{#each effects as effect, i}
-										<option value={i}>{effect}</option>
-									{/each}
-								</select>
+									<select
+										value={marker.effect}
+										onchange={(e) => updateMarkerEffect(marker.id, parseInt(e.target.value))}
+										class="effect-select"
+									>
+										{#each WLED_EFFECTS as effect}
+											<option value={effect.id}>{effect.name}</option>
+										{/each}
+									</select>
+								{/if}
 
 								<input
 									type="range"
@@ -731,6 +813,23 @@ function playFullProgram() {
 									oninput={(e) => updateMarkerBrightness(marker.id, parseInt(e.target.value))}
 									class="brightness-slider"
 								/>
+
+								<div class="transition-input-wrapper">
+									<input
+										type="text"
+										inputmode="numeric"
+										pattern="[0-9]*"
+										min="0"
+										max="100"
+										value={marker.transition + ' ms'}
+										oninput={(e) => {
+											const val = e.target.value.replace(/\D/g, '');
+											updateMarkerTransition(marker.id, parseInt(val) || 0);
+											e.target.value = val + ' ms';
+										}}
+										class="transition-input"
+									/>
+								</div>
 
 								<button class="btn-delete" onclick={() => deleteMarker(marker.id)}>
 									✕
@@ -771,6 +870,7 @@ function playFullProgram() {
 	}
 
 	.btn-program-play,
+	.btn-program-pause,
 	.btn-program-stop {
 		padding: 0.5rem 1rem;
 		border: 1px solid #2a2a2a;
@@ -791,6 +891,16 @@ function playFullProgram() {
 		transform: translateY(-1px);
 	}
 
+	.btn-program-pause {
+		color: #f59e0b;
+	}
+
+	.btn-program-pause:hover {
+		background-color: #2a2a2a;
+		border-color: #f59e0b;
+		transform: translateY(-1px);
+	}
+
 	.btn-program-stop {
 		color: #ef4444;
 	}
@@ -798,23 +908,6 @@ function playFullProgram() {
 	.btn-program-stop:hover {
 		background-color: #2a2a2a;
 		border-color: #ef4444;
-		transform: translateY(-1px);
-	}
-
-	.btn-return-start {
-		padding: 0.5rem 1rem;
-		border: 1px solid #2a2a2a;
-		border-radius: 8px;
-		font-size: 1.25rem;
-		cursor: pointer;
-		transition: all 0.2s;
-		background-color: #1a1a1a;
-		color: #9ca3af;
-	}
-
-	.btn-return-start:hover {
-		background-color: #2a2a2a;
-		border-color: #9ca3af;
 		transform: translateY(-1px);
 	}
 
@@ -1065,13 +1158,15 @@ function playFullProgram() {
 		border-radius: 6px;
 		font-size: 0.875rem;
 		cursor: pointer;
-		min-width: 140px;
+		width: 140px;
 		transition: border-color 0.2s;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		position: relative;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.boards-select-button:hover {
@@ -1195,6 +1290,32 @@ function playFullProgram() {
 		border: 2px solid #1a1a1a;
 	}
 
+	.transition-input-wrapper {
+		display: inline-block;
+	}
+
+	.transition-input {
+		background-color: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		color: #e5e5e5;
+		padding: 0.375rem 0.5rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		width: 52px;
+		text-align: center;
+		transition: border-color 0.2s;
+	}
+
+	.transition-input:hover {
+		border-color: #a855f7;
+	}
+
+	.transition-input:focus {
+		outline: none;
+		border-color: #a855f7;
+		background-color: #2a2a2a;
+	}
+
 	.effect-select {
 		background-color: #1a1a1a;
 		border: 1px solid #2a2a2a;
@@ -1241,8 +1362,8 @@ function playFullProgram() {
 		border-radius: 6px;
 		font-size: 1rem;
 		transition: border-color 0.2s;
-		min-width: 150px;
-		flex: 1;
+		width: 200px;
+		max-width: 200px;
 	}
 
 	.marker-label-input:hover {
