@@ -11,9 +11,11 @@
 
 	// Props
 	let {
-		programId = null,
-		initialData = null
+		program = null
 	} = $props();
+
+	// Internal state derived from prop
+	let programId = $state(program?.id || null);
 
 	let wavesurfer = $state(null);
 	let regions = $state(null);
@@ -34,20 +36,25 @@
 		// Boards, groups, and presets are now loaded via stores in parent component
 		// No need to fetch here
 
+		// Initialize programId from program prop
+		if (program?.id) {
+			programId = program.id;
+		}
+
 		// Load initial data if provided
-		if (initialData) {
-			console.log(`[Program.svelte] onMount - initialData for ${initialData.id}:`, {
-				hasAudioData: !!initialData.audioData,
-				audioDataLength: initialData.audioData?.length || 0,
-				audioDataPrefix: initialData.audioData?.substring(0, 50)
+		if (program) {
+			console.log(`[Program.svelte] onMount - program for ${program.id}:`, {
+				hasAudioData: !!program.audioData,
+				audioDataLength: program.audioData?.length || 0,
+				audioDataPrefix: program.audioData?.substring(0, 50)
 			});
 
-			loadProgramData(initialData);
+			loadProgramData(program);
 
 			// Auto-load audio if compressed audio data is present
-			if (initialData.audioData) {
+			if (program.audioData) {
 				setTimeout(() => {
-					loadCompressedAudio(initialData.audioData);
+					loadCompressedAudio(program.audioData);
 				}, 100);
 			}
 		}
@@ -158,11 +165,13 @@
 					if (markerIndex !== -1) {
 						markers[markerIndex].time = region.start;
 						markers = [...markers]; // Trigger reactivity
+						syncMarkersToStore();
 					}
 				});
 
 				regions.on('region-removed', (region) => {
 					markers = markers.filter(m => m.id !== region.id);
+					syncMarkersToStore();
 				});
 
 				const url = URL.createObjectURL(file);
@@ -171,7 +180,7 @@
 				wavesurfer.load(url);
 
 				// Clear existing markers if not loading program
-				if (!initialData) {
+				if (!program) {
 					markers = [];
 				}
 			}, 100);
@@ -279,11 +288,13 @@
 					if (markerIndex !== -1) {
 						markers[markerIndex].time = region.start;
 						markers = [...markers]; // Trigger reactivity
+						syncMarkersToStore();
 					}
 				});
 
 				regions.on('region-removed', (region) => {
 					markers = markers.filter(m => m.id !== region.id);
+					syncMarkersToStore();
 				});
 
 					// Load the compressed audio (WaveSurfer will decode it)
@@ -342,6 +353,28 @@
 		return label;
 	}
 
+	/**
+	 * Sync markers to the program in the store immediately.
+	 * This ensures that:
+	 * 1. Play button uses the latest cues (reads from store)
+	 * 2. Cues are available for playback without clicking Save first
+	 * 3. Save button only needs to persist store data to backend API
+	 */
+	function syncMarkersToStore() {
+		if (!programId) return;
+
+		// Update the program in the store with current markers
+		programsStore.update(programs => {
+			const programIndex = programs.findIndex(p => p.id === programId);
+			if (programIndex !== -1) {
+				const updatedProgram = programs[programIndex];
+				updatedProgram.cues = markers;
+				programs[programIndex] = updatedProgram;
+			}
+			return [...programs];
+		});
+	}
+
 	function addMarker(time) {
 		const currentCount = markers.length;
 		const labelText = `Cue ${currentCount + 1}`;
@@ -368,6 +401,7 @@
 		};
 
 		markers = [...markers, newMarker];
+		syncMarkersToStore();
 	}
 
 	function updateMarkerEffect(markerId, effectIndex) {
@@ -375,6 +409,7 @@
 		if (marker) {
 			marker.effect = effectIndex;
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -383,6 +418,7 @@
 		if (marker) {
 			marker.color = color;
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -418,6 +454,7 @@
 			}
 
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -426,6 +463,7 @@
 		if (marker) {
 			marker.brightness = brightness;
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -434,6 +472,7 @@
 		if (marker) {
 			marker.transition = transition;
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -442,6 +481,7 @@
 		if (marker) {
 			marker.boards = selectedBoards;
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -468,6 +508,7 @@
 			} else {
 				console.warn('Regions plugin not available');
 			}
+			syncMarkersToStore();
 		}
 	}
 
@@ -598,7 +639,7 @@ function playFullProgram() {
 			songName: songName.trim(),
 			loopyProTrack: loopyProTrack.trim(),
 			fileName: fileName,
-			audioData: existingProgram?.audioData || initialData?.audioData || '', // Preserve audio data
+			audioData: existingProgram?.audioData || program?.audioData || '', // Preserve audio data
 			cues: markers.map(m => ({
 				time: m.time,
 				label: m.label,
@@ -635,6 +676,7 @@ function playFullProgram() {
 
 		// Clear markers array
 		markers = [];
+		syncMarkersToStore();
 	}
 
 	function deleteProgram() {
@@ -681,15 +723,18 @@ function playFullProgram() {
 			/>
 			<span class="file-name">{fileName}</span>
 			<div class="spacer"></div>
-			<button class="btn-save" onclick={saveProgram}>
-				Save
-			</button>
-			<button class="btn-clear" onclick={clearCues}>
-				Clear Cues
+			<button class="btn-save" onclick={saveProgram} title="Save program">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+					<path d="M12.5 14.5h-9c-.55 0-1-.45-1-1v-11c0-.55.45-1 1-1h6.88l3.62 3.62v8.38c0 .55-.45 1-1 1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M5.5 1.5v4h5v-4M10.5 14.5v-5h-5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
 			</button>
 			{#if programId}
-				<button class="btn-delete-program" onclick={deleteProgram}>
-					Delete
+				<button class="btn-delete-program" onclick={deleteProgram} title="Delete program">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<path d="M2 4h12M5.5 4V2.5h5V4M6.5 7.5v4M9.5 7.5v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+						<path d="M3.5 4l.5 9.5c0 .55.45 1 1 1h6c.55 0 1-.45 1-1L13 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
 				</button>
 			{/if}
 		</div>
@@ -697,11 +742,15 @@ function playFullProgram() {
 		{#if isLoaded && markers.length > 0}
 			<div class="waveform-footer">
 				<button class="btn-collapse" onclick={() => cuesExpanded = !cuesExpanded}>
-					{cuesExpanded ? '▼' : '▶'} Cues ({markers.length})
+					<span>{cuesExpanded ? '▼' : '▶'} Cues</span>
+				</button>
+				<button class="cue-count-badge-wrapper" onclick={clearCues}>
+					<span class="cue-count-badge">{markers.length}</span>
+					<span class="clear-cues-text">Clear Cues</span>
 				</button>
 			</div>
 		{/if}
-		{#if !isLoaded && !initialData?.audioData}
+		{#if !isLoaded && !program?.audioData}
 			<div class="audio-missing">
 				<p>⚠️ Audio file missing</p>
 				<p class="audio-missing-hint">This program was saved without audio. Please re-upload the file.</p>
@@ -875,10 +924,15 @@ function playFullProgram() {
 		padding: 0.5rem 1rem;
 		border: 1px solid #2a2a2a;
 		border-radius: 8px;
-		font-size: 1.25rem;
+		font-size: 1rem;
 		cursor: pointer;
 		transition: all 0.2s;
 		background-color: #1a1a1a;
+		height: 36px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
 	}
 
 	.btn-program-play {
@@ -961,21 +1015,76 @@ function playFullProgram() {
 	}
 
 	.btn-collapse {
-		background-color: transparent;
-		color: #e5e5e5;
-		border: none;
-		padding: 0.5rem;
-		font-size: 0.875rem;
-		font-weight: 600;
+		background-color: #2a2a2a;
+		color: #a0a0a0;
+		border: 1px solid #3a3a3a;
+		padding: 0.4rem 0.75rem;
+		font-size: 0.8rem;
+		font-weight: 500;
 		cursor: pointer;
-		transition: all 0.2s;
+		transition: all 0.2s ease;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
+		border-radius: 6px;
+		height: 28px;
+		box-sizing: border-box;
 	}
 
 	.btn-collapse:hover {
-		color: #a855f7;
+		background-color: #333;
+		border-color: #555;
+		color: #e5e5e5;
+	}
+
+	.cue-count-badge-wrapper {
+		background-color: #2a2a2a;
+		color: #e5e5e5;
+		border: 1px solid #3a3a3a;
+		border-radius: 16px;
+		padding: 0;
+		cursor: pointer;
+		transition: all 0.3s ease;
+		display: flex;
+		align-items: center;
+		overflow: hidden;
+		height: 28px;
+		min-width: 28px;
+	}
+
+	.cue-count-badge-wrapper:hover {
+		padding-right: 0.75rem;
+		background-color: #333;
+		border-color: #e57373;
+	}
+
+	.cue-count-badge {
+		color: #e5e5e5;
+		width: 28px;
+		height: 28px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 0.75rem;
+		font-weight: 600;
+		flex-shrink: 0;
+	}
+
+	.clear-cues-text {
+		color: #e57373;
+		font-size: 0.75rem;
+		font-weight: 500;
+		white-space: nowrap;
+		opacity: 0;
+		max-width: 0;
+		transition: all 0.3s ease;
+		margin-left: 0;
+	}
+
+	.cue-count-badge-wrapper:hover .clear-cues-text {
+		opacity: 1;
+		max-width: 100px;
+		margin-left: 0.5rem;
 	}
 
 
@@ -1001,6 +1110,12 @@ function playFullProgram() {
 		font-weight: 600;
 		cursor: pointer;
 		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		height: 36px;
+		box-sizing: border-box;
 	}
 
 	.btn-save:hover {
@@ -1045,6 +1160,12 @@ function playFullProgram() {
 		font-weight: 600;
 		cursor: pointer;
 		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		height: 36px;
+		box-sizing: border-box;
 	}
 
 	.btn-delete-program:hover {
@@ -1064,6 +1185,10 @@ function playFullProgram() {
 	.waveform-footer {
 		padding: 0.5rem 1rem;
 		background-color: #1a1a1a;
+		display: flex;
+		justify-content: flex-end;
+		align-items: center;
+		gap: 0.5rem;
 	}
 
 	.audio-missing {

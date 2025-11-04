@@ -30,6 +30,13 @@ export async function initPrograms(): Promise<void> {
       ? data.map((p: any) => Program.fromJson(p)).filter((p): p is Program => p !== null)
       : [];
 
+    // Sort by createdAt descending (newest first)
+    loadedPrograms.sort((a, b) => {
+      const dateA = new Date(a.createdAt || 0).getTime();
+      const dateB = new Date(b.createdAt || 0).getTime();
+      return dateB - dateA;
+    });
+
     console.log('[programs-db] Loaded programs:', loadedPrograms.map(p => ({
       id: p.id,
       audioDataLength: p.audioData?.length || 0
@@ -71,8 +78,8 @@ export async function saveProgram(program: Program): Promise<void> {
         currentPrograms[existingIndex] = program;
         return [...currentPrograms];
       } else {
-        // Add new
-        return [...currentPrograms, program];
+        // Add new at beginning (newest first)
+        return [program, ...currentPrograms];
       }
     });
   } catch (error) {

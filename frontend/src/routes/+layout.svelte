@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import favicon from '$lib/assets/favicon.svg';
 	import { initBoardsListener, cleanupBoardsListener, initPresets } from '$lib/boards-db';
+	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
 
 	let { children } = $props();
 
@@ -15,6 +16,9 @@
 
 			// Initialize presets (static list)
 			initPresets();
+
+			// Initialize programs from API
+			initPrograms();
 		}
 	});
 
@@ -22,6 +26,7 @@
 	onDestroy(() => {
 		if (browser) {
 			cleanupBoardsListener();
+			cleanupPrograms();
 		}
 	});
 </script>

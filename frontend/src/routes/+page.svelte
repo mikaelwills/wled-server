@@ -395,6 +395,12 @@
 		margin: 0 auto;
 	}
 
+	@media (max-width: 768px) {
+		main {
+			padding: 0.75rem;
+		}
+	}
+
 	h1 {
 		margin-top: 0;
 		margin-bottom: 1.5rem;
@@ -503,18 +509,19 @@
 	.edit-btn {
 		flex: 1;
 		padding: 0.75rem;
-		border: none;
+		border: 1px solid #444;
 		border-radius: 6px;
-		font-size: 1rem;
-		font-weight: 600;
+		font-size: 0.9rem;
+		font-weight: 400;
 		cursor: pointer;
 		transition: all 0.2s;
-		background: #1976d2;
-		color: white;
+		background: #2a2a2a;
+		color: #64b5f6;
 	}
 
 	.edit-btn:hover {
-		background: #1565c0;
+		background: #333;
+		border-color: #64b5f6;
 	}
 
 	.edit-btn:active {
@@ -524,18 +531,19 @@
 	.sync-presets-btn {
 		flex: 1;
 		padding: 0.75rem;
-		border: none;
+		border: 1px solid #444;
 		border-radius: 6px;
-		font-size: 1rem;
-		font-weight: 600;
+		font-size: 0.9rem;
+		font-weight: 400;
 		cursor: pointer;
 		transition: all 0.2s;
-		background: #388e3c;
-		color: white;
+		background: #2a2a2a;
+		color: #81c784;
 	}
 
 	.sync-presets-btn:hover {
-		background: #2e7d32;
+		background: #333;
+		border-color: #81c784;
 	}
 
 	.sync-presets-btn:active {
@@ -545,18 +553,19 @@
 	.delete-btn {
 		flex: 1;
 		padding: 0.75rem;
-		border: none;
+		border: 1px solid #444;
 		border-radius: 6px;
-		font-size: 1rem;
-		font-weight: 600;
+		font-size: 0.9rem;
+		font-weight: 400;
 		cursor: pointer;
 		transition: all 0.2s;
-		background: #d32f2f;
-		color: white;
+		background: #2a2a2a;
+		color: #e57373;
 	}
 
 	.delete-btn:hover {
-		background: #c62828;
+		background: #333;
+		border-color: #e57373;
 	}
 
 	.delete-btn:active {

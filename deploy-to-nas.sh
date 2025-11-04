@@ -55,6 +55,7 @@ COPYFILE_DISABLE=1 tar czf - \
   docker-start.sh \
   spa-server.py \
   data \
+  presets.json \
   | ssh ${NAS_USER}@${NAS_IP} "cd ${NAS_PATH} && tar xzf - 2>/dev/null"
 echo "✅ Copy complete"
 echo ""

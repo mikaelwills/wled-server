@@ -1,19 +1,12 @@
 <script>
-	import { onMount } from 'svelte';
 	import Program from '$lib/Program.svelte';
 	import { API_URL } from '$lib/api';
 	import { programs, programsLoading, programsError } from '$lib/store';
-	import { initPrograms, saveProgram, deleteProgram } from '$lib/programs-db';
+	import { saveProgram, deleteProgram } from '$lib/programs-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
 
 	let isDragging = $state(false);
 	let isCompressing = $state(false);
-
-	onMount(async () => {
-		// Initialize programs from API (page-specific data)
-		// Note: boards and presets are initialized in +layout.svelte and shared across all pages
-		await initPrograms();
-	});
 
 	function handleDragOver(event) {
 		event.preventDefault();
@@ -149,8 +142,8 @@
 			const newProgram = ProgramModel.fromJson(newProgramData);
 
 			if (newProgram) {
-				// Save through service layer
-				saveProgram(newProgram);
+				// Save through service layer (await to keep loading state)
+				await saveProgram(newProgram);
 				console.log('Program saved with uncompressed audio');
 			}
 
@@ -202,24 +195,21 @@
 		</div>
 	{:else}
 		<div class="programs-container">
-			<!-- Compression Loading as Program Card -->
+			<!-- Loading Card at Top (new programs appear here) -->
 			{#if isCompressing}
 				<div class="program-wrapper">
 					<div class="compression-loading-card">
 						<div class="spinner"></div>
-						<p>Compressing audio file...</p>
-						<p class="compression-hint">This may take 10-30 seconds for large files</p>
+						<p>Saving program...</p>
+						<p class="compression-hint">Processing audio file</p>
 					</div>
 				</div>
 			{/if}
 
-			<!-- Existing Programs -->
+			<!-- Programs (newest first) -->
 			{#each $programs as program (program.id)}
 				<div class="program-wrapper">
-					<Program
-						programId={program.id}
-						initialData={program}
-					/>
+					<Program program={program} />
 				</div>
 			{/each}
 		</div>
