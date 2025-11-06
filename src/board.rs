@@ -8,6 +8,8 @@ pub struct BoardState {
     pub brightness: u8,
     pub color: [u8; 3],
     pub effect: u8,
+    pub speed: u8,
+    pub intensity: u8,
     pub connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "ledCount")]
@@ -32,6 +34,8 @@ impl BoardState {
             brightness: 128,
             color: [255, 255, 255],
             effect: 0,
+            speed: 128,
+            intensity: 128,
             connected: false,
             led_count: None,
             max_leds: None,
@@ -46,6 +50,8 @@ pub enum BoardCommand {
     SetBrightness(u8, u8), // brightness, transition
     SetColor { r: u8, g: u8, b: u8, transition: u8 },
     SetEffect(u8, u8), // effect, transition
+    SetSpeed(u8, u8), // speed, transition
+    SetIntensity(u8, u8), // intensity, transition
     SetPreset(u8, u8), // preset, transition
     SetLedCount(u16), // led_count
     ResetSegment, // reset segment to defaults

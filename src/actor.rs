@@ -86,6 +86,16 @@ impl BoardActor {
                                     self.state.effect = effect;
                                     self.broadcast_state();
                                 }
+                                Some(BoardCommand::SetSpeed(speed, _transition)) => {
+                                    // Cache the state change
+                                    self.state.speed = speed;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SetIntensity(intensity, _transition)) => {
+                                    // Cache the state change
+                                    self.state.intensity = intensity;
+                                    self.broadcast_state();
+                                }
                                 Some(BoardCommand::SetLedCount(led_count)) => {
                                     // Cache the state change
                                     self.state.led_count = Some(led_count);
@@ -104,34 +114,34 @@ impl BoardActor {
                 }
             };
 
-            info!(board_id = %self.id, "Connected to WLED");
-
-            // Mark as connected and broadcast status
-            self.state.connected = true;
-            self.broadcast_connection_status();
+            info!(board_id = %self.id, "Connected to WLED WebSocket");
 
             let (mut write, mut read) = ws_stream.split();
 
-            // Sync cached state to the physical board after reconnection
-            // Build a composite state update message with all cached properties
-            let sync_msg = format!(
-                r#"{{"on":{},"bri":{},"seg":[{{"col":[[{},{},{}]],"fx":{}}}]}}"#,
-                self.state.on,
-                self.state.brightness,
-                self.state.color[0],
-                self.state.color[1],
-                self.state.color[2],
-                self.state.effect
-            );
-
-            if let Err(e) = timeout(
-                tokio::time::Duration::from_secs(5),
-                write.send(Message::Text(sync_msg))
-            ).await {
-                error!(board_id = %self.id, "Failed to sync state after reconnection: {:?}", e);
-            } else {
-                info!(board_id = %self.id, "State synced to board after reconnection");
+            // First, read the board's current state to sync with reality
+            // Wait for first message from WLED (it sends state on connection)
+            match timeout(tokio::time::Duration::from_secs(3), read.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                        self.update_state_from_json(&json);
+                        info!(board_id = %self.id, "Initial state synced from board");
+                    }
+                }
+                Ok(Some(Ok(_))) => {
+                    // Got some other message type, ignore it
+                }
+                Ok(Some(Err(e))) => {
+                    warn!(board_id = %self.id, "Error reading initial state: {}", e);
+                }
+                Ok(None) | Err(_) => {
+                    warn!(board_id = %self.id, "Timeout waiting for initial state");
+                }
             }
+
+            // NOW mark as connected and broadcast the real state
+            self.state.connected = true;
+            self.broadcast_connection_status();
+            self.broadcast_state();
 
             // Create ping interval for keepalive (5 seconds)
             let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -224,6 +234,22 @@ impl BoardActor {
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
+                            Some(BoardCommand::SetSpeed(speed, transition)) => {
+                                self.state.speed = speed;
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"sx":{}}}],"tt":{}}}"#, speed, transition));
+                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                    .await
+                                    .map_err(|_| "Timeout")??;
+                                self.broadcast_state();
+                            }
+                            Some(BoardCommand::SetIntensity(intensity, transition)) => {
+                                self.state.intensity = intensity;
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"ix":{}}}],"tt":{}}}"#, intensity, transition));
+                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                    .await
+                                    .map_err(|_| "Timeout")??;
+                                self.broadcast_state();
+                            }
                             Some(BoardCommand::SetPreset(preset, transition)) => {
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":{}}}"#, preset, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
@@ -292,6 +318,16 @@ impl BoardActor {
                 // Parse effect: state.seg[0].fx
                 if let Some(fx) = first_seg["fx"].as_u64() {
                     self.state.effect = fx as u8;
+                }
+
+                // Parse speed: state.seg[0].sx
+                if let Some(sx) = first_seg["sx"].as_u64() {
+                    self.state.speed = sx as u8;
+                }
+
+                // Parse intensity: state.seg[0].ix
+                if let Some(ix) = first_seg["ix"].as_u64() {
+                    self.state.intensity = ix as u8;
                 }
 
                 // Parse LED count: state.seg[0].stop

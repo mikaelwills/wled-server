@@ -12,8 +12,12 @@ services:
       - "3011:3011"  # SvelteKit frontend
     volumes:
       - ./data:/app/data
+      - ./programs:/app/programs
+      - ./audio:/app/audio
     environment:
       - RUST_LOG=info
+      - WLED_PROGRAMS_PATH=/app/programs
+      - WLED_AUDIO_PATH=/app/audio
     networks:
       - wled-network
 

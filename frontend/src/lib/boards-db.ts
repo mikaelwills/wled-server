@@ -495,6 +495,72 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
 }
 
 /**
+ * Set board speed
+ */
+export async function setBoardSpeed(boardId: string, speed: number): Promise<void> {
+  if (!browser) return;
+
+  let currentBoards: BoardState[] = [];
+  const unsubscribe = boards.subscribe((b) => {
+    currentBoards = b;
+  });
+  unsubscribe();
+
+  const board = currentBoards.find((b) => b.id === boardId);
+
+  try {
+    if (board?.isGroup && board.memberIds) {
+      // For now, skip group handling - could be added later
+      console.warn('Group speed control not yet implemented');
+    } else {
+      // Regular board - SSE will update the state
+      const response = await fetch(`${API_URL}/board/${boardId}/speed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speed }),
+      });
+      if (!response.ok) throw new Error('Failed to set speed');
+    }
+  } catch (error) {
+    console.error('Error setting speed:', error);
+    boardsError.set('Failed to set speed.');
+  }
+}
+
+/**
+ * Set board intensity
+ */
+export async function setBoardIntensity(boardId: string, intensity: number): Promise<void> {
+  if (!browser) return;
+
+  let currentBoards: BoardState[] = [];
+  const unsubscribe = boards.subscribe((b) => {
+    currentBoards = b;
+  });
+  unsubscribe();
+
+  const board = currentBoards.find((b) => b.id === boardId);
+
+  try {
+    if (board?.isGroup && board.memberIds) {
+      // For now, skip group handling - could be added later
+      console.warn('Group intensity control not yet implemented');
+    } else {
+      // Regular board - SSE will update the state
+      const response = await fetch(`${API_URL}/board/${boardId}/intensity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intensity }),
+      });
+      if (!response.ok) throw new Error('Failed to set intensity');
+    }
+  } catch (error) {
+    console.error('Error setting intensity:', error);
+    boardsError.set('Failed to set intensity.');
+  }
+}
+
+/**
  * Set board preset
  */
 export async function setBoardPreset(boardId: string, preset: number): Promise<void> {

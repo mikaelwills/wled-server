@@ -26,9 +26,9 @@ bun run build
 cd ..
 echo ""
 
-# Create directory on NAS if it doesn't exist
-echo "📁 Ensuring directory exists on NAS..."
-ssh ${NAS_USER}@${NAS_IP} "mkdir -p ${NAS_PATH}"
+# Create directories on NAS if they don't exist
+echo "📁 Ensuring directories exist on NAS..."
+ssh ${NAS_USER}@${NAS_IP} "mkdir -p ${NAS_PATH}/programs ${NAS_PATH}/audio"
 echo ""
 
 # Check if boards.toml exists on NAS

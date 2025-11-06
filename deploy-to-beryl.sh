@@ -53,6 +53,15 @@ echo "🔄 Configuring services on router..."
 ssh ${ROUTER_USER}@${ROUTER_IP} << 'ENDSSH'
 set -e
 
+# 0. Create USB storage directories for programs and audio
+echo "Setting up USB storage directories..."
+mkdir -p /tmp/mountd/disk1_part1/wled-server/programs
+mkdir -p /tmp/mountd/disk1_part1/wled-server/audio
+chmod 755 /tmp/mountd/disk1_part1/wled-server
+chmod 755 /tmp/mountd/disk1_part1/wled-server/programs
+chmod 755 /tmp/mountd/disk1_part1/wled-server/audio
+echo "USB storage directories ready"
+
 # 1. Install and configure lighttpd
 echo "Checking lighttpd installation..."
 if ! opkg list-installed | grep -q "lighttpd"; then

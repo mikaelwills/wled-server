@@ -1,6 +1,42 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
+use std::env;
+
+#[derive(Debug, Clone)]
+pub struct StoragePaths {
+    pub programs: PathBuf,
+    pub audio: PathBuf,
+}
+
+impl Default for StoragePaths {
+    fn default() -> Self {
+        Self {
+            programs: env::var("WLED_PROGRAMS_PATH")
+                .unwrap_or_else(|_| "programs".to_string())
+                .into(),
+            audio: env::var("WLED_AUDIO_PATH")
+                .unwrap_or_else(|_| "audio".to_string())
+                .into(),
+        }
+    }
+}
+
+impl StoragePaths {
+    pub fn init(&self) -> Result<(), Box<dyn std::error::Error>> {
+        fs::create_dir_all(&self.programs)?;
+        fs::create_dir_all(&self.audio)?;
+        tracing::info!("Storage paths initialized:");
+        tracing::info!("  Programs: {:?}", self.programs);
+        tracing::info!("  Audio: {:?}", self.audio);
+        Ok(())
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.programs.exists() && self.audio.exists()
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
   pub struct Config {

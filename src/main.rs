@@ -51,12 +51,20 @@ async fn main() {
 
     info!("Starting WLED Rust Server");
 
+    // Initialize storage paths from environment or defaults
+    let storage_paths = config::StoragePaths::default();
+    if let Err(e) = storage_paths.init() {
+        error!("Failed to initialize storage paths: {}", e);
+        error!("Program storage will be unavailable");
+    }
+
     // Create global broadcast channel for SSE events
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
     let state: SharedState = Arc::new(AppState {
         boards: Arc::new(RwLock::new(HashMap::new())),
         broadcast_tx: Arc::new(broadcast_tx),
+        storage_paths: Arc::new(storage_paths),
     });
 
     // Load boards from config if available
@@ -110,6 +118,8 @@ async fn main() {
         .route("/board/:id/brightness", post(set_brightness))
         .route("/board/:id/color", post(set_color))
         .route("/board/:id/effect", post(set_effect))
+        .route("/board/:id/speed", post(set_speed))
+        .route("/board/:id/intensity", post(set_intensity))
         .route("/board/:id/preset", post(set_preset))
         .route("/board/:id/led-count", post(set_led_count))
         .route("/board/:id/reset-segment", post(reset_segment))
@@ -156,50 +166,78 @@ async fn hello() -> &'static str {
 }
 
 async fn update_program(
+    State(state): State<SharedState>,
     Path(id): Path<String>,
     Json(program): Json<program::Program>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
     if id != program.id {
         return Err((StatusCode::BAD_REQUEST, "ID mismatch".to_string()));
     }
 
     program
-        .save_to_file()
+        .save_to_file(&state.storage_paths.programs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::OK)
 }
 
 async fn get_program(
+    State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<Json<program::Program>, (StatusCode, String)> {
-    let program = program::Program::load_from_file(&id)
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    let program = program::Program::load_from_file(&id, &state.storage_paths.programs)
         .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
 
     Ok(Json(program))
 }
 
-async fn delete_program(Path(id): Path<String>) -> Result<StatusCode, (StatusCode, String)> {
-    let file_path = format!("programs/{}.json", id);
+async fn delete_program(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
 
-    std::fs::remove_file(&file_path)
+    let program = program::Program::load_from_file(&id, &state.storage_paths.programs)
         .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+
+    program.delete(&state.storage_paths.programs, &state.storage_paths.audio)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn save_program(
+    State(state): State<SharedState>,
     Json(program): Json<program::Program>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    program
-        .save_to_file()
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    program.save_to_file(&state.storage_paths.programs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::CREATED)
 }
 
-async fn list_programs() -> Result<Json<Vec<program::Program>>, (StatusCode, String)> {
-    let programs = program::Program::load_all()
+async fn list_programs(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<program::Program>>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    let programs = program::Program::load_all(&state.storage_paths.programs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(programs))
@@ -459,6 +497,8 @@ async fn list_boards(
                 brightness: 0,
                 color: [0, 0, 0],
                 effect: 0,
+                speed: 128,
+                intensity: 128,
                 connected: false,
                 led_count: None,
                 max_leds: None,
@@ -481,6 +521,8 @@ async fn list_boards(
                     brightness: 0,
                     color: [0, 0, 0],
                     effect: 0,
+                    speed: 128,
+                    intensity: 128,
                     connected: false,
                     led_count: None,
                     max_leds: None,
@@ -529,6 +571,18 @@ async fn list_boards(
                 0
             };
 
+            let group_speed = if member_states.len() > 0 {
+                member_states[0].speed
+            } else {
+                128
+            };
+
+            let group_intensity = if member_states.len() > 0 {
+                member_states[0].intensity
+            } else {
+                128
+            };
+
             states.push(BoardState {
                 id: group.id,
                 ip: String::new(),
@@ -536,6 +590,8 @@ async fn list_boards(
                 brightness: group_brightness,
                 color: group_color,
                 effect: group_effect,
+                speed: group_speed,
+                intensity: group_intensity,
                 connected: true,
                 led_count: None,
                 max_leds: None,
@@ -667,6 +723,62 @@ async fn set_effect(
 
     sender
         .send(BoardCommand::SetEffect(effect, transition))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn set_speed(
+    State(state): State<SharedState>,
+    axum::extract::Path(board_id): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<StatusCode, StatusCode> {
+    let speed = payload["speed"].as_u64().unwrap_or(128) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
+
+    let sender = {
+        let senders_lock = match state.boards.read() {
+            Ok(lock) => lock,
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+
+        match senders_lock.get(&board_id) {
+            Some(entry) => entry.sender.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    sender
+        .send(BoardCommand::SetSpeed(speed, transition))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn set_intensity(
+    State(state): State<SharedState>,
+    axum::extract::Path(board_id): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<StatusCode, StatusCode> {
+    let intensity = payload["intensity"].as_u64().unwrap_or(128) as u8;
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
+
+    let sender = {
+        let senders_lock = match state.boards.read() {
+            Ok(lock) => lock,
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+
+        match senders_lock.get(&board_id) {
+            Some(entry) => entry.sender.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    sender
+        .send(BoardCommand::SetIntensity(intensity, transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

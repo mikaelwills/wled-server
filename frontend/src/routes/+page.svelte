@@ -5,6 +5,8 @@
 		setBoardColor,
 		setBoardBrightness,
 		setBoardEffect,
+		setBoardSpeed,
+		setBoardIntensity,
 		setBoardPreset,
 		setBoardLedCount,
 		resetBoardSegment,
@@ -55,6 +57,10 @@
 	let editGroupName = '';
 	let editGroupMembers: string[] = [];
 	let editingGroup: string | null = null; // Group currently being edited
+
+	// Save preset state
+	let savingPresetForBoard: string | null = null; // Board ID showing save preset form
+	let newPresetName = '';
 
 	// Event handlers that call service functions
 	function toggleExpanded(boardId: string) {
@@ -126,6 +132,44 @@
 		editGroupName = group.id;
 		editGroupMembers = group.memberIds || [];
 		editingGroup = group.id; // Set group edit mode
+	}
+
+	function openSavePresetForm(board: BoardState) {
+		savingPresetForBoard = board.id;
+		newPresetName = '';
+	}
+
+	function cancelSavePreset() {
+		savingPresetForBoard = null;
+		newPresetName = '';
+	}
+
+	async function handleSavePreset(boardId: string) {
+		if (!newPresetName.trim()) {
+			alert('Please enter a preset name');
+			return;
+		}
+
+		try {
+			const response = await fetch(`${API_URL}/presets`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: newPresetName.trim(),
+					boardId
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error('Failed to save preset');
+			}
+
+			alert(`Preset "${newPresetName}" saved successfully!`);
+			cancelSavePreset();
+		} catch (error) {
+			console.error('Error saving preset:', error);
+			alert('Failed to save preset');
+		}
 	}
 
 	async function handleSyncPresets(boardId: string) {
@@ -464,6 +508,25 @@
 											<button class="cancel-btn" on:click={cancelGroupEdit}>Cancel</button>
 										</div>
 									</div>
+								{:else if savingPresetForBoard === board.id}
+									<!-- Save Preset Form -->
+									<div class="edit-form">
+										<div class="form-group">
+											<label for="preset-name-{board.id}">Preset Name:</label>
+											<input
+												id="preset-name-{board.id}"
+												type="text"
+												bind:value={newPresetName}
+												placeholder="e.g., Relaxing Blue"
+												class="form-input"
+												on:keydown={(e) => e.key === 'Enter' && handleSavePreset(board.id)}
+											/>
+										</div>
+										<div class="form-actions">
+											<button class="submit-btn" on:click={() => handleSavePreset(board.id)}>Save</button>
+											<button class="cancel-btn" on:click={cancelSavePreset}>Cancel</button>
+										</div>
+									</div>
 								{:else}
 									<!-- Normal Controls -->
 									<div class="color-section">
@@ -514,6 +577,38 @@
 										</select>
 									</div>
 
+									{#if !board.isGroup}
+										<div class="effect-params-section">
+											<label for="speed-{board.id}">Speed</label>
+											<input
+												id="speed-{board.id}"
+												type="range"
+												min="0"
+												max="255"
+												value={board.speed}
+												disabled={!board.connected}
+												on:change={(e) =>
+													setBoardSpeed(board.id, parseInt(e.currentTarget.value))}
+												class="effect-param-slider"
+											/>
+										</div>
+
+										<div class="effect-params-section">
+											<label for="intensity-{board.id}">Intensity</label>
+											<input
+												id="intensity-{board.id}"
+												type="range"
+												min="0"
+												max="255"
+												value={board.intensity}
+												disabled={!board.connected}
+												on:change={(e) =>
+													setBoardIntensity(board.id, parseInt(e.currentTarget.value))}
+												class="effect-param-slider"
+											/>
+										</div>
+									{/if}
+
 									{#if !board.isGroup && board.ledCount !== undefined && board.maxLeds}
 										<div class="led-count-wrapper">
 											<div class="led-count-label">
@@ -532,30 +627,33 @@
 										</div>
 									{/if}
 
-									<div class="action-buttons">
+									<div class="action-buttons-column">
 										{#if !board.isGroup}
-											<button class="action-btn action-btn-edit" on:click={() => openEditForm(board)}>
-												Edit
-											</button>
-											<button class="action-btn action-btn-presets" on:click={() => handleSyncPresets(board.id)}>
-												Presets
-											</button>
-											<button class="action-btn action-btn-reset" on:click={() => handleResetSegment(board.id)}>
-												Reset
-											</button>
+											<div class="action-buttons-row">
+												<button class="action-btn action-btn-save" on:click={() => openSavePresetForm(board)}>
+													Save Preset
+												</button>
+												<button class="action-btn action-btn-presets" on:click={() => handleSyncPresets(board.id)}>
+													Load Presets
+												</button>
+											</div>
+											<div class="action-buttons-row">
+												<button class="action-btn action-btn-edit" on:click={() => openEditForm(board)}>
+													Edit
+												</button>
+												<button class="action-btn action-btn-delete" on:click={() => handleDeleteBoard(board.id)}>
+													Delete
+												</button>
+											</div>
 										{:else}
-											<button class="action-btn action-btn-edit" on:click={() => openEditGroupForm(board)}>
-												Edit
-											</button>
-										{/if}
-										{#if board.isGroup}
-											<button class="action-btn action-btn-delete" on:click={() => handleDeleteGroup(board.id)}>
-												Delete
-											</button>
-										{:else}
-											<button class="action-btn action-btn-delete" on:click={() => handleDeleteBoard(board.id)}>
-												Delete
-											</button>
+											<div class="action-buttons-row">
+												<button class="action-btn action-btn-edit" on:click={() => openEditGroupForm(board)}>
+													Edit
+												</button>
+												<button class="action-btn action-btn-delete" on:click={() => handleDeleteGroup(board.id)}>
+													Delete
+												</button>
+											</div>
 										{/if}
 									</div>
 								{/if}
@@ -717,14 +815,20 @@
 		background: #555;
 	}
 
-	.action-buttons {
+	.action-buttons-column {
 		display: flex;
+		flex-direction: column;
 		gap: 0.5rem;
 		margin-top: 1.5rem;
 	}
 
+	.action-buttons-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+
 	.action-btn {
-		flex: 1;
+		width: 100%;
 		padding: 0.6rem 0.75rem;
 		background: #252525;
 		border: 1px solid #333;
@@ -742,6 +846,15 @@
 	.action-btn-edit:hover {
 		background: #2d2d2d;
 		border-color: #64b5f6;
+	}
+
+	.action-btn-save {
+		color: #4caf50;
+	}
+
+	.action-btn-save:hover {
+		background: #1e2d20;
+		border-color: #4caf50;
 	}
 
 	.action-btn-presets {
@@ -1050,6 +1163,56 @@
 		height: 20px;
 		border-radius: 50%;
 		background: #4caf50;
+		cursor: pointer;
+		border: none;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
+	.effect-params-section {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin: 12px 0;
+	}
+
+	.effect-params-section label {
+		min-width: 70px;
+		font-size: 0.9rem;
+		color: #aaa;
+	}
+
+	.effect-param-slider {
+		flex: 1;
+		-webkit-appearance: none;
+		appearance: none;
+		height: 6px;
+		border-radius: 3px;
+		background: #333;
+		outline: none;
+		transition: background 0.2s;
+	}
+
+	.effect-param-slider:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
+
+	.effect-param-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: #2196f3;
+		cursor: pointer;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
+	.effect-param-slider::-moz-range-thumb {
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: #2196f3;
 		cursor: pointer;
 		border: none;
 		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);

@@ -95,6 +95,7 @@ pub struct BoardEntry {
 pub struct AppState {
     pub boards: Arc<RwLock<HashMap<String, BoardEntry>>>,
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+    pub storage_paths: Arc<crate::config::StoragePaths>,
 }
 
 pub type SharedState = Arc<AppState>;
