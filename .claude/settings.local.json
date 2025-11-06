@@ -45,7 +45,8 @@
       "WebFetch(domain:github.com)",
       "Bash(brew install:*)",
       "Bash(find:*)",
-      "Bash(scp:*)"
+      "Bash(scp:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []

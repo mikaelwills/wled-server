@@ -35,3 +35,6 @@ restart.sh
 # Data directory (contains user-specific boards.toml)
 /data/boards.toml
 /data/boards.toml.tmp
+
+ .claude/settings.local.json
+

@@ -8,8 +8,8 @@ use axum::{
 use futures::Stream;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, RwLock};
-use tokio::sync::{broadcast, mpsc};
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -25,7 +25,6 @@ mod types;
 use actor::BoardActor;
 use board::{BoardCommand, BoardState, GroupCommand};
 use config::Config;
-use group::GroupCommandRouter;
 use sse::SseEvent;
 use types::{
     AppState, BoardEntry, CreateGroupRequest, GroupBrightnessRequest, GroupColorRequest, 
@@ -73,7 +72,8 @@ async fn main() {
             info!("Loaded {} board(s) from boards.toml", config.boards.len());
             for board_config in config.boards {
                 let (tx, rx) = mpsc::channel(100);
-                if let Ok(mut senders) = state.boards.write() {
+                {
+                    let mut senders = state.boards.write().await;
                     senders.insert(
                         board_config.id.clone(),
                         BoardEntry {
@@ -251,10 +251,7 @@ async fn register_board(
     let (tx, rx) = mpsc::channel(100);
 
     {
-        let mut senders = state
-            .boards
-            .write()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut senders = state.boards.write().await;
         if senders.contains_key(&board_id) {
             return Err(StatusCode::CONFLICT);
         }
@@ -305,10 +302,7 @@ async fn delete_board(
 ) -> Result<StatusCode, StatusCode> {
     // Check if board exists in memory
     let sender = {
-        let senders = state
-            .boards
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let senders = state.boards.read().await;
         senders.get(&board_id).map(|entry| entry.sender.clone())
     };
 
@@ -337,11 +331,10 @@ async fn delete_board(
     let _ = tx.send(BoardCommand::Shutdown).await;
 
     // Remove from in-memory state
-    let mut senders = state
-        .boards
-        .write()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    senders.remove(&board_id);
+    {
+        let mut senders = state.boards.write().await;
+        senders.remove(&board_id);
+    }
 
     info!(board_id = %board_id, "Deleted board");
     Ok(StatusCode::NO_CONTENT)
@@ -359,10 +352,7 @@ async fn update_board(
 
     // Check if board exists
     let old_sender = {
-        let senders = state
-            .boards
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let senders = state.boards.read().await;
         senders.get(&old_id).map(|entry| entry.sender.clone())
     };
 
@@ -403,10 +393,7 @@ async fn update_board(
 
     // Remove old entry from memory
     {
-        let mut senders = state
-            .boards
-            .write()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut senders = state.boards.write().await;
         senders.remove(&old_id);
     }
 
@@ -424,10 +411,7 @@ async fn update_board(
 
     // Add new entry to memory
     {
-        let mut senders = state
-            .boards
-            .write()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut senders = state.boards.write().await;
         senders.insert(
             board_config.id.clone(),
             BoardEntry {
@@ -471,10 +455,7 @@ async fn list_boards(
 ) -> Result<Json<Vec<BoardState>>, StatusCode> {
     // Collect board entries while holding the lock, then release it
     let board_entries: Vec<(String, String, mpsc::Sender<BoardCommand>)> = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         senders_lock
             .iter()
@@ -610,10 +591,7 @@ async fn set_board_power(
     Json(payload): Json<PowerRequest>,
 ) -> Result<Json<BoardState>, StatusCode> {
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -652,10 +630,7 @@ async fn set_brightness(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -682,10 +657,7 @@ async fn set_color(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -710,10 +682,7 @@ async fn set_effect(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -738,10 +707,7 @@ async fn set_speed(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -766,10 +732,7 @@ async fn set_intensity(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -794,10 +757,7 @@ async fn set_preset(
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -821,10 +781,7 @@ async fn set_led_count(
     let led_count = payload["led_count"].as_u64().unwrap_or(30) as u16;
 
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -845,10 +802,7 @@ async fn reset_segment(
     axum::extract::Path(board_id): axum::extract::Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     let sender = {
-        let senders_lock = match state.boards.read() {
-            Ok(lock) => lock,
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+        let senders_lock = state.boards.read().await;
 
         match senders_lock.get(&board_id) {
             Some(entry) => entry.sender.clone(),
@@ -877,8 +831,7 @@ async fn sync_presets_to_board(
 
     // Get board IP from state
     let board_ip = {
-        let senders_lock = state.boards.read()
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Lock error".to_string()))?;
+        let senders_lock = state.boards.read().await;
 
         senders_lock.get(&board_id)
             .map(|entry| entry.ip.clone())
@@ -967,21 +920,16 @@ async fn create_group(
     info!(group_id = %payload.id, members = ?payload.members, "Creating group");
 
     // Validate that all member IDs exist in boards
-    let senders = match state.boards.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            error!("Failed to acquire read lock: {:?}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+    {
+        let senders = state.boards.read().await;
 
-    for member_id in &payload.members {
-        if !senders.contains_key(member_id) {
-            warn!(group_id = %payload.id, member_id = %member_id, "Group creation failed: member not found");
-            return Err(StatusCode::BAD_REQUEST);
+        for member_id in &payload.members {
+            if !senders.contains_key(member_id) {
+                warn!(group_id = %payload.id, member_id = %member_id, "Group creation failed: member not found");
+                return Err(StatusCode::BAD_REQUEST);
+            }
         }
     }
-    drop(senders); // Release the lock
 
     // Load config and check for duplicate group ID
     let mut config = Config::load().unwrap_or(Config {
@@ -995,10 +943,7 @@ async fn create_group(
 
     // Check if group ID conflicts with any board ID
     {
-        let senders = state
-            .boards
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let senders = state.boards.read().await;
 
         if senders.contains_key(&payload.id) {
             return Err(StatusCode::CONFLICT);
@@ -1056,10 +1001,7 @@ async fn update_group(
 ) -> Result<StatusCode, StatusCode> {
     // Validate that all member IDs exist in boards
     {
-        let senders = state
-            .boards
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let senders = state.boards.read().await;
 
         for member_id in &req.members {
             if !senders.contains_key(member_id) {
@@ -1084,10 +1026,7 @@ async fn update_group(
 
         // Check conflict with boards
         {
-            let senders = state
-                .boards
-                .read()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let senders = state.boards.read().await;
 
             if senders.contains_key(&req.id) {
                 return Err(StatusCode::CONFLICT);
@@ -1122,9 +1061,7 @@ async fn set_group_power(
     Path(group_id): Path<String>,
     Json(payload): Json<PowerRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    let router = GroupCommandRouter::new(state);
-    
-    match router.execute_group_command(&group_id, GroupCommand::SetPower(payload.on, payload.transition)).await {
+    match group::execute_group_command(state, &group_id, GroupCommand::SetPower(payload.on, payload.transition)).await {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group power: {}", e);
@@ -1138,9 +1075,7 @@ async fn set_group_brightness(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupBrightnessRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    let router = GroupCommandRouter::new(state);
-    
-    match router.execute_group_command(&group_id, GroupCommand::SetBrightness(payload.brightness, payload.transition)).await {
+    match group::execute_group_command(state, &group_id, GroupCommand::SetBrightness(payload.brightness, payload.transition)).await {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group brightness: {}", e);
@@ -1154,9 +1089,7 @@ async fn set_group_color(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupColorRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    let router = GroupCommandRouter::new(state);
-
-    match router.execute_group_command(&group_id, GroupCommand::SetColor {
+    match group::execute_group_command(state, &group_id, GroupCommand::SetColor {
         r: payload.r,
         g: payload.g,
         b: payload.b,
@@ -1175,9 +1108,7 @@ async fn set_group_effect(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupEffectRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    let router = GroupCommandRouter::new(state);
-
-    match router.execute_group_command(&group_id, GroupCommand::SetEffect(payload.effect, payload.transition)).await {
+    match group::execute_group_command(state, &group_id, GroupCommand::SetEffect(payload.effect, payload.transition)).await {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group effect: {}", e);
@@ -1191,9 +1122,7 @@ async fn set_group_preset(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupPresetRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    let router = GroupCommandRouter::new(state);
-
-    match router.execute_group_command(&group_id, GroupCommand::SetPreset(payload.preset, payload.transition)).await {
+    match group::execute_group_command(state, &group_id, GroupCommand::SetPreset(payload.preset, payload.transition)).await {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group preset: {}", e);
