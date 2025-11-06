@@ -11,21 +11,26 @@ use std::convert::Infallible;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::StreamExt;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 
 mod actor;
 mod board;
 mod config;
+mod group;
 mod program;
 mod sse;
 mod types;
 
 use actor::BoardActor;
-use board::{BoardCommand, BoardState};
+use board::{BoardCommand, BoardState, GroupCommand};
 use config::Config;
+use group::GroupCommandRouter;
 use sse::SseEvent;
 use types::{
-    AppState, BoardEntry, CreateGroupRequest, OscRequest, RegisterBoardRequest, SharedState,
-    UpdateBoardRequest, UpdateGroupRequest,
+    AppState, BoardEntry, CreateGroupRequest, GroupBrightnessRequest, GroupColorRequest, 
+    GroupEffectRequest, GroupOperationResult, GroupPresetRequest, OscRequest, PowerRequest, RegisterBoardRequest, 
+    SharedState, UpdateBoardRequest, UpdateGroupRequest,
 };
 
 use http::Method;
@@ -35,6 +40,17 @@ use std::net::UdpSocket;
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing subscriber with environment-based configuration
+    // Set log level with RUST_LOG environment variable (default: info)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info"))
+        )
+        .init();
+
+    info!("Starting WLED Rust Server");
+
     // Create global broadcast channel for SSE events
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
@@ -46,7 +62,7 @@ async fn main() {
     // Load boards from config if available
     match Config::load() {
         Ok(config) => {
-            println!("Loaded {} board(s) from boards.toml", config.boards.len());
+            info!("Loaded {} board(s) from boards.toml", config.boards.len());
             for board_config in config.boards {
                 let (tx, rx) = mpsc::channel(100);
                 if let Ok(mut senders) = state.boards.write() {
@@ -62,14 +78,14 @@ async fn main() {
                     BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone());
                 tokio::spawn(async move {
                     if let Err(e) = actor.run(rx).await {
-                        eprintln!("Actor error: {}", e);
+                        error!("Actor error: {}", e);
                     }
                 });
             }
         }
         Err(e) => {
-            eprintln!("Warning: Could not load boards.toml: {}", e);
-            eprintln!("Server starting with no boards configured");
+            warn!("Could not load boards.toml: {}", e);
+            info!("Server starting with no boards configured");
         }
     }
 
@@ -78,17 +94,25 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers(tower_http::cors::Any);
 
-    let app = Router::new()
-        .route("/", get(hello))
+    // Build API router
+    let api_router = Router::new()
+        .route("/health", get(hello))
         .route("/boards", get(list_boards).post(register_board))
         .route("/boards/:id", put(update_board).delete(delete_board))
         .route("/groups", post(create_group))
         .route("/groups/:id", put(update_group).delete(delete_group))
-        .route("/board/:id/toggle", post(toggle_power))
+        .route("/group/:id/power", post(set_group_power))
+        .route("/group/:id/brightness", post(set_group_brightness))
+        .route("/group/:id/color", post(set_group_color))
+        .route("/group/:id/effect", post(set_group_effect))
+        .route("/group/:id/preset", post(set_group_preset))
+        .route("/board/:id/power", post(set_board_power))
         .route("/board/:id/brightness", post(set_brightness))
         .route("/board/:id/color", post(set_color))
         .route("/board/:id/effect", post(set_effect))
         .route("/board/:id/preset", post(set_preset))
+        .route("/board/:id/led-count", post(set_led_count))
+        .route("/board/:id/reset-segment", post(reset_segment))
         .route("/board/:id/presets/sync", post(sync_presets_to_board))
         .route("/events", get(sse_handler))
         .route("/programs", post(save_program))
@@ -96,31 +120,38 @@ async fn main() {
         .route("/programs/:id", get(get_program))
         .route("/programs/:id", delete(delete_program))
         .route("/programs/:id", put(update_program))
-
         .route("/osc", post(send_osc))
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit for audio files
-        .layer(cors)
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit
         .with_state(state.clone());
 
-    let listener = match tokio::net::TcpListener::bind("0.0.0.0:3010").await {
+    // API-only server
+    let app = Router::new()
+        .nest("/api", api_router)
+        .layer(cors);
+
+let port = std::env::var("PORT").unwrap_or_else(|_| "3010".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => {
-            println!("Server running on http://0.0.0.0:3010");
+            info!("API Server running on http://{}", addr);
             l
         }
         Err(e) => {
-            eprintln!("Failed to bind to 0.0.0.0:3010: {}", e);
-            eprintln!("Is the port already in use?");
+            error!("Failed to bind to {}: {}", addr, e);
+            error!("Is port already in use?");
             return;
         }
     };
 
     match axum::serve(listener, app).await {
-        Ok(_) => println!("Server stopped properly"),
-        Err(e) => eprintln!("Server error: {}", e),
+        Ok(_) => info!("Server stopped properly"),
+        Err(e) => error!("Server error: {}", e),
     }
 }
 
 async fn hello() -> &'static str {
+    info!("Health check called");
     "WLED Server Running"
 }
 
@@ -206,7 +237,7 @@ async fn register_board(
     let board_id_for_spawn = board_id.clone();
     tokio::spawn(async move {
         if let Err(e) = actor.run(rx).await {
-            eprintln!("Actor error for {}: {}", board_id_for_spawn, e);
+            error!(board_id = %board_id_for_spawn, "Actor error: {}", e);
         }
     });
 
@@ -221,12 +252,12 @@ async fn register_board(
     });
 
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        warn!("Failed to save boards.toml: {}", e);
         // Note: Board is already registered in memory, so we return success
         // but log the error. Alternative would be to roll back the registration.
     }
 
-    println!("Registered new board: {}", board_id);
+    info!(board_id = %board_id, "Registered new board");
     Ok(StatusCode::CREATED)
 }
 
@@ -259,7 +290,7 @@ async fn delete_board(
     config.groups.retain(|g| !g.members.is_empty());
 
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        error!(board_id = %board_id, "Failed to save boards.toml: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -274,7 +305,7 @@ async fn delete_board(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     senders.remove(&board_id);
 
-    println!("Deleted board: {}", board_id);
+    info!(board_id = %board_id, "Deleted board");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -325,7 +356,7 @@ async fn update_board(
     config.boards[board_index] = board_config.clone();
 
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        error!(old_id = %old_id, "Failed to save boards.toml: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -368,14 +399,14 @@ async fn update_board(
         );
     }
 
-    println!("Updated board: {} -> {}", old_id, new_id);
+    info!(old_id = %old_id, new_id = %new_id, "Updated board");
     Ok(StatusCode::OK)
 }
 
 async fn sse_handler(
     State(state): State<SharedState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    println!("SSE client connected");
+    info!("SSE client connected");
 
     // Subscribe to the shared broadcast channel
     let rx = state.broadcast_tx.subscribe();
@@ -419,7 +450,7 @@ async fn list_boards(
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         if sender.send(BoardCommand::GetState(tx)).await.is_err() {
-            eprintln!("Failed to send GetState to board {}", board_id);
+            warn!(board_id = %board_id, "Failed to send GetState to board");
             // Return fallback state for unresponsive actor
             states.push(BoardState {
                 id: board_id.clone(),
@@ -429,6 +460,8 @@ async fn list_boards(
                 color: [0, 0, 0],
                 effect: 0,
                 connected: false,
+                led_count: None,
+                max_leds: None,
                 is_group: None,
                 member_ids: None,
             });
@@ -439,7 +472,7 @@ async fn list_boards(
         let state = match tokio::time::timeout(tokio::time::Duration::from_secs(1), rx).await {
             Ok(Ok(s)) => s,
             Ok(Err(_)) | Err(_) => {
-                eprintln!("Board {} timed out or channel closed", board_id);
+                warn!(board_id = %board_id, "Board timed out or channel closed");
                 // Return fallback state instead of skipping
                 BoardState {
                     id: board_id.clone(),
@@ -449,6 +482,8 @@ async fn list_boards(
                     color: [0, 0, 0],
                     effect: 0,
                     connected: false,
+                    led_count: None,
+                    max_leds: None,
                     is_group: None,
                     member_ids: None,
                 }
@@ -458,19 +493,65 @@ async fn list_boards(
         states.push(state);
     }
 
-    // Add groups from config
+    // Add groups from config with calculated state
     if let Ok(config) = Config::load() {
         for group in config.groups {
-            states.push(BoardState::new_group(group.id, group.members));
+            // Get member board states
+            let member_states: Vec<BoardState> = group.members.iter()
+                .filter_map(|member_id| {
+                    states.iter().find(|s| s.id == *member_id && s.is_group != Some(true))
+                })
+                .cloned()
+                .collect();
+
+            // Calculate group state from members (same logic as frontend)
+            let group_on = if member_states.len() > 0 {
+                member_states.iter().any(|m| m.on)  // Group is ON if any member is ON
+            } else {
+                false
+            };
+
+            let group_color = if member_states.len() > 0 {
+                member_states[0].color
+            } else {
+                [255, 255, 255]
+            };
+
+            let group_brightness = if member_states.len() > 0 {
+                member_states[0].brightness
+            } else {
+                128
+            };
+
+            let group_effect = if member_states.len() > 0 {
+                member_states[0].effect
+            } else {
+                0
+            };
+
+            states.push(BoardState {
+                id: group.id,
+                ip: String::new(),
+                on: group_on,
+                brightness: group_brightness,
+                color: group_color,
+                effect: group_effect,
+                connected: true,
+                led_count: None,
+                max_leds: None,
+                is_group: Some(true),
+                member_ids: Some(group.members),
+            });
         }
     }
 
     Ok(Json(states))
 }
 
-async fn toggle_power(
+async fn set_board_power(
     State(state): State<SharedState>,
     axum::extract::Path(board_id): axum::extract::Path<String>,
+    Json(payload): Json<PowerRequest>,
 ) -> Result<Json<BoardState>, StatusCode> {
     let sender = {
         let senders_lock = match state.boards.read() {
@@ -484,9 +565,9 @@ async fn toggle_power(
         }
     };
 
-    // Send toggle command
+    // Send set power command
     sender
-        .send(BoardCommand::TogglePower)
+        .send(BoardCommand::SetPower(payload.on, payload.transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -620,6 +701,57 @@ async fn set_preset(
     Ok(StatusCode::OK)
 }
 
+async fn set_led_count(
+    State(state): State<SharedState>,
+    axum::extract::Path(board_id): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<StatusCode, StatusCode> {
+    let led_count = payload["led_count"].as_u64().unwrap_or(30) as u16;
+
+    let sender = {
+        let senders_lock = match state.boards.read() {
+            Ok(lock) => lock,
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+
+        match senders_lock.get(&board_id) {
+            Some(entry) => entry.sender.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    sender
+        .send(BoardCommand::SetLedCount(led_count))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn reset_segment(
+    State(state): State<SharedState>,
+    axum::extract::Path(board_id): axum::extract::Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let sender = {
+        let senders_lock = match state.boards.read() {
+            Ok(lock) => lock,
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+
+        match senders_lock.get(&board_id) {
+            Some(entry) => entry.sender.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    sender
+        .send(BoardCommand::ResetSegment)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
 async fn sync_presets_to_board(
     State(state): State<SharedState>,
     Path(board_id): Path<String>,
@@ -720,20 +852,24 @@ async fn create_group(
     State(state): State<SharedState>,
     Json(payload): Json<CreateGroupRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    // Validate that all member IDs exist in boards
-    {
-        let senders = state
-            .boards
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!(group_id = %payload.id, members = ?payload.members, "Creating group");
 
-        for member_id in &payload.members {
-            if !senders.contains_key(member_id) {
-                eprintln!("Group creation failed: member '{}' not found", member_id);
-                return Err(StatusCode::BAD_REQUEST);
-            }
+    // Validate that all member IDs exist in boards
+    let senders = match state.boards.read() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire read lock: {:?}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    for member_id in &payload.members {
+        if !senders.contains_key(member_id) {
+            warn!(group_id = %payload.id, member_id = %member_id, "Group creation failed: member not found");
+            return Err(StatusCode::BAD_REQUEST);
         }
     }
+    drop(senders); // Release the lock
 
     // Load config and check for duplicate group ID
     let mut config = Config::load().unwrap_or(Config {
@@ -745,6 +881,18 @@ async fn create_group(
         return Err(StatusCode::CONFLICT);
     }
 
+    // Check if group ID conflicts with any board ID
+    {
+        let senders = state
+            .boards
+            .read()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if senders.contains_key(&payload.id) {
+            return Err(StatusCode::CONFLICT);
+        }
+    }
+
     // Add group to config
     config.groups.push(config::GroupConfig {
         id: payload.id.clone(),
@@ -753,11 +901,11 @@ async fn create_group(
 
     // Save config
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        error!(group_id = %payload.id, "Failed to save boards.toml: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    println!("Created group: {}", payload.id);
+    info!(group_id = %payload.id, "Created group");
     Ok(StatusCode::CREATED)
 }
 
@@ -781,11 +929,11 @@ async fn delete_group(
 
     // Save config
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        error!(group_id = %group_id, "Failed to save boards.toml: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    println!("Deleted group: {}", group_id);
+    info!(group_id = %group_id, "Deleted group");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -803,7 +951,7 @@ async fn update_group(
 
         for member_id in &req.members {
             if !senders.contains_key(member_id) {
-                eprintln!("Group update failed: member '{}' not found", member_id);
+                warn!(group_id = %group_id, member_id = %member_id, "Group update failed: member not found");
                 return Err(StatusCode::BAD_REQUEST);
             }
         }
@@ -815,6 +963,26 @@ async fn update_group(
         groups: vec![],
     });
 
+    // Check if new ID conflicts with existing boards or groups (if ID is changing)
+    if req.id != group_id {
+        // Check conflict with other groups
+        if config.groups.iter().any(|g| g.id == req.id) {
+            return Err(StatusCode::CONFLICT);
+        }
+
+        // Check conflict with boards
+        {
+            let senders = state
+                .boards
+                .read()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if senders.contains_key(&req.id) {
+                return Err(StatusCode::CONFLICT);
+            }
+        }
+    }
+
     // Find and update group
     let group = config
         .groups
@@ -822,14 +990,102 @@ async fn update_group(
         .find(|g| g.id == group_id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    group.id = req.id;
     group.members = req.members;
 
     // Save config
     if let Err(e) = config.save() {
-        eprintln!("Failed to save boards.toml: {}", e);
+        error!(group_id = %group_id, "Failed to save boards.toml: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    println!("Updated group: {}", group_id);
+    info!(group_id = %group_id, "Updated group");
     Ok(StatusCode::OK)
+}
+
+// Group command handlers
+
+async fn set_group_power(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+    Json(payload): Json<PowerRequest>,
+) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let router = GroupCommandRouter::new(state);
+    
+    match router.execute_group_command(&group_id, GroupCommand::SetPower(payload.on, payload.transition)).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!(group_id = %group_id, "Error setting group power: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn set_group_brightness(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+    Json(payload): Json<GroupBrightnessRequest>,
+) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let router = GroupCommandRouter::new(state);
+    
+    match router.execute_group_command(&group_id, GroupCommand::SetBrightness(payload.brightness, payload.transition)).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!(group_id = %group_id, "Error setting group brightness: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn set_group_color(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+    Json(payload): Json<GroupColorRequest>,
+) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let router = GroupCommandRouter::new(state);
+
+    match router.execute_group_command(&group_id, GroupCommand::SetColor {
+        r: payload.r,
+        g: payload.g,
+        b: payload.b,
+        transition: payload.transition
+    }).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!(group_id = %group_id, "Error setting group color: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn set_group_effect(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+    Json(payload): Json<GroupEffectRequest>,
+) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let router = GroupCommandRouter::new(state);
+
+    match router.execute_group_command(&group_id, GroupCommand::SetEffect(payload.effect, payload.transition)).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!(group_id = %group_id, "Error setting group effect: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn set_group_preset(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+    Json(payload): Json<GroupPresetRequest>,
+) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let router = GroupCommandRouter::new(state);
+
+    match router.execute_group_command(&group_id, GroupCommand::SetPreset(payload.preset, payload.transition)).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!(group_id = %group_id, "Error setting group preset: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

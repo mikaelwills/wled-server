@@ -5,8 +5,8 @@ This guide covers deploying the WLED Server in Docker on a Synology NAS or remot
 ## Architecture
 
 - **Single Container** running both services:
-  - Rust backend on port 3000
-  - SvelteKit frontend on port 3001
+  - Rust backend on port 3010
+  - SvelteKit frontend on port 3011
 - **Volume Mount**: `boards.toml` persists across container restarts
 - **Auto-restart**: Container automatically restarts on crashes or reboots
 
@@ -141,8 +141,8 @@ docker-compose restart
 
 Once deployed, access the application at:
 
-- **Frontend**: `http://192.168.1.161:3001`
-- **Backend API**: `http://192.168.1.161:3000`
+- **Frontend**: `http://192.168.1.161:3011`
+- **Backend API**: `http://192.168.1.161:3010`
 
 The frontend automatically connects to the backend using the browser's hostname, so no configuration is needed!
 
@@ -184,8 +184,8 @@ docker-compose logs
 
 Check what's using the port:
 ```bash
-sudo lsof -i :3000
-sudo lsof -i :3001
+sudo lsof -i :3010
+sudo lsof -i :3011
 ```
 
 Kill the process or change ports in `docker-compose.yml`.
@@ -220,8 +220,8 @@ That's it! The deploy script handles everything else.
 ## Network Access
 
 The application will be accessible from:
-- **Local network**: `http://192.168.1.161:3001`
-- **Same machine**: `http://localhost:3001`
+- **Local network**: `http://192.168.1.161:3011`
+- **Same machine**: `http://localhost:3011`
 - **Mobile devices**: Access via the IP address
 
 All CORS is pre-configured to work from any origin.

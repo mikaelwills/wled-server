@@ -14,7 +14,10 @@ futures = "0.3"
 futures-util = "0.3"
 url = "2.5"
 toml = "0.8"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
 http = "1.0"
 rosc = "0.10"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+mime_guess = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

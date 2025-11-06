@@ -42,7 +42,9 @@
       "mcp__obsidian-rust__list_notes",
       "mcp__obsidian-rust__read_note",
       "Bash(cat:*)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(brew install:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

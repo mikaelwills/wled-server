@@ -738,9 +738,14 @@ function playFullProgram() {
 				</button>
 			{/if}
 		</div>
-		<div id="waveform-{programId}"></div>
-		{#if isLoaded && markers.length > 0}
-			<div class="waveform-footer">
+		<div class="waveform-wrapper">
+			{#if !isLoaded && program?.audioData}
+				<div class="waveform-skeleton"></div>
+			{/if}
+			<div id="waveform-{programId}" class:hidden={!isLoaded && program?.audioData}></div>
+		</div>
+		<div class="waveform-footer" class:has-cues={isLoaded && markers.length > 0}>
+			{#if isLoaded && markers.length > 0}
 				<button class="btn-collapse" onclick={() => cuesExpanded = !cuesExpanded}>
 					<span>{cuesExpanded ? '▼' : '▶'} Cues</span>
 				</button>
@@ -748,8 +753,8 @@ function playFullProgram() {
 					<span class="cue-count-badge">{markers.length}</span>
 					<span class="clear-cues-text">Clear Cues</span>
 				</button>
-			</div>
-		{/if}
+			{/if}
+		</div>
 		{#if !isLoaded && !program?.audioData}
 			<div class="audio-missing">
 				<p>⚠️ Audio file missing</p>
@@ -1178,8 +1183,24 @@ function playFullProgram() {
 		transform: translateY(0);
 	}
 
+	.waveform-wrapper {
+		position: relative;
+		min-height: 176px;
+	}
+
+	.waveform-wrapper:has(+ .waveform-footer:not(.has-cues)) {
+		margin-bottom: -40px;
+	}
+
 	div[id^="waveform-"] {
 		padding: 1.5rem 2rem 1.5rem 2rem;
+		min-height: 128px;
+	}
+
+	div[id^="waveform-"].hidden {
+		opacity: 0;
+		position: absolute;
+		pointer-events: none;
 	}
 
 	.waveform-footer {
@@ -1189,6 +1210,32 @@ function playFullProgram() {
 		justify-content: flex-end;
 		align-items: center;
 		gap: 0.5rem;
+		min-height: 40px;
+		opacity: 0;
+		transition: opacity 0.3s ease;
+	}
+
+	.waveform-footer.has-cues {
+		opacity: 1;
+	}
+
+	.waveform-skeleton {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		margin: 1.5rem 2rem;
+		height: 128px;
+		background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+		background-size: 200% 100%;
+		animation: shimmer 1.5s infinite;
+		border-radius: 8px;
+	}
+
+	@keyframes shimmer {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
 	}
 
 	.audio-missing {

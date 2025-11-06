@@ -29,7 +29,7 @@ class SPAHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         http.server.SimpleHTTPRequestHandler.end_headers(self)
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3001
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3011
     directory = sys.argv[2] if len(sys.argv) > 2 else '.'
 
     os.chdir(directory)

@@ -1,6 +1,6 @@
 # WLED Server API Documentation
 
-Base URL: `http://0.0.0.0:3000` (or `http://192.168.1.111:3000` on your network)
+Base URL: `http://0.0.0.0:3010` (or `http://192.168.1.111:3010` on your network)
 
 ## Overview
 
@@ -311,7 +311,7 @@ data: {"type":"state_update","board_id":"living-room","state":{"id":"living-room
 
 1. **Connect to SSE stream first:**
 ```javascript
-const eventSource = new EventSource('http://127.0.0.1:3000/events');
+const eventSource = new EventSource('http://127.0.0.1:3010/events');
 
 eventSource.addEventListener('message', (event) => {
   const data = JSON.parse(event.data);
@@ -326,7 +326,7 @@ eventSource.addEventListener('message', (event) => {
 
 2. **Fetch initial board list:**
 ```javascript
-const response = await fetch('http://127.0.0.1:3000/boards');
+const response = await fetch('http://127.0.0.1:3010/boards');
 const boards = await response.json();
 boards.forEach(board => renderBoard(board));
 ```
@@ -336,7 +336,7 @@ boards.forEach(board => renderBoard(board));
 **Add a new board:**
 ```javascript
 async function addBoard(id, ip) {
-  const response = await fetch('http://127.0.0.1:3000/boards', {
+  const response = await fetch('http://127.0.0.1:3010/boards', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, ip })
@@ -353,7 +353,7 @@ async function addBoard(id, ip) {
 **Remove a board:**
 ```javascript
 async function deleteBoard(id) {
-  const response = await fetch(`http://127.0.0.1:3000/boards/${id}`, {
+  const response = await fetch(`http://127.0.0.1:3010/boards/${id}`, {
     method: 'DELETE'
   });
 
@@ -368,7 +368,7 @@ async function deleteBoard(id) {
 **Toggle power:**
 ```javascript
 async function togglePower(boardId) {
-  await fetch(`http://127.0.0.1:3000/board/${boardId}/toggle`, {
+  await fetch(`http://127.0.0.1:3010/board/${boardId}/toggle`, {
     method: 'POST'
   });
   // State update will arrive via SSE
@@ -378,7 +378,7 @@ async function togglePower(boardId) {
 **Set brightness:**
 ```javascript
 async function setBrightness(boardId, brightness) {
-  await fetch(`http://127.0.0.1:3000/board/${boardId}/brightness`, {
+  await fetch(`http://127.0.0.1:3010/board/${boardId}/brightness`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ brightness })
@@ -389,7 +389,7 @@ async function setBrightness(boardId, brightness) {
 **Set color:**
 ```javascript
 async function setColor(boardId, r, g, b) {
-  await fetch(`http://127.0.0.1:3000/board/${boardId}/color`, {
+  await fetch(`http://127.0.0.1:3010/board/${boardId}/color`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ r, g, b })
@@ -400,7 +400,7 @@ async function setColor(boardId, r, g, b) {
 **Set effect:**
 ```javascript
 async function setEffect(boardId, effect) {
-  await fetch(`http://127.0.0.1:3000/board/${boardId}/effect`, {
+  await fetch(`http://127.0.0.1:3010/board/${boardId}/effect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ effect })

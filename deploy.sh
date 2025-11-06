@@ -34,8 +34,8 @@ docker-compose ps
 echo ""
 
 echo "📡 Services should be available at:"
-echo "  Backend:  http://$(hostname -I | awk '{print $1}'):3000"
-echo "  Frontend: http://$(hostname -I | awk '{print $1}'):3001"
+echo "  Backend:  http://$(hostname -I | awk '{print $1}'):3010"
+echo "  Frontend: http://$(hostname -I | awk '{print $1}'):3011"
 echo ""
 
 echo "📜 To view logs:"

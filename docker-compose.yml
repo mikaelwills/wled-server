@@ -9,7 +9,7 @@ services:
     restart: always
     ports:
       - "3010:3010"  # Rust backend
-      - "3011:3001"  # SvelteKit frontend
+      - "3011:3011"  # SvelteKit frontend
     volumes:
       - ./data:/app/data
     environment:

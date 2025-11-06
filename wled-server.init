@@ -1,0 +1,38 @@
+#!/bin/sh /etc/rc.common
+
+# OpenWrt init script for WLED Rust Server
+# Place in /etc/init.d/wled-server
+# Enable with: /etc/init.d/wled-server enable
+# Start with: /etc/init.d/wled-server start
+
+START=95
+STOP=10
+
+USE_PROCD=1
+PROG=/etc/wled-server/wled-server-wrapper.sh
+LOG_FILE=/var/log/wled-server.log
+
+start_service() {
+    # Ensure log directory exists
+    mkdir -p /var/log
+
+    procd_open_instance
+    procd_set_param command $PROG
+
+    # Respawn policy: max 10 restarts in 6 hours (21600 seconds)
+    # respawn_threshold: time window in seconds
+    # respawn_timeout: seconds to wait before restart attempt
+    # respawn_retry: maximum restart attempts within threshold
+    procd_set_param respawn ${respawn_threshold:-21600} ${respawn_timeout:-5} ${respawn_retry:-10}
+
+    # Log output to file with logread integration
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param file $LOG_FILE
+
+    procd_close_instance
+}
+
+stop_service() {
+    service_stop $PROG
+}

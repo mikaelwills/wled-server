@@ -53,7 +53,7 @@ COPYFILE_DISABLE=1 tar czf - \
   .dockerignore \
   docker-compose.yml \
   docker-start.sh \
-  spa-server.py \
+  lighttpd-docker.conf \
   data \
   presets.json \
   | ssh ${NAS_USER}@${NAS_IP} "cd ${NAS_PATH} && tar xzf - 2>/dev/null"

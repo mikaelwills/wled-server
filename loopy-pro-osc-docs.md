@@ -109,7 +109,7 @@ async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusC
 
 **Environment Variables:**
 ```env
-PUBLIC_API_URL=http://192.168.1.111:3000
+PUBLIC_API_URL=http://192.168.1.111:3010
 ```
 
 **OSC Client:**
@@ -219,7 +219,7 @@ oscsend 192.168.1.242 9595 /PlayStop/06
 ### Test HTTP Endpoint
 
 ```bash
-curl -X POST http://192.168.1.111:3000/osc \
+curl -X POST http://192.168.1.111:3010/osc \
   -H "Content-Type: application/json" \
   -d '{"address": "/PlayStop/06"}'
 ```
@@ -252,8 +252,8 @@ curl -X POST http://192.168.1.111:3000/osc \
 ### Rust server errors
 
 **"Address already in use"**
-- Another process is using port 3000
-- Find and kill: `lsof -ti:3000 | xargs kill -9`
+- Another process is using port 3010
+- Find and kill: `lsof -ti:3010 | xargs kill -9`
 
 **"Failed to bind UDP socket"**
 - Rare, usually indicates OS-level network issue

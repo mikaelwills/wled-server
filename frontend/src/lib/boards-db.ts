@@ -1,11 +1,49 @@
 // frontend/src/lib/boards-db.ts
 import { browser } from '$app/environment';
+import { get } from 'svelte/store';
 import { boards, boardsLoading, boardsError, presets } from './store';
 import { API_URL } from './api';
 import { createSseConnection } from './sse';
+import { 
+  setGroupPower, 
+  setGroupColor, 
+  setGroupBrightness, 
+  setGroupEffect, 
+  setGroupPreset,
+  type GroupOperationResult 
+} from './groups-api';
 import type { BoardState } from './types';
 
 let sseConnection: EventSource | null = null;
+
+/**
+ * Recalculate group states based on current member board states
+ * CRITICAL: Never modify group identity (isGroup, memberIds) - only update operational state
+ */
+function recalculateGroupStates(currentBoards: BoardState[]): BoardState[] {
+  return currentBoards.map((board) => {
+    if (board.isGroup && board.memberIds) {
+      const members = currentBoards.filter(
+        (b) => !b.isGroup && board.memberIds?.includes(b.id)
+      );
+
+      // CRITICAL: Preserve immutable group identity, only update derived operational state
+      return {
+        // Preserve all existing group properties
+        ...board,
+        // NEVER modify these immutable group properties:
+        // - isGroup: always true for groups
+        // - memberIds: only changed via explicit group management
+        // Only update derived operational state from member boards:
+        color: members.length > 0 ? members[0].color : board.color,
+        brightness: members.length > 0 ? members[0].brightness : board.brightness,
+        effect: members.length > 0 ? members[0].effect : board.effect,
+        on: members.length > 0 ? members.some((m) => m.on) : board.on,
+      };
+    }
+    return board;
+  });
+}
 
 /**
  * Initialize SSE listener for real-time board updates
@@ -23,16 +61,42 @@ export function initBoardsListener(): void {
     // Set up SSE for real-time updates
     sseConnection = createSseConnection(
       (boardId: string, state: BoardState) => {
-        // Update specific board state
-        boards.update((currentBoards) =>
-          currentBoards.map((b) => (b.id === boardId ? state : b))
-        );
+        // Update specific board state and recalculate groups
+        boards.update((currentBoards) => {
+          const updatedBoards = currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve group identity - never overwrite group properties with individual board state
+              if (b.isGroup) {
+                // This is a group, don't overwrite with individual board state
+                console.warn(`SSE: Ignoring individual board update for group ${boardId}`);
+                return b;
+              }
+              // This is an individual board, update its state
+              return state;
+            }
+            return b;
+          });
+          return recalculateGroupStates(updatedBoards);
+        });
       },
       (boardId: string, connected: boolean) => {
-        // Update connection status
-        boards.update((currentBoards) =>
-          currentBoards.map((b) => (b.id === boardId ? { ...b, connected } : b))
-        );
+        // Update connection status and recalculate groups
+        boards.update((currentBoards) => {
+          const updatedBoards = currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve group identity - never overwrite group properties with individual board state
+              if (b.isGroup) {
+                // This is a group, don't overwrite with individual board state
+                console.warn(`SSE: Ignoring connection update for group ${boardId}`);
+                return b;
+              }
+              // This is an individual board, update its connection status
+              return { ...b, connected };
+            }
+            return b;
+          });
+          return recalculateGroupStates(updatedBoards);
+        });
       }
     );
   } catch (error) {
@@ -45,7 +109,7 @@ export function initBoardsListener(): void {
 /**
  * Fetch boards once from API
  */
-async function fetchBoards(): Promise<void> {
+export async function fetchBoards(): Promise<void> {
   if (!browser) return;
 
   try {
@@ -58,26 +122,8 @@ async function fetchBoards(): Promise<void> {
     const data = await res.json();
     const loadedBoards = Array.isArray(data) ? data : [];
 
-    // Derive group state from member boards
-    const processedBoards = loadedBoards.map((board: BoardState) => {
-      if (board.isGroup && board.memberIds) {
-        const members = loadedBoards.filter(
-          (b: BoardState) => !b.isGroup && board.memberIds?.includes(b.id)
-        );
-
-        if (members.length > 0) {
-          const firstMember = members[0];
-          return {
-            ...board,
-            color: firstMember.color,
-            brightness: firstMember.brightness,
-            effect: firstMember.effect,
-            on: members.every((m: BoardState) => m.on),
-          };
-        }
-      }
-      return board;
-    });
+    // Derive group state from member boards using helper function
+    const processedBoards = recalculateGroupStates(loadedBoards);
 
     // Sort: groups first, then regular boards
     processedBoards.sort((a: BoardState, b: BoardState) => {
@@ -89,10 +135,56 @@ async function fetchBoards(): Promise<void> {
     boards.set(processedBoards);
     boardsLoading.set(false);
   } catch (error) {
-    console.error('Failed to load boards:', error);
-    boardsError.set('Failed to load boards from server.');
-    boardsLoading.set(false);
+    console.error('Failed to fetch boards:', error);
     boards.set([]);
+    boardsLoading.set(false);
+  }
+}
+
+/**
+ * Refresh only groups from the API, keeping individual board states
+ */
+export async function refreshGroups(): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const res = await fetch(`${API_URL}/boards`);
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch boards for group refresh: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    const loadedBoards = Array.isArray(data) ? data : [];
+
+    // Separate groups and regular boards from fresh data
+    const freshGroups = loadedBoards.filter(board => board.isGroup);
+    const freshRegularBoards = loadedBoards.filter(board => !board.isGroup);
+
+    // Get current boards to preserve individual board states
+    const currentBoards = get(boards);
+    const currentRegularBoards = currentBoards.filter(board => !board.isGroup);
+
+    // Use fresh regular boards if they exist, otherwise keep current ones
+    // This ensures we have the latest board data while preserving states
+    const regularBoards = freshRegularBoards.length > 0 ? freshRegularBoards : currentRegularBoards;
+
+    // Derive group state from member boards using helper function
+    const processedGroups = recalculateGroupStates(freshGroups);
+
+    // Combine updated groups with regular boards
+    const allBoards = [...processedGroups, ...regularBoards];
+
+    // Sort: groups first, then regular boards
+    allBoards.sort((a: BoardState, b: BoardState) => {
+      if (a.isGroup && !b.isGroup) return -1;
+      if (!a.isGroup && b.isGroup) return 1;
+      return a.id.localeCompare(b.id); // Sort by ID as tiebreaker
+    });
+
+    boards.set(allBoards);
+  } catch (error) {
+    console.error('Failed to refresh groups:', error);
   }
 }
 
@@ -101,7 +193,7 @@ async function fetchBoards(): Promise<void> {
  */
 export function initPresets(): void {
   const presetsList = [
-    { id: 0, name: 'None (Manual Control)' },
+    { id: 0, name: 'No Preset' },
     { id: 1, name: 'Lightning Cyan' },
     { id: 2, name: 'Lightning Cyan' },
     { id: 3, name: 'Lightning Red' },
@@ -121,9 +213,9 @@ export function initPresets(): void {
 }
 
 /**
- * Toggle board power
+ * Set board power
  */
-export async function toggleBoardPower(boardId: string): Promise<void> {
+export async function setBoardPower(boardId: string, power: boolean): Promise<void> {
   if (!browser) return;
 
   let currentBoards: BoardState[] = [];
@@ -136,39 +228,56 @@ export async function toggleBoardPower(boardId: string): Promise<void> {
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Toggle all members in parallel
-      const memberStatesPromises = board.memberIds.map(async (memberId) => {
-        try {
-          const response = await fetch(`${API_URL}/board/${memberId}/toggle`, {
-            method: 'POST',
-          });
-          if (!response.ok) throw new Error(`Failed to toggle ${memberId}`);
-          return await response.json();
-        } catch (e) {
-          console.error(`Error toggling ${memberId}:`, e);
-          return null;
+      // This is a GROUP - use group endpoint for atomic group operation
+      try {
+        const result: GroupOperationResult = await setGroupPower(boardId, power);
+        
+        // Log any failures for debugging
+        if (result.failed_members.length > 0) {
+          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
         }
-      });
-
-      const memberStates = (await Promise.all(memberStatesPromises)).filter(
-        (state): state is BoardState => state !== null
-      );
-
-      // Update group's state based on members
-      const allOn = memberStates.length > 0 && memberStates.every((m) => m.on);
-      boards.update((currentBoards) =>
-        currentBoards.map((b) => (b.id === boardId ? { ...b, on: allOn } : b))
-      );
+        
+        // Update group's state optimistically, preserving group identity
+        boards.update((currentBoards) =>
+          currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve immutable group identity
+              if (!b.isGroup) {
+                console.error(`Group operation attempted on non-group ${boardId}`);
+                return b;
+              }
+              return {
+                // Preserve ALL existing group properties
+                ...b,
+                // Only update derived operational state
+                on: power,
+                // CRITICAL: Never modify these immutable group properties:
+                isGroup: true, // Preserve group identity
+                memberIds: b.memberIds, // Preserve group membership
+                ip: b.ip, // Preserve group IP (empty string)
+                connected: b.connected, // Preserve group connection status
+              };
+            }
+            return b;
+          })
+        );
+      } catch (groupError) {
+        console.error(`Failed to set power for group ${boardId}:`, groupError);
+        boardsError.set(`Failed to set group power: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+      }
     } else {
-      // Regular board - SSE will update the state
-      const response = await fetch(`${API_URL}/board/${boardId}/toggle`, {
+      // This is an INDIVIDUAL BOARD - use individual board endpoint
+      // Even if this board is a member of a group, we still control it individually
+      const response = await fetch(`${API_URL}/board/${boardId}/power`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on: power }),
       });
-      if (!response.ok) throw new Error('Failed to toggle power');
+      if (!response.ok) throw new Error('Failed to set power');
     }
   } catch (error) {
-    console.error('Error toggling power:', error);
-    boardsError.set('Failed to toggle power.');
+    console.error('Error setting power:', error);
+    boardsError.set('Failed to set power.');
   }
 }
 
@@ -197,28 +306,43 @@ export async function setBoardColor(
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Set color for all members in parallel
-      await Promise.all(
-        board.memberIds.map(async (memberId) => {
-          try {
-            const response = await fetch(`${API_URL}/board/${memberId}/color`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ r: red, g: green, b: blue }),
-            });
-            if (!response.ok) throw new Error(`Failed to set color for ${memberId}`);
-          } catch (e) {
-            console.error(`Error setting color for ${memberId}:`, e);
-          }
-        })
-      );
-
-      // Update group's state optimistically
-      boards.update((currentBoards) =>
-        currentBoards.map((b) =>
-          b.id === boardId ? { ...b, color: [red, green, blue] as [number, number, number] } : b
-        )
-      );
+      // Use new group endpoint for atomic group operation
+      try {
+        const result: GroupOperationResult = await setGroupColor(boardId, red, green, blue);
+        
+        // Log any failures for debugging
+        if (result.failed_members.length > 0) {
+          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        }
+        
+        // Update group's state optimistically, preserving group identity
+        boards.update((currentBoards) =>
+          currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve immutable group identity
+              if (!b.isGroup) {
+                console.error(`Group operation attempted on non-group ${boardId}`);
+                return b;
+              }
+              return {
+                // Preserve ALL existing group properties
+                ...b,
+                // Only update derived operational state
+                color: [red, green, blue] as [number, number, number],
+                // CRITICAL: Never modify these immutable group properties:
+                isGroup: true, // Preserve group identity
+                memberIds: b.memberIds, // Preserve group membership
+                ip: b.ip, // Preserve group IP (empty string)
+                connected: b.connected, // Preserve group connection status
+              };
+            }
+            return b;
+          })
+        );
+      } catch (groupError) {
+        console.error(`Failed to set color for group ${boardId}:`, groupError);
+        boardsError.set(`Failed to set group color: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+      }
     } else {
       // Regular board - SSE will update the state
       const response = await fetch(`${API_URL}/board/${boardId}/color`, {
@@ -250,26 +374,43 @@ export async function setBoardBrightness(boardId: string, brightness: number): P
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Set brightness for all members in parallel
-      await Promise.all(
-        board.memberIds.map(async (memberId) => {
-          try {
-            const response = await fetch(`${API_URL}/board/${memberId}/brightness`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ brightness }),
-            });
-            if (!response.ok) throw new Error(`Failed to set brightness for ${memberId}`);
-          } catch (e) {
-            console.error(`Error setting brightness for ${memberId}:`, e);
-          }
-        })
-      );
-
-      // Update group's state optimistically
-      boards.update((currentBoards) =>
-        currentBoards.map((b) => (b.id === boardId ? { ...b, brightness } : b))
-      );
+      // Use new group endpoint for atomic group operation
+      try {
+        const result: GroupOperationResult = await setGroupBrightness(boardId, brightness);
+        
+        // Log any failures for debugging
+        if (result.failed_members.length > 0) {
+          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        }
+        
+        // Update group's state optimistically, preserving group identity
+        boards.update((currentBoards) =>
+          currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve immutable group identity
+              if (!b.isGroup) {
+                console.error(`Group operation attempted on non-group ${boardId}`);
+                return b;
+              }
+              return {
+                // Preserve ALL existing group properties
+                ...b,
+                // Only update derived operational state
+                brightness,
+                // CRITICAL: Never modify these immutable group properties:
+                isGroup: true, // Preserve group identity
+                memberIds: b.memberIds, // Preserve group membership
+                ip: b.ip, // Preserve group IP (empty string)
+                connected: b.connected, // Preserve group connection status
+              };
+            }
+            return b;
+          })
+        );
+      } catch (groupError) {
+        console.error(`Failed to set brightness for group ${boardId}:`, groupError);
+        boardsError.set(`Failed to set group brightness: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+      }
     } else {
       // Regular board - SSE will update the state
       const response = await fetch(`${API_URL}/board/${boardId}/brightness`, {
@@ -301,26 +442,43 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Set effect for all members in parallel
-      await Promise.all(
-        board.memberIds.map(async (memberId) => {
-          try {
-            const response = await fetch(`${API_URL}/board/${memberId}/effect`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ effect }),
-            });
-            if (!response.ok) throw new Error(`Failed to set effect for ${memberId}`);
-          } catch (e) {
-            console.error(`Error setting effect for ${memberId}:`, e);
-          }
-        })
-      );
-
-      // Update group's state optimistically
-      boards.update((currentBoards) =>
-        currentBoards.map((b) => (b.id === boardId ? { ...b, effect } : b))
-      );
+      // Use new group endpoint for atomic group operation
+      try {
+        const result: GroupOperationResult = await setGroupEffect(boardId, effect);
+        
+        // Log any failures for debugging
+        if (result.failed_members.length > 0) {
+          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        }
+        
+        // Update group's state optimistically, preserving group identity
+        boards.update((currentBoards) =>
+          currentBoards.map((b) => {
+            if (b.id === boardId) {
+              // CRITICAL: Preserve immutable group identity
+              if (!b.isGroup) {
+                console.error(`Group operation attempted on non-group ${boardId}`);
+                return b;
+              }
+              return {
+                // Preserve ALL existing group properties
+                ...b,
+                // Only update derived operational state
+                effect,
+                // CRITICAL: Never modify these immutable group properties:
+                isGroup: true, // Preserve group identity
+                memberIds: b.memberIds, // Preserve group membership
+                ip: b.ip, // Preserve group IP (empty string)
+                connected: b.connected, // Preserve group connection status
+              };
+            }
+            return b;
+          })
+        );
+      } catch (groupError) {
+        console.error(`Failed to set effect for group ${boardId}:`, groupError);
+        boardsError.set(`Failed to set group effect: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+      }
     } else {
       // Regular board - SSE will update the state
       const response = await fetch(`${API_URL}/board/${boardId}/effect`, {
@@ -352,21 +510,21 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Set preset for all members in parallel
-      await Promise.all(
-        board.memberIds.map(async (memberId) => {
-          try {
-            const response = await fetch(`${API_URL}/board/${memberId}/preset`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ preset, transition: 0 }),
-            });
-            if (!response.ok) throw new Error(`Failed to set preset for ${memberId}`);
-          } catch (e) {
-            console.error(`Error setting preset for ${memberId}:`, e);
-          }
-        })
-      );
+      // Use new group endpoint for atomic group operation
+      try {
+        const result: GroupOperationResult = await setGroupPreset(boardId, preset);
+        
+        // Log any failures for debugging
+        if (result.failed_members.length > 0) {
+          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        }
+        
+        // Note: We don't update group state optimistically for presets since they can have complex effects
+        // SSE will update individual member states, which will then trigger group recalculation
+      } catch (groupError) {
+        console.error(`Failed to set preset for group ${boardId}:`, groupError);
+        boardsError.set(`Failed to set group preset: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+      }
     } else {
       // Regular board - SSE will update the state
       const response = await fetch(`${API_URL}/board/${boardId}/preset`, {
@@ -463,6 +621,57 @@ export async function deleteBoard(boardId: string): Promise<void> {
   } catch (error) {
     console.error('Failed to delete board:', error);
     boardsError.set('Failed to delete board.');
+    throw error;
+  }
+}
+
+/**
+ * Set board LED count
+ */
+export async function setBoardLedCount(boardId: string, ledCount: number): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/board/${boardId}/led-count`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ led_count: ledCount }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to set LED count');
+    }
+
+    // Update local state optimistically
+    boards.update((currentBoards) =>
+      currentBoards.map((b) =>
+        b.id === boardId ? { ...b, ledCount: ledCount } : b
+      )
+    );
+  } catch (error) {
+    console.error('Failed to set LED count:', error);
+    boardsError.set('Failed to set LED count.');
+    throw error;
+  }
+}
+
+/**
+ * Reset board segment to defaults (grp=1, spc=0, of=0)
+ */
+export async function resetBoardSegment(boardId: string): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/board/${boardId}/reset-segment`, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to reset segment');
+    }
+  } catch (error) {
+    console.error('Failed to reset segment:', error);
+    boardsError.set('Failed to reset segment.');
     throw error;
   }
 }

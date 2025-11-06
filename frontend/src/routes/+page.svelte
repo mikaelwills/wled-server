@@ -1,23 +1,27 @@
 <script lang="ts">
 	import { boards, boardsLoading, boardsError } from '$lib/store';
 	import {
-		toggleBoardPower,
+		setBoardPower,
 		setBoardColor,
 		setBoardBrightness,
 		setBoardEffect,
 		setBoardPreset,
+		setBoardLedCount,
+		resetBoardSegment,
 		addBoard,
 		updateBoard,
 		deleteBoard as deleteBoardService,
+		refreshGroups,
+		fetchBoards,
 	} from '$lib/boards-db';
-	import { addGroup, deleteGroup } from '$lib/groups-db';
+	import { addGroup, deleteGroup, updateGroup } from '$lib/groups-db';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import ColorWheel from '$lib/ColorWheel.svelte';
 	import type { BoardState } from '$lib/types';
 
 	// WLED Presets (1-15 from presets.json)
 	const WLED_PRESETS = [
-		{ id: 0, name: 'None (Manual Control)' },
+		{ id: 0, name: 'No Preset' },
 		{ id: 1, name: 'Lightning Cyan' },
 		{ id: 2, name: 'Lightning Cyan' },
 		{ id: 3, name: 'Lightning Red' },
@@ -40,10 +44,17 @@
 	let newBoardIp = '';
 	let isCreatingGroup = false;
 	let selectedMemberIds: string[] = [];
-	let showEditForm = false;
 	let editBoardId = '';
 	let editBoardIp = '';
 	let editingBoardId = ''; // Original ID being edited
+	let ledCountTimeout: number | null = null;
+	let editingBoard: string | null = null; // Board currently being edited inline
+	
+	// Group editing state
+	let editingGroupId = '';
+	let editGroupName = '';
+	let editGroupMembers: string[] = [];
+	let editingGroup: string | null = null; // Group currently being edited
 
 	// Event handlers that call service functions
 	function toggleExpanded(boardId: string) {
@@ -63,7 +74,15 @@
 					return;
 				}
 
+				// Check if group ID conflicts with existing boards or groups
+				const existingBoardIds = $boards.map(b => b.id);
+				if (existingBoardIds.includes(newBoardId.trim())) {
+					alert(`A board or group with ID "${newBoardId.trim()}" already exists. Please choose a different name.`);
+					return;
+				}
+
 				await addGroup(newBoardId, selectedMemberIds);
+				await refreshGroups(); // Refresh groups to show the new group
 
 				newBoardId = '';
 				selectedMemberIds = [];
@@ -72,6 +91,13 @@
 			} else {
 				if (!newBoardIp.trim()) {
 					alert('Please enter an IP address');
+					return;
+				}
+
+				// Check if board ID conflicts with existing boards or groups
+				const existingBoardIds = $boards.map(b => b.id);
+				if (existingBoardIds.includes(newBoardId.trim())) {
+					alert(`A board or group with ID "${newBoardId.trim()}" already exists. Please choose a different name.`);
 					return;
 				}
 
@@ -86,29 +112,20 @@
 		}
 	}
 
-	async function handleDeleteBoard(boardId: string) {
-		const board = $boards.find((b) => b.id === boardId);
-
-		if (!confirm(`Are you sure you want to delete "${boardId}"?`)) {
-			return;
-		}
-
-		try {
-			if (board?.isGroup) {
-				await deleteGroup(boardId);
-			} else {
-				await deleteBoardService(boardId);
-			}
-		} catch (e) {
-			alert(e instanceof Error ? e.message : 'Failed to delete board/group');
-		}
-	}
+	
 
 	function openEditForm(board: BoardState) {
 		editingBoardId = board.id;
 		editBoardId = board.id;
 		editBoardIp = board.ip;
-		showEditForm = true;
+		editingBoard = board.id; // Set inline edit mode
+	}
+
+	function openEditGroupForm(group: BoardState) {
+		editingGroupId = group.id;
+		editGroupName = group.id;
+		editGroupMembers = group.memberIds || [];
+		editingGroup = group.id; // Set group edit mode
 	}
 
 	async function handleSyncPresets(boardId: string) {
@@ -117,7 +134,7 @@
 		}
 
 		try {
-			const response = await fetch(`http://localhost:3010/board/${boardId}/presets/sync`, {
+			const response = await fetch(`${window.location.protocol}//${window.location.hostname}:3010/api/board/${boardId}/presets/sync`, {
 				method: 'POST'
 			});
 
@@ -133,6 +150,31 @@
 		}
 	}
 
+	async function handleResetSegment(boardId: string) {
+		if (!confirm(`Reset segment settings to defaults for board "${boardId}"? This will reset grouping, spacing, and offset to defaults.`)) {
+			return;
+		}
+
+		try {
+			await resetBoardSegment(boardId);
+			alert(`Successfully reset segment for board "${boardId}"`);
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to reset segment');
+		}
+	}
+
+	function handleLedCountChange(boardId: string, value: number) {
+		// Clear existing timeout
+		if (ledCountTimeout !== null) {
+			clearTimeout(ledCountTimeout);
+		}
+
+		// Set new timeout - only send after 15ms of no changes
+		ledCountTimeout = setTimeout(() => {
+			setBoardLedCount(boardId, value);
+		}, 15) as unknown as number;
+	}
+
 	async function handleUpdateBoard() {
 		if (!editBoardId.trim() || !editBoardIp.trim()) {
 			alert('Board ID and IP are required');
@@ -142,8 +184,8 @@
 		try {
 			await updateBoard(editingBoardId, editBoardId, editBoardIp);
 
-			// Clear form
-			showEditForm = false;
+			// Clear inline edit mode
+			editingBoard = null;
 			editBoardId = '';
 			editBoardIp = '';
 			editingBoardId = '';
@@ -152,38 +194,90 @@
 		}
 	}
 
+	function cancelEdit() {
+		editingBoard = null;
+		editBoardId = '';
+		editBoardIp = '';
+		editingBoardId = '';
+	}
+
+	async function handleUpdateGroup() {
+		if (!editGroupName.trim()) {
+			alert('Group name is required');
+			return;
+		}
+
+		if (editGroupMembers.length === 0) {
+			alert('Please select at least one member board');
+			return;
+		}
+
+		try {
+			await updateGroup(editingGroupId, editGroupName, editGroupMembers);
+
+			// Clear group edit mode
+			editingGroup = null;
+			editGroupName = '';
+			editGroupMembers = [];
+			editingGroupId = '';
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to update group');
+		}
+	}
+
+	function cancelGroupEdit() {
+		editingGroup = null;
+		editGroupName = '';
+		editGroupMembers = [];
+		editingGroupId = '';
+	}
+
+	// Custom confirmation dialog state
+	let showDeleteConfirm = false;
+	let itemToDelete = '';
+	let itemTypeToDelete = ''; // 'board' or 'group'
+
+	async function handleDeleteGroup(groupId: string) {
+		itemToDelete = groupId;
+		itemTypeToDelete = 'group';
+		showDeleteConfirm = true;
+	}
+
+	async function handleDeleteBoard(boardId: string) {
+		itemToDelete = boardId;
+		itemTypeToDelete = 'board';
+		showDeleteConfirm = true;
+	}
+
+	async function confirmDelete() {
+		showDeleteConfirm = false;
+		
+		try {
+			if (itemTypeToDelete === 'group') {
+				await deleteGroup(itemToDelete);
+				await refreshGroups(); // Refresh only groups, not individual boards
+			} else {
+				await deleteBoardService(itemToDelete);
+				await fetchBoards(); // Refresh all boards for individual board deletion
+			}
+		} catch (e) {
+			alert(e instanceof Error ? e.message : `Failed to delete ${itemTypeToDelete}`);
+		}
+		
+		itemToDelete = '';
+		itemTypeToDelete = '';
+	}
+
+	function cancelDelete() {
+		showDeleteConfirm = false;
+		itemToDelete = '';
+		itemTypeToDelete = '';
+	}
+
 </script>
 
 <main>
-	{#if showEditForm}
-		<div class="add-board-fullscreen">
-			<h2>Edit Board</h2>
-			<div class="form-group">
-				<label for="edit-board-id">Board ID:</label>
-				<input
-					id="edit-board-id"
-					type="text"
-					bind:value={editBoardId}
-					placeholder="e.g., bedroom-lights"
-					class="form-input"
-				/>
-			</div>
-			<div class="form-group">
-				<label for="edit-board-ip">IP Address:</label>
-				<input
-					id="edit-board-ip"
-					type="text"
-					bind:value={editBoardIp}
-					placeholder="e.g., 192.168.1.100"
-					class="form-input"
-				/>
-			</div>
-			<div class="form-actions">
-				<button class="submit-btn" on:click={handleUpdateBoard}>Update Board</button>
-				<button class="cancel-btn" on:click={() => (showEditForm = false)}>Cancel</button>
-			</div>
-		</div>
-	{:else if showAddForm}
+	{#if showAddForm}
 		<div class="add-board-fullscreen">
 			<h2>Add New {isCreatingGroup ? 'Group' : 'Board'}</h2>
 
@@ -285,7 +379,7 @@
 									<input
 										type="checkbox"
 										checked={board.on}
-										on:change={() => toggleBoardPower(board.id)}
+										on:change={() => setBoardPower(board.id, !board.on)}
 									/>
 									<span
 										class="toggle-slider color-toggle"
@@ -306,79 +400,196 @@
 
 						{#if expandedBoard === board.id}
 							<div class="board-controls">
-								<div class="color-section">
-									<ColorWheel
-										color={board.color}
-										disabled={board.isGroup ? false : !board.connected}
-										onColorChange={(r, g, b) => setBoardColor(board.id, r, g, b)}
-									/>
-								</div>
+								{#if editingBoard === board.id}
+									<!-- Board Edit Form -->
+									<div class="edit-form">
+										<div class="form-group">
+											<label for="edit-board-id-{board.id}">Board ID:</label>
+											<input
+												id="edit-board-id-{board.id}"
+												type="text"
+												bind:value={editBoardId}
+												placeholder="e.g., bedroom-lights"
+												class="form-input"
+											/>
+										</div>
+										<div class="form-group">
+											<label for="edit-board-ip-{board.id}">IP Address:</label>
+											<input
+												id="edit-board-ip-{board.id}"
+												type="text"
+												bind:value={editBoardIp}
+												placeholder="e.g., 192.168.1.100"
+												class="form-input"
+											/>
+										</div>
+										<div class="form-actions">
+											<button class="submit-btn" on:click={handleUpdateBoard}>Update</button>
+											<button class="cancel-btn" on:click={cancelEdit}>Cancel</button>
+										</div>
+									</div>
+								{:else if editingGroup === board.id}
+									<!-- Group Edit Form -->
+									<div class="edit-form">
+										<div class="form-group">
+											<label for="edit-group-name-{board.id}">Group Name</label>
+											<input
+												id="edit-group-name-{board.id}"
+												type="text"
+												bind:value={editGroupName}
+												placeholder="e.g., upstairs-lights"
+												class="form-input"
+											/>
+										</div>
+										<div class="form-group">
+											<label>Member Boards</label>
+											<div class="member-grid">
+												{#each $boards as board}
+													{#if !board.isGroup}
+														<label class="member-label">
+															<input
+																type="checkbox"
+																bind:group={editGroupMembers}
+																value={board.id}
+																class="member-checkbox-input"
+															/>
+															<span class="member-name">{board.id}</span>
+														</label>
+													{/if}
+												{/each}
+											</div>
+										</div>
+										<div class="form-actions">
+											<button class="submit-btn" on:click={handleUpdateGroup}>Update</button>
+											<button class="cancel-btn" on:click={cancelGroupEdit}>Cancel</button>
+										</div>
+									</div>
+								{:else}
+									<!-- Normal Controls -->
+									<div class="color-section">
+										<ColorWheel
+											color={board.color}
+											disabled={board.isGroup ? false : !board.connected}
+											onColorChange={(r, g, b) => setBoardColor(board.id, r, g, b)}
+										/>
+									</div>
 
-								<div class="brightness-section">
-									<input
-										id="brightness-{board.id}"
-										type="range"
-										min="0"
-										max="255"
-										value={board.brightness}
-										disabled={board.isGroup ? false : !board.connected}
-										on:change={(e) =>
-											setBoardBrightness(board.id, parseInt(e.currentTarget.value))}
-										class="brightness-slider"
-									/>
-								</div>
+									<div class="brightness-section">
+										<input
+											id="brightness-{board.id}"
+											type="range"
+											min="0"
+											max="255"
+											value={board.brightness}
+											disabled={board.isGroup ? false : !board.connected}
+											on:change={(e) =>
+												setBoardBrightness(board.id, parseInt(e.currentTarget.value))}
+											class="brightness-slider"
+										/>
+									</div>
 
-								<div class="preset-section">
-									<select
-										value={0}
-										disabled={board.isGroup ? false : !board.connected}
-										on:change={(e) => setBoardPreset(board.id, parseInt(e.currentTarget.value))}
-										class="preset-dropdown"
-									>
-										{#each WLED_PRESETS as preset}
-											<option value={preset.id}>{preset.name}</option>
-										{/each}
-									</select>
-								</div>
+									<div class="preset-section">
+										<select
+											value={0}
+											disabled={board.isGroup ? false : !board.connected}
+											on:change={(e) => setBoardPreset(board.id, parseInt(e.currentTarget.value))}
+											class="preset-dropdown"
+										>
+											{#each WLED_PRESETS as preset}
+												<option value={preset.id}>{preset.name}</option>
+											{/each}
+										</select>
+									</div>
 
-								<div class="effects-section">
-									<select
-										value={board.effect}
-										disabled={board.isGroup ? false : !board.connected}
-										on:change={(e) => setBoardEffect(board.id, parseInt(e.currentTarget.value))}
-										class="effects-dropdown"
-									>
-										{#each WLED_EFFECTS as effect}
-											<option value={effect.id}>{effect.name}</option>
-										{/each}
-									</select>
-								</div>
+									<div class="effects-section">
+										<select
+											value={board.effect}
+											disabled={board.isGroup ? false : !board.connected}
+											on:change={(e) => setBoardEffect(board.id, parseInt(e.currentTarget.value))}
+											class="effects-dropdown"
+										>
+											{#each WLED_EFFECTS as effect}
+												<option value={effect.id}>{effect.name}</option>
+											{/each}
+										</select>
+									</div>
 
-								<div style="display: flex; gap: 10px; margin-top: 20px;">
-									{#if !board.isGroup}
-										<button class="edit-btn" on:click={() => openEditForm(board)}>
-											Edit Board
-										</button>
-										<button class="sync-presets-btn" on:click={() => handleSyncPresets(board.id)}>
-											Load Presets
-										</button>
+									{#if !board.isGroup && board.ledCount !== undefined && board.maxLeds}
+										<div class="led-count-wrapper">
+											<div class="led-count-label">
+												<span>LED Range</span>
+												<span class="led-count-value">{board.ledCount} / {board.maxLeds}</span>
+											</div>
+											<input
+												type="range"
+												min="1"
+												max={board.maxLeds}
+												value={board.ledCount}
+												disabled={!board.connected}
+												on:input={(e) => handleLedCountChange(board.id, parseInt(e.currentTarget.value))}
+												class="led-count-slider"
+											/>
+										</div>
 									{/if}
-									<button class="delete-btn" on:click={() => handleDeleteBoard(board.id)}>
-										Delete {board.isGroup ? 'Group' : 'Board'}
-									</button>
-								</div>
+
+									<div class="action-buttons">
+										{#if !board.isGroup}
+											<button class="action-btn action-btn-edit" on:click={() => openEditForm(board)}>
+												Edit
+											</button>
+											<button class="action-btn action-btn-presets" on:click={() => handleSyncPresets(board.id)}>
+												Presets
+											</button>
+											<button class="action-btn action-btn-reset" on:click={() => handleResetSegment(board.id)}>
+												Reset
+											</button>
+										{:else}
+											<button class="action-btn action-btn-edit" on:click={() => openEditGroupForm(board)}>
+												Edit
+											</button>
+										{/if}
+										{#if board.isGroup}
+											<button class="action-btn action-btn-delete" on:click={() => handleDeleteGroup(board.id)}>
+												Delete
+											</button>
+										{:else}
+											<button class="action-btn action-btn-delete" on:click={() => handleDeleteBoard(board.id)}>
+												Delete
+											</button>
+										{/if}
+									</div>
+								{/if}
 							</div>
 						{/if}
 					</div>
 				{/each}
 			</div>
-
-			<button class="add-board-btn" on:click={() => (showAddForm = !showAddForm)}>
-				Add Board
-			</button>
 		{/if}
+
+		<!-- Add Board Button - Always visible -->
+		<button class="add-board-btn" on:click={() => (showAddForm = !showAddForm)}>
+			Add Board
+		</button>
 	{/if}
 </main>
+
+<!-- Custom Delete Confirmation Dialog -->
+{#if showDeleteConfirm}
+	<div class="confirm-dialog-overlay" on:click={cancelDelete}>
+		<div class="confirm-dialog" on:click|stopPropagation>
+			<h3>Confirm Delete</h3>
+			{#if itemTypeToDelete === 'group'}
+				<p>Are you sure you want to delete group "{itemToDelete}"? This will not delete individual boards.</p>
+			{:else}
+				<p>Are you sure you want to delete board "{itemToDelete}"?</p>
+			{/if}
+			<div class="confirm-dialog-buttons">
+				<button class="btn btn-cancel" on:click={cancelDelete}>Cancel</button>
+				<button class="btn btn-delete" on:click={confirmDelete}>Delete</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	:global(body) {
@@ -506,70 +717,58 @@
 		background: #555;
 	}
 
-	.edit-btn {
+	.action-buttons {
+		display: flex;
+		gap: 0.5rem;
+		margin-top: 1.5rem;
+	}
+
+	.action-btn {
 		flex: 1;
-		padding: 0.75rem;
-		border: 1px solid #444;
+		padding: 0.6rem 0.75rem;
+		background: #252525;
+		border: 1px solid #333;
 		border-radius: 6px;
-		font-size: 0.9rem;
-		font-weight: 400;
+		font-size: 0.85rem;
+		font-weight: 500;
 		cursor: pointer;
-		transition: all 0.2s;
-		background: #2a2a2a;
+		transition: all 0.15s;
+	}
+
+	.action-btn-edit {
 		color: #64b5f6;
 	}
 
-	.edit-btn:hover {
-		background: #333;
+	.action-btn-edit:hover {
+		background: #2d2d2d;
 		border-color: #64b5f6;
 	}
 
-	.edit-btn:active {
-		transform: scale(0.98);
-	}
-
-	.sync-presets-btn {
-		flex: 1;
-		padding: 0.75rem;
-		border: 1px solid #444;
-		border-radius: 6px;
-		font-size: 0.9rem;
-		font-weight: 400;
-		cursor: pointer;
-		transition: all 0.2s;
-		background: #2a2a2a;
+	.action-btn-presets {
 		color: #81c784;
 	}
 
-	.sync-presets-btn:hover {
-		background: #333;
+	.action-btn-presets:hover {
+		background: #2d2d2d;
 		border-color: #81c784;
 	}
 
-	.sync-presets-btn:active {
-		transform: scale(0.98);
+	.action-btn-reset {
+		color: #ffb74d;
 	}
 
-	.delete-btn {
-		flex: 1;
-		padding: 0.75rem;
-		border: 1px solid #444;
-		border-radius: 6px;
-		font-size: 0.9rem;
-		font-weight: 400;
-		cursor: pointer;
-		transition: all 0.2s;
-		background: #2a2a2a;
+	.action-btn-reset:hover {
+		background: #2d2620;
+		border-color: #ffb74d;
+	}
+
+	.action-btn-delete {
 		color: #e57373;
 	}
 
-	.delete-btn:hover {
-		background: #333;
+	.action-btn-delete:hover {
+		background: #2d2020;
 		border-color: #e57373;
-	}
-
-	.delete-btn:active {
-		transform: scale(0.98);
 	}
 
 	.boards {
@@ -766,6 +965,60 @@
 		cursor: not-allowed;
 	}
 
+	.led-count-wrapper {
+		margin-bottom: 1.5rem;
+	}
+
+	.led-count-label {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.5rem;
+		font-size: 0.875rem;
+		color: #9ca3af;
+	}
+
+	.led-count-value {
+		color: #e5e5e5;
+		font-weight: 500;
+	}
+
+	.led-count-slider {
+		width: 100%;
+		height: 8px;
+		border-radius: 4px;
+		background: linear-gradient(to right, #444, #a855f7);
+		outline: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+
+	.led-count-slider:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.led-count-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #4caf50;
+		cursor: pointer;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
+	.led-count-slider::-moz-range-thumb {
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #4caf50;
+		cursor: pointer;
+		border: none;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
 	.brightness-slider {
 		width: 100%;
 		height: 8px;
@@ -826,5 +1079,257 @@
 
 	.loopy-btn:active {
 		transform: translateY(0);
+	}
+
+	.edit-form {
+		padding: 0.75rem;
+	}
+
+	.edit-form .form-group {
+		margin-bottom: 1rem;
+	}
+
+	.edit-form .form-group label {
+		display: block;
+		margin-bottom: 0.5rem;
+		color: #e0e0e0;
+		font-weight: 500;
+	}
+
+	.edit-form .form-input {
+		width: 100%;
+		padding: 0.75rem;
+		background: #333;
+		color: #e0e0e0;
+		border: 1px solid #444;
+		border-radius: 4px;
+		font-size: 1rem;
+		box-sizing: border-box;
+	}
+
+	.edit-form .form-input:focus {
+		outline: none;
+		border-color: #4caf50;
+	}
+
+	.edit-form .form-input::placeholder {
+		color: #888;
+	}
+
+	.edit-form .form-actions {
+		display: flex;
+		gap: 1rem;
+		margin-top: 1rem;
+	}
+
+	.edit-form .submit-btn,
+	.edit-form .cancel-btn {
+		flex: 1;
+		padding: 0.6rem 0.75rem;
+		background: #252525;
+		border: 1px solid #333;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.15s;
+		color: #e0e0e0;
+	}
+
+	.edit-form .submit-btn {
+		color: #64b5f6;
+		border-color: #64b5f6;
+	}
+
+	.edit-form .submit-btn:hover {
+		background: #2d2d2d;
+		border-color: #64b5f6;
+	}
+
+	.edit-form .cancel-btn {
+		color: #e57373;
+		border-color: #e57373;
+	}
+
+	.edit-form .cancel-btn:hover {
+		background: #2d2020;
+		border-color: #e57373;
+	}
+
+	.label-icon {
+		margin-right: 0.5rem;
+		font-size: 0.9rem;
+	}
+
+	.member-count {
+		margin-left: auto;
+		background: #4a5568;
+		color: #e2e8f0;
+		padding: 0.2rem 0.5rem;
+		border-radius: 12px;
+		font-size: 0.75rem;
+		font-weight: 500;
+	}
+
+	.member-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		max-height: 180px;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	.member-label {
+		display: flex;
+		align-items: center;
+		padding: 0.2rem 0.5rem;
+		cursor: pointer;
+		gap: 0.5rem;
+		width: 100%;
+		white-space: nowrap;
+	}
+
+	.member-checkbox-input {
+		width: 16px;
+		height: 16px;
+		appearance: none;
+		border: 2px solid #4a5568;
+		border-radius: 3px;
+		background: #1a202c;
+		cursor: pointer;
+		position: relative;
+		transition: all 0.2s ease;
+		vertical-align: middle;
+		margin-top: 0;
+		margin-bottom: 0;
+	}
+
+	.member-checkbox-input:checked {
+		background: #2d3748;
+		border-color: #4caf50;
+	}
+
+	.member-checkbox-input:checked::after {
+		content: '✓';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		color: #4caf50;
+		font-size: 10px;
+		font-weight: bold;
+	}
+
+	.member-checkbox-input:hover {
+		border-color: #718096;
+	}
+
+	.member-name {
+		font-weight: 500;
+		color: #f7fafc;
+		font-size: 0.9rem;
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.member-status {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.8rem;
+		color: #a0aec0;
+		flex-shrink: 0;
+	}
+
+	.status-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+	}
+
+	.status-dot.connected {
+		background-color: #48bb78;
+		box-shadow: 0 0 4px rgba(72, 187, 120, 0.6);
+	}
+
+	.status-dot.disconnected {
+		background-color: #f56565;
+		box-shadow: 0 0 4px rgba(245, 101, 101, 0.6);
+	}
+
+	.btn-icon {
+		margin-right: 0.5rem;
+	}
+
+	/* Custom Confirmation Dialog */
+	.confirm-dialog-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.7);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+
+	.confirm-dialog {
+		background-color: #2a2a2a;
+		border: 1px solid #444;
+		border-radius: 8px;
+		padding: 2rem;
+		max-width: 400px;
+		width: 90%;
+		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+	}
+
+	.confirm-dialog h3 {
+		margin: 0 0 1rem 0;
+		color: #ff6b6b;
+		font-size: 1.2rem;
+	}
+
+	.confirm-dialog p {
+		margin: 0 0 1.5rem 0;
+		color: #e0e0e0;
+		line-height: 1.4;
+	}
+
+	.confirm-dialog-buttons {
+		display: flex;
+		gap: 1rem;
+		justify-content: flex-end;
+	}
+
+	.btn {
+		padding: 0.5rem 1rem;
+		border: none;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 0.9rem;
+		transition: background-color 0.2s;
+	}
+
+	.btn-cancel {
+		background-color: #555;
+		color: #e0e0e0;
+	}
+
+	.btn-cancel:hover {
+		background-color: #666;
+	}
+
+	.btn-delete {
+		background-color: #ff6b6b;
+		color: white;
+	}
+
+	.btn-delete:hover {
+		background-color: #ff5252;
 	}
 </style>

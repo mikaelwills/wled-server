@@ -10,6 +10,12 @@ pub struct BoardState {
     pub effect: u8,
     pub connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ledCount")]
+    pub led_count: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "maxLeds")]
+    pub max_leds: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "isGroup")]
     pub is_group: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,32 +33,31 @@ impl BoardState {
             color: [255, 255, 255],
             effect: 0,
             connected: false,
+            led_count: None,
+            max_leds: None,
             is_group: None,
             member_ids: None,
-        }
-    }
-
-    pub fn new_group(id: String, members: Vec<String>) -> Self {
-        Self {
-            id,
-            ip: String::new(),
-            on: false,
-            brightness: 128,
-            color: [255, 255, 255],
-            effect: 0,
-            connected: true,
-            is_group: Some(true),
-            member_ids: Some(members),
         }
     }
 }
 
 pub enum BoardCommand {
-    TogglePower,
+    SetPower(bool, u8), // on/off, transition
     SetBrightness(u8, u8), // brightness, transition
     SetColor { r: u8, g: u8, b: u8, transition: u8 },
     SetEffect(u8, u8), // effect, transition
     SetPreset(u8, u8), // preset, transition
+    SetLedCount(u16), // led_count
+    ResetSegment, // reset segment to defaults
     GetState(tokio::sync::oneshot::Sender<BoardState>),
     Shutdown,
+}
+
+#[derive(Debug, Clone)]
+pub enum GroupCommand {
+    SetPower(bool, u8), // on/off, transition
+    SetBrightness(u8, u8), // brightness, transition
+    SetColor { r: u8, g: u8, b: u8, transition: u8 },
+    SetEffect(u8, u8), // effect, transition
+    SetPreset(u8, u8), // preset, transition
 }

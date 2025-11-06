@@ -17,7 +17,7 @@ export async function addGroup(id: string, memberIds: string[]): Promise<void> {
 
     if (!res.ok) {
       if (res.status === 409) {
-        throw new Error('A group with this ID already exists');
+        throw new Error('A board or group with this ID already exists');
       } else if (res.status === 400) {
         throw new Error('One or more member boards not found');
       }
@@ -25,6 +25,35 @@ export async function addGroup(id: string, memberIds: string[]): Promise<void> {
     }
   } catch (error) {
     console.error('Failed to add group:', error);
+    throw error;
+  }
+}
+
+/**
+ * Update an existing group
+ */
+export async function updateGroup(groupId: string, newId: string, memberIds: string[]): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const res = await fetch(`${API_URL}/groups/${groupId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: newId, members: memberIds }),
+    });
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error('Group not found');
+      } else if (res.status === 409) {
+        throw new Error('A board or group with this ID already exists');
+      } else if (res.status === 400) {
+        throw new Error('One or more member boards not found');
+      }
+      throw new Error(`Failed to update group: ${res.statusText}`);
+    }
+  } catch (error) {
+    console.error('Failed to update group:', error);
     throw error;
   }
 }

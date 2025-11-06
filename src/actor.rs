@@ -8,6 +8,7 @@ use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tracing::{error, info, warn};
 
 pub struct BoardActor {
     pub id: String,
@@ -53,10 +54,7 @@ impl BoardActor {
             let ws_stream = match connect_async(url).await {
                 Ok((stream, _)) => stream,
                 Err(e) => {
-                    eprintln!(
-                        "[{}] Failed to connect: {}, retrying in 5 seconds...",
-                        self.id, e
-                    );
+                    warn!(board_id = %self.id, "Failed to connect: {}, retrying in 5 seconds...", e);
                     self.state.connected = false;
                     self.broadcast_connection_status();
 
@@ -68,12 +66,37 @@ impl BoardActor {
                                 Some(BoardCommand::GetState(response_tx)) => {
                                     let _ = response_tx.send(self.state.clone());
                                 }
+                                Some(BoardCommand::SetPower(target_state, _transition)) => {
+                                    // Cache the state change, will be sent when reconnected
+                                    self.state.on = target_state;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SetBrightness(bri, _transition)) => {
+                                    // Cache the state change
+                                    self.state.brightness = bri;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SetColor { r, g, b, transition: _ }) => {
+                                    // Cache the state change
+                                    self.state.color = [r, g, b];
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SetEffect(effect, _transition)) => {
+                                    // Cache the state change
+                                    self.state.effect = effect;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SetLedCount(led_count)) => {
+                                    // Cache the state change
+                                    self.state.led_count = Some(led_count);
+                                    self.broadcast_state();
+                                }
                                 Some(BoardCommand::Shutdown) => {
-                                    println!("[{}] Shutting down actor", self.id);
+                                    info!(board_id = %self.id, "Shutting down actor");
                                     return Ok(());
                                 }
                                 None => return Ok(()),
-                                _ => {} // Ignore other commands while disconnected
+                                _ => {} // Ignore preset and segment reset commands while disconnected
                             }
                         }
                     }
@@ -81,13 +104,34 @@ impl BoardActor {
                 }
             };
 
-            println!("[{}] Connected to WLED", self.id);
+            info!(board_id = %self.id, "Connected to WLED");
 
             // Mark as connected and broadcast status
             self.state.connected = true;
             self.broadcast_connection_status();
 
             let (mut write, mut read) = ws_stream.split();
+
+            // Sync cached state to the physical board after reconnection
+            // Build a composite state update message with all cached properties
+            let sync_msg = format!(
+                r#"{{"on":{},"bri":{},"seg":[{{"col":[[{},{},{}]],"fx":{}}}]}}"#,
+                self.state.on,
+                self.state.brightness,
+                self.state.color[0],
+                self.state.color[1],
+                self.state.color[2],
+                self.state.effect
+            );
+
+            if let Err(e) = timeout(
+                tokio::time::Duration::from_secs(5),
+                write.send(Message::Text(sync_msg))
+            ).await {
+                error!(board_id = %self.id, "Failed to sync state after reconnection: {:?}", e);
+            } else {
+                info!(board_id = %self.id, "State synced to board after reconnection");
+            }
 
             // Create ping interval for keepalive (5 seconds)
             let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -102,7 +146,7 @@ impl BoardActor {
                       match msg {
                           Err(_) => {
                               // Timeout - no message received in 12 seconds
-                              eprintln!("[{}] Read timeout, connection dead", self.id);
+                              warn!(board_id = %self.id, "Read timeout, connection dead");
                               self.state.connected = false;
                               self.broadcast_connection_status();
                               break;
@@ -119,20 +163,20 @@ impl BoardActor {
                               last_message_time = Instant::now();
                           }
                           Ok(Some(Ok(Message::Close(_)))) => {
-                              println!("[{}] Connection closed by remote", self.id);
+                              info!(board_id = %self.id, "Connection closed by remote");
                               self.state.connected = false;
                               self.broadcast_connection_status();
                               break;
                           }
                           Ok(Some(Err(e))) => {
                               let elapsed = last_message_time.elapsed().as_secs();
-                              eprintln!("[{}] Connection lost after {}s: {:?}", self.id, elapsed, e);
+                              error!(board_id = %self.id, elapsed = %elapsed, "Connection lost: {:?}", e);
                               self.state.connected = false;
                               self.broadcast_connection_status();
                               break;
                           }
                           Ok(None) => {
-                              println!("[{}] Connection closed", self.id);
+                              info!(board_id = %self.id, "Connection closed");
                               self.state.connected = false;
                               self.broadcast_connection_status();
                               break;
@@ -145,9 +189,9 @@ impl BoardActor {
                   }
                   cmd = cmd_rx.recv() => {
                         match cmd {
-                            Some(BoardCommand::TogglePower) => {
-                                self.state.on = !self.state.on;
-                                let msg = Message::Text(format!(r#"{{"on":{}}}"#, self.state.on));
+                            Some(BoardCommand::SetPower(target_state, transition)) => {
+                                self.state.on = target_state;
+                                let msg = Message::Text(format!(r#"{{"on":{},"tt":{}}}"#, target_state, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
@@ -187,11 +231,27 @@ impl BoardActor {
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
+                            Some(BoardCommand::SetLedCount(led_count)) => {
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"len":{}}}]}}"#, led_count));
+                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                    .await
+                                    .map_err(|_| "Timeout")??;
+                                self.state.led_count = Some(led_count);
+                                self.broadcast_state();
+                            }
+                            Some(BoardCommand::ResetSegment) => {
+                                // Reset segment to defaults: grp=1, spc=0, of=0
+                                let msg = Message::Text(r#"{"seg":[{"id":0,"grp":1,"spc":0,"of":0}]}"#.to_string());
+                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                    .await
+                                    .map_err(|_| "Timeout")??;
+                                self.broadcast_state();
+                            }
                             Some(BoardCommand::GetState(response_tx)) => {
                                 let _ = response_tx.send(self.state.clone());
                             }
                             Some(BoardCommand::Shutdown) => {
-                                println!("[{}] Shutting down actor", self.id);
+                                info!(board_id = %self.id, "Shutting down actor");
                                 return Ok(());
                             }
                             None => return Ok(()),
@@ -200,10 +260,7 @@ impl BoardActor {
                 }
             }
 
-            println!(
-                "WebSocket closed for {}, reconnecting in 5 seconds...",
-                self.id
-            );
+            info!(board_id = %self.id, "WebSocket closed, reconnecting in 5 seconds...");
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
@@ -236,7 +293,17 @@ impl BoardActor {
                 if let Some(fx) = first_seg["fx"].as_u64() {
                     self.state.effect = fx as u8;
                 }
+
+                // Parse LED count: state.seg[0].stop
+                if let Some(stop) = first_seg["stop"].as_u64() {
+                    self.state.led_count = Some(stop as u16);
+                }
             }
+        }
+
+        // Parse max LEDs from info
+        if let Some(leds) = json["info"]["leds"]["count"].as_u64() {
+            self.state.max_leds = Some(leds as u16);
         }
     }
 }
