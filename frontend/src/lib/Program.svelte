@@ -110,7 +110,7 @@
 			cursorColor: 'rgb(192, 132, 252)',
 			barWidth: 2,
 			barRadius: 3,
-			height: 200,
+			height: 120,
 			plugins: [regions]
 		});
 
@@ -1313,7 +1313,7 @@ function playFullProgram() {
 
 	.waveform-wrapper {
 		position: relative;
-		min-height: 176px;
+		min-height: 120px;
 	}
 
 	.waveform-wrapper:has(+ .waveform-footer:not(.has-cues)) {
