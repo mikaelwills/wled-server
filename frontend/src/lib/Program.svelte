@@ -23,7 +23,6 @@
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
-	let cuesExpanded = $state(true); // Start expanded
 
 	// Program metadata
 	let songName = $state('');
@@ -31,6 +30,9 @@
 
 	// Dropdown state
 	let openDropdownId = $state(null);
+
+	// Currently selected marker
+	let currentlySelectedMarker = $state(null);
 
 	// Default target board for new cues
 	let defaultTargetBoard = $state(null);
@@ -86,9 +88,160 @@
 		songName = data.songName || '';
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
+		defaultTargetBoard = data.defaultTargetBoard || null;
 		// Note: cues will need to be restored after audio file is loaded
 		// Store them temporarily
 		window._pendingCues = data.cues || [];
+	}
+
+	/**
+	 * Initialize WaveSurfer instance with all event handlers
+	 * @param {string} audioUrl - Blob URL of the audio file
+	 */
+	function initializeWaveSurfer(audioUrl) {
+		// Initialize Regions plugin
+		regions = RegionsPlugin.create();
+
+		// Create WaveSurfer instance
+		wavesurfer = WaveSurfer.create({
+			container: `#waveform-${programId}`,
+			waveColor: 'rgb(147, 51, 234)',
+			progressColor: 'rgb(168, 85, 247)',
+			cursorColor: 'rgb(192, 132, 252)',
+			barWidth: 2,
+			barRadius: 3,
+			height: 200,
+			plugins: [regions]
+		});
+
+		// When waveform is loaded and decoded
+		wavesurfer.on('decode', () => {
+			isLoaded = true;
+
+			// Restore pending cues if any
+			if (window._pendingCues && window._pendingCues.length > 0) {
+				window._pendingCues.forEach(cue => {
+					// Create region first to get ID
+					const markerRegion = regions.addRegion({
+						start: cue.time,
+						content: document.createElement('div'), // Temporary placeholder
+						color: 'rgba(168, 85, 247, 0.3)',
+						drag: true,
+						resize: false
+					});
+
+					// Now create label with the region ID and replace content
+					const labelElement = createRegionLabel(cue.label, cue.time, markerRegion.id);
+					markerRegion.element.replaceChildren(labelElement);
+
+					// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
+					setTimeout(() => {
+						if (labelElement.parentElement) {
+							labelElement.style.marginTop = ''; // Remove plugin's marginTop
+							labelElement.style.position = 'absolute';
+							labelElement.style.top = '50%';
+							labelElement.style.transform = 'translateY(-50%)';
+						}
+					}, 20);
+
+					markers = [...markers, {
+						id: markerRegion.id,
+						time: cue.time,
+						label: cue.label,
+						boards: cue.boards,
+						action: cue.action || 'preset',
+						preset: cue.preset,
+						effect: cue.effect,
+						color: cue.color,
+						brightness: cue.brightness,
+						transition: cue.transition
+					}];
+				});
+				window._pendingCues = null;
+			}
+		});
+
+		// Track play/pause state
+		wavesurfer.on('play', () => {
+			isPlaying = true;
+		});
+
+		wavesurfer.on('pause', () => {
+			isPlaying = false;
+		});
+
+		// Handle left-click (seek) and right-click (add marker) on waveform
+		const waveformContainer = wavesurfer.getWrapper();
+		waveformContainer.addEventListener('mousedown', (event) => {
+			if (!isLoaded) return;
+
+			// Prevent default context menu on right-click
+			if (event.button === 2) {
+				event.preventDefault();
+			}
+
+			const bounds = waveformContainer.getBoundingClientRect();
+			const relativeX = (event.clientX - bounds.left) / bounds.width;
+			const duration = wavesurfer.getDuration();
+			const clickTime = relativeX * duration;
+
+			if (event.button === 0) {
+				// Left-click: Seek to position
+				console.log('🖱️ Left-click: Seeking to', clickTime);
+				wavesurfer.seekTo(relativeX);
+			} else if (event.button === 2) {
+				// Right-click: Add marker
+				console.log('🖱️ Right-click: Adding marker at', clickTime);
+				addMarker(clickTime);
+			}
+		});
+
+		// Prevent context menu on right-click
+		waveformContainer.addEventListener('contextmenu', (event) => {
+			event.preventDefault();
+		});
+
+		// Update marker list when regions change
+		regions.on('region-updated', (region) => {
+			const markerIndex = markers.findIndex(m => m.id === region.id);
+			if (markerIndex !== -1) {
+				markers[markerIndex].time = region.start;
+
+				// Regenerate label to ensure it's always centered
+				const marker = markers[markerIndex];
+				regenerateMarkerLabel(region.id, marker.label);
+
+				markers = [...markers]; // Trigger reactivity
+				syncMarkersToStore();
+			}
+		});
+
+		regions.on('region-removed', (region) => {
+			markers = markers.filter(m => m.id !== region.id);
+			syncMarkersToStore();
+		});
+
+		// Track selected marker when clicked on waveform
+		regions.on('region-clicked', (region, e) => {
+			e.stopPropagation(); // Prevent waveform click from firing
+			currentlySelectedMarker = region.id;
+			console.log('Selected marker:', region.id);
+		});
+
+		// Clear selection when clicking empty waveform area
+		wavesurfer.on('click', () => {
+			currentlySelectedMarker = null;
+			console.log('Cleared selection');
+		});
+
+		// Store URL and load audio
+		window._currentAudioUrl = audioUrl;
+		wavesurfer.load(audioUrl);
+
+		// Clear existing markers if not loading program
+		if (!program) {
+			markers = [];
+		}
 	}
 
 	export function loadAudioFile(file) {
@@ -100,117 +253,9 @@
 
 			// Wait for DOM to update, then initialize WaveSurfer
 			setTimeout(() => {
-				// Initialize Regions plugin
-				regions = RegionsPlugin.create();
-
-				// Create WaveSurfer instance
-				wavesurfer = WaveSurfer.create({
-					container: `#waveform-${programId}`,
-					waveColor: 'rgb(147, 51, 234)',
-					progressColor: 'rgb(168, 85, 247)',
-					cursorColor: 'rgb(192, 132, 252)',
-					barWidth: 2,
-					barRadius: 3,
-					height: 200,
-					plugins: [regions]
-				});
-
-				// When waveform is loaded and decoded
-				wavesurfer.on('decode', () => {
-					isLoaded = true;
-
-					// Restore pending cues if any
-					if (window._pendingCues && window._pendingCues.length > 0) {
-						window._pendingCues.forEach(cue => {
-							const labelElement = createRegionLabel(cue.label, cue.time);
-							const markerRegion = regions.addRegion({
-								start: cue.time,
-								content: labelElement,
-								color: 'rgba(168, 85, 247, 0.3)',
-								drag: true,
-								resize: false
-							});
-
-							markers = [...markers, {
-								id: markerRegion.id,
-								time: cue.time,
-								label: cue.label,
-								boards: cue.boards,
-								preset: cue.preset,
-								effect: cue.effect,
-								color: cue.color,
-								brightness: cue.brightness,
-								transition: cue.transition
-							}];
-						});
-						window._pendingCues = null;
-					}
-				});
-
-				// Track play/pause state
-				wavesurfer.on('play', () => {
-					isPlaying = true;
-				});
-
-				wavesurfer.on('pause', () => {
-					isPlaying = false;
-				});
-
-				// Handle left-click (seek) and right-click (add marker) on waveform
-				const waveformContainer = wavesurfer.getWrapper();
-				waveformContainer.addEventListener('mousedown', (event) => {
-					if (!isLoaded) return;
-
-					// Prevent default context menu on right-click
-					if (event.button === 2) {
-						event.preventDefault();
-					}
-
-					const bounds = waveformContainer.getBoundingClientRect();
-					const relativeX = (event.clientX - bounds.left) / bounds.width;
-					const duration = wavesurfer.getDuration();
-					const clickTime = relativeX * duration;
-
-					if (event.button === 0) {
-						// Left-click: Seek to position
-						console.log('🖱️ Left-click: Seeking to', clickTime);
-						wavesurfer.seekTo(relativeX);
-					} else if (event.button === 2) {
-						// Right-click: Add marker
-						console.log('🖱️ Right-click: Adding marker at', clickTime);
-						addMarker(clickTime);
-					}
-				});
-
-				// Prevent context menu on right-click
-				waveformContainer.addEventListener('contextmenu', (event) => {
-					event.preventDefault();
-				});
-
-				// Update marker list when regions change
-				regions.on('region-updated', (region) => {
-					const markerIndex = markers.findIndex(m => m.id === region.id);
-					if (markerIndex !== -1) {
-						markers[markerIndex].time = region.start;
-						markers = [...markers]; // Trigger reactivity
-						syncMarkersToStore();
-					}
-				});
-
-				regions.on('region-removed', (region) => {
-					markers = markers.filter(m => m.id !== region.id);
-					syncMarkersToStore();
-				});
-
 				const url = URL.createObjectURL(file);
 				console.log('Loading URL:', url);
-				window._currentAudioUrl = url; // Store for later reload
-				wavesurfer.load(url);
-
-				// Clear existing markers if not loading program
-				if (!program) {
-					markers = [];
-				}
+				initializeWaveSurfer(url);
 			}, 100);
 		} else {
 			alert('Please select an audio file (WAV, MP3, etc.)');
@@ -238,120 +283,10 @@
 			.then(blob => {
 				console.log('[Program.svelte] Blob created:', blob.size, 'bytes, type:', blob.type);
 
-				// Create blob URL
+				// Create blob URL and initialize WaveSurfer
 				const url = URL.createObjectURL(blob);
-				window._currentAudioUrl = url; // Store for later reload
-
-				// Initialize Regions plugin
-				regions = RegionsPlugin.create();
-
-				try {
-
-				// Create WaveSurfer instance
-				wavesurfer = WaveSurfer.create({
-					container: `#waveform-${programId}`,
-					waveColor: 'rgb(147, 51, 234)',
-					progressColor: 'rgb(168, 85, 247)',
-					cursorColor: 'rgb(192, 132, 252)',
-					barWidth: 2,
-					barRadius: 3,
-					height: 200,
-					plugins: [regions]
-				});
-
-				// When waveform is loaded and decoded
-				wavesurfer.on('decode', () => {
-					isLoaded = true;
-
-					// Restore pending cues if any
-					if (window._pendingCues && window._pendingCues.length > 0) {
-						window._pendingCues.forEach(cue => {
-							const labelElement = createRegionLabel(cue.label, cue.time);
-							const markerRegion = regions.addRegion({
-								start: cue.time,
-								content: labelElement,
-								color: 'rgba(168, 85, 247, 0.3)',
-								drag: true,
-								resize: false
-							});
-
-							markers = [...markers, {
-								id: markerRegion.id,
-								time: cue.time,
-								label: cue.label,
-								boards: cue.boards,
-								preset: cue.preset,
-								effect: cue.effect,
-								color: cue.color,
-								brightness: cue.brightness,
-								transition: cue.transition
-							}];
-						});
-						window._pendingCues = null;
-					}
-				});
-
-				// Track play/pause state
-				wavesurfer.on('play', () => {
-					isPlaying = true;
-				});
-
-				wavesurfer.on('pause', () => {
-					isPlaying = false;
-				});
-
-				// Handle left-click (seek) and right-click (add marker) on waveform
-				const waveformContainer = wavesurfer.getWrapper();
-				waveformContainer.addEventListener('mousedown', (event) => {
-					if (!isLoaded) return;
-
-					// Prevent default context menu on right-click
-					if (event.button === 2) {
-						event.preventDefault();
-					}
-
-					const bounds = waveformContainer.getBoundingClientRect();
-					const relativeX = (event.clientX - bounds.left) / bounds.width;
-					const duration = wavesurfer.getDuration();
-					const clickTime = relativeX * duration;
-
-					if (event.button === 0) {
-						// Left-click: Seek to position
-						console.log('🖱️ Left-click: Seeking to', clickTime);
-						wavesurfer.seekTo(relativeX);
-					} else if (event.button === 2) {
-						// Right-click: Add marker
-						console.log('🖱️ Right-click: Adding marker at', clickTime);
-						addMarker(clickTime);
-					}
-				});
-
-				// Prevent context menu on right-click
-				waveformContainer.addEventListener('contextmenu', (event) => {
-					event.preventDefault();
-				});
-
-				// Update marker list when regions change
-				regions.on('region-updated', (region) => {
-					const markerIndex = markers.findIndex(m => m.id === region.id);
-					if (markerIndex !== -1) {
-						markers[markerIndex].time = region.start;
-						markers = [...markers]; // Trigger reactivity
-						syncMarkersToStore();
-					}
-				});
-
-				regions.on('region-removed', (region) => {
-					markers = markers.filter(m => m.id !== region.id);
-					syncMarkersToStore();
-				});
-
-					// Load the compressed audio (WaveSurfer will decode it)
-					console.log('[Program.svelte] Loading audio URL into WaveSurfer:', url);
-					wavesurfer.load(url);
-				} catch (err) {
-					console.error('[Program.svelte] Failed to create WaveSurfer instance:', err);
-				}
+				console.log('[Program.svelte] Loading audio URL into WaveSurfer:', url);
+				initializeWaveSurfer(url);
 			})
 			.catch(err => {
 				console.error('[Program.svelte] Failed to load compressed audio:', err);
@@ -359,16 +294,16 @@
 	}
 
 	// Helper function to create styled label elements - always centered
-	function createRegionLabel(text, time) {
+	function createRegionLabel(text, time, markerId) {
 		const label = document.createElement('div');
 		label.textContent = text;
 		label.title = text; // Tooltip for full text
 
 		// Always center labels vertically on the waveform
 		label.style.cssText = `
-			position: absolute;
-			top: 50%;
-			transform: translateY(-50%);
+			position: absolute !important;
+			top: 50% !important;
+			transform: translateY(-50%) !important;
 			background-color: rgba(20, 20, 20, 0.95);
 			color: #e5e5e5 !important;
 			padding: 3px 8px;
@@ -384,9 +319,17 @@
 			line-height: 1.2;
 			border: 1px solid rgba(168, 85, 247, 0.5);
 			box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-			pointer-events: none;
+			pointer-events: auto;
+			cursor: pointer;
 			display: block;
 		`;
+
+		// Make label clickable to select marker
+		label.addEventListener('click', (e) => {
+			e.stopPropagation(); // Prevent region click from also firing
+			currentlySelectedMarker = markerId;
+			console.log('Selected marker via label:', markerId);
+		});
 
 		return label;
 	}
@@ -417,15 +360,29 @@
 		console.log('📍 addMarker called with time:', time);
 		const currentCount = markers.length;
 		const labelText = `Cue ${currentCount + 1}`;
-		const labelElement = createRegionLabel(labelText, time);
 
+		// Create region first to get ID
 		const markerRegion = regions.addRegion({
 			start: time,
-			content: labelElement,
+			content: document.createElement('div'), // Temporary placeholder
 			color: 'rgba(168, 85, 247, 0.3)',
 			drag: true,
 			resize: false
 		});
+
+		// Now create label with the region ID and replace content
+		const labelElement = createRegionLabel(labelText, time, markerRegion.id);
+		markerRegion.element.replaceChildren(labelElement);
+
+		// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
+		setTimeout(() => {
+			if (labelElement.parentElement) {
+				labelElement.style.marginTop = ''; // Remove plugin's marginTop
+				labelElement.style.position = 'absolute';
+				labelElement.style.top = '50%';
+				labelElement.style.transform = 'translateY(-50%)';
+			}
+		}, 20);
 
 		// Inherit default target board if set, otherwise empty
 		const initialBoards = defaultTargetBoard ? [defaultTargetBoard] : [];
@@ -435,6 +392,7 @@
 			time: time,
 			label: `Cue ${currentCount + 1}`,
 			boards: initialBoards,
+			action: 'preset',
 			preset: 0,
 			effect: 0,
 			color: '#ff0000',
@@ -446,21 +404,48 @@
 		syncMarkersToStore();
 	}
 
-	function updateMarkerEffect(markerId, effectIndex) {
+	/**
+	 * Generic function to update any marker property
+	 * @param {string} markerId - Region ID
+	 * @param {string} property - Property name (e.g., 'effect', 'color', 'brightness', etc.)
+	 * @param {any} value - New value for the property
+	 */
+	function updateMarkerProperty(markerId, property, value) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
-			marker.effect = effectIndex;
+			marker[property] = value;
 			markers = [...markers];
 			syncMarkersToStore();
 		}
 	}
 
-	function updateMarkerColor(markerId, color) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.color = color;
-			markers = [...markers];
-			syncMarkersToStore();
+	/**
+	 * Regenerate a marker's label in the waveform
+	 * @param {string} markerId - Region ID
+	 * @param {string} newLabel - New label text
+	 */
+	function regenerateMarkerLabel(markerId, newLabel) {
+		if (regions) {
+			const allRegions = regions.getRegions();
+			const region = allRegions.find(r => r.id === markerId);
+			if (region) {
+				const newLabelElement = createRegionLabel(newLabel, region.start, markerId);
+				region.element.replaceChildren(newLabelElement);
+
+				// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
+				setTimeout(() => {
+					if (newLabelElement.parentElement) {
+						newLabelElement.style.marginTop = ''; // Remove plugin's marginTop
+						newLabelElement.style.position = 'absolute';
+						newLabelElement.style.top = '50%';
+						newLabelElement.style.transform = 'translateY(-50%)';
+					}
+				}, 20);
+			} else {
+				console.warn('Region not found for marker:', markerId);
+			}
+		} else {
+			console.warn('Regions plugin not available');
 		}
 	}
 
@@ -474,54 +459,9 @@
 			if (preset) {
 				console.log('Updating marker with preset slot:', markerId, presetSlot, preset.name);
 				marker.label = preset.name;
-
-				// Update WaveSurfer region label (HTML element)
-				if (regions) {
-					const allRegions = regions.getRegions();
-					console.log('All regions:', allRegions.map(r => ({ id: r.id, content: r.content })));
-					const region = allRegions.find(r => r.id === markerId);
-					if (region && region.content) {
-						console.log('Updating region content to:', preset.name);
-						// Update the text content of the HTML element
-						if (region.content.textContent !== undefined) {
-							region.content.textContent = preset.name;
-							region.content.title = preset.name; // Update tooltip too
-						}
-					} else {
-						console.warn('Region not found for marker:', markerId);
-					}
-				} else {
-					console.warn('Regions plugin not available');
-				}
+				regenerateMarkerLabel(markerId, preset.name);
 			}
 
-			markers = [...markers];
-			syncMarkersToStore();
-		}
-	}
-
-	function updateMarkerBrightness(markerId, brightness) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.brightness = brightness;
-			markers = [...markers];
-			syncMarkersToStore();
-		}
-	}
-
-	function updateMarkerTransition(markerId, transition) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.transition = transition;
-			markers = [...markers];
-			syncMarkersToStore();
-		}
-	}
-
-	function updateMarkerBoards(markerId, selectedBoards) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.boards = selectedBoards;
 			markers = [...markers];
 			syncMarkersToStore();
 		}
@@ -531,25 +471,8 @@
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker.label = newLabel;
+			regenerateMarkerLabel(markerId, newLabel);
 			markers = [...markers];
-
-			// Update WaveSurfer region label (HTML element)
-			if (regions) {
-				const allRegions = regions.getRegions();
-				const region = allRegions.find(r => r.id === markerId);
-				if (region && region.content) {
-					console.log('Updating region label:', markerId, newLabel);
-					// Update the text content of the HTML element
-					if (region.content.textContent !== undefined) {
-						region.content.textContent = newLabel;
-						region.content.title = newLabel; // Update tooltip too
-					}
-				} else {
-					console.warn('Region not found:', markerId);
-				}
-			} else {
-				console.warn('Regions plugin not available');
-			}
 			syncMarkersToStore();
 		}
 	}
@@ -762,13 +685,15 @@ function playFullProgram() {
 				time: m.time,
 				label: m.label,
 				boards: m.boards,
+				action: m.action || 'preset',
 				preset: m.preset,
 				color: m.color,
 				effect: m.effect,
 				brightness: m.brightness,
 				transition: m.transition
 			})),
-			createdAt: existingProgram?.createdAt || new Date().toISOString()
+			createdAt: existingProgram?.createdAt || new Date().toISOString(),
+			defaultTargetBoard: defaultTargetBoard
 		};
 
 		// Create Program model using factory
@@ -892,8 +817,10 @@ function playFullProgram() {
 				{@const groups = $boards.filter(b => b.isGroup)}
 				{@const regularBoards = $boards.filter(b => !b.isGroup)}
 
-				<button class="zoom-btn" onclick={zoomOut} title="Zoom Out">−</button>
-				<button class="zoom-btn" onclick={zoomIn} title="Zoom In">+</button>
+				<div class="zoom-btn-group">
+					<button class="zoom-btn zoom-btn-left" onclick={zoomOut} title="Zoom Out">−</button>
+					<button class="zoom-btn zoom-btn-right" onclick={zoomIn} title="Zoom In">+</button>
+				</div>
 
 				<div class="default-board-dropdown-wrapper">
 					<button
@@ -950,9 +877,6 @@ function playFullProgram() {
 					Apply to All Cues
 				</button>
 
-				<button class="btn-collapse" onclick={() => cuesExpanded = !cuesExpanded}>
-					<span>{cuesExpanded ? '▼' : '▶'} Cues</span>
-				</button>
 				<button class="cue-count-badge-wrapper" onclick={clearCues}>
 					<span class="cue-count-badge">{markers.length}</span>
 					<span class="clear-cues-text">Clear Cues</span>
@@ -967,10 +891,11 @@ function playFullProgram() {
 		{/if}
 
 		{#if markers.length > 0}
-			{#if cuesExpanded}
 			<div class="markers-section">
 				<div class="markers-list">
-					{#each [...markers].sort((a, b) => a.time - b.time) as marker (marker.id)}
+					{#if currentlySelectedMarker}
+						{@const marker = markers.find(m => m.id === currentlySelectedMarker)}
+						{#if marker}
 						<div class="marker-item">
 							<div class="marker-info">
 								<span class="marker-time">{formatTime(marker.time)}</span>
@@ -1035,14 +960,26 @@ function playFullProgram() {
 								</div>
 
 								<select
-									value={marker.preset}
-									onchange={(e) => updateMarkerPreset(marker.id, parseInt(e.target.value))}
-									class="preset-select"
+									value={marker.action || 'preset'}
+									onchange={(e) => updateMarkerProperty(marker.id, 'action', e.target.value)}
+									class="action-select"
 								>
-									{#each $presets as preset}
-										<option value={preset.id}>{preset.name}</option>
-									{/each}
+									<option value="preset">Preset</option>
+									<option value="on">On</option>
+									<option value="off">Off</option>
 								</select>
+
+								{#if marker.action === 'preset'}
+									<select
+										value={marker.preset}
+										onchange={(e) => updateMarkerPreset(marker.id, parseInt(e.target.value))}
+										class="preset-select"
+									>
+										{#each $presets as preset}
+											<option value={preset.id}>{preset.name}</option>
+										{/each}
+									</select>
+								{/if}
 
 								<div class="transition-input-wrapper">
 									<input
@@ -1054,7 +991,7 @@ function playFullProgram() {
 										value={marker.transition + ' ms'}
 										oninput={(e) => {
 											const val = e.target.value.replace(/\D/g, '');
-											updateMarkerTransition(marker.id, parseInt(val) || 0);
+											updateMarkerProperty(marker.id, 'transition', parseInt(val) || 0);
 											e.target.value = val + ' ms';
 										}}
 										class="transition-input"
@@ -1066,15 +1003,31 @@ function playFullProgram() {
 								</button>
 							</div>
 						</div>
-					{/each}
+						{/if}
+					{/if}
 				</div>
 			</div>
-			{/if}
 		{/if}
 	</div>
 </div>
 
 <style>
+	/* Force all WaveSurfer region labels to be centered - overrides plugin's default CSS */
+	:global([data-id^="wavesurfer_"] > div > div) {
+		position: absolute !important;
+		top: 50% !important;
+		transform: translateY(-50%) !important;
+	}
+
+	/* Remove WaveSurfer's default padding around waveform */
+	:global([id^="waveform-"]) {
+		padding: 0 !important;
+	}
+
+	:global([id^="waveform-"] > div) {
+		padding: 0.5rem 1rem !important;
+	}
+
 	.program-editor {
 		width: 100%;
 	}
@@ -1090,7 +1043,7 @@ function playFullProgram() {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		padding: 1rem 1.5rem;
+		padding: 0.5rem 1rem;
 		background: linear-gradient(to bottom, #1f1f1f, #1a1a1a);
 	}
 
@@ -1403,7 +1356,7 @@ function playFullProgram() {
 	}
 
 	.waveform-footer {
-		padding: 0.5rem 1rem;
+		padding: 0.5rem 1rem 0 1rem;
 		background-color: #1a1a1a;
 		display: flex;
 		justify-content: flex-end;
@@ -1418,13 +1371,23 @@ function playFullProgram() {
 		opacity: 1;
 	}
 
+	.zoom-btn-group {
+		display: flex;
+		border: 1px solid #3a3a3a;
+		border-radius: 4px;
+		overflow: hidden;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+		height: 28px;
+		box-sizing: border-box;
+	}
+
 	.zoom-btn {
 		width: 32px;
-		height: 28px;
-		background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
-		border: 1px solid #3a3a3a;
+		height: 100%;
+		background: #2a2a2a;
+		border: none;
 		color: #ffffff;
-		border-radius: 4px;
+		border-radius: 0;
 		font-size: 1rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -1435,18 +1398,19 @@ function playFullProgram() {
 		box-sizing: border-box;
 		padding: 0;
 		line-height: 1;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+	}
+
+	.zoom-btn-left {
+		border-right: 1px solid #3a3a3a;
 	}
 
 	.zoom-btn:hover {
-		background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
-		border-color: #a855f7;
-		box-shadow: 0 2px 4px rgba(168, 85, 247, 0.2);
+		background: #3a3a3a;
 	}
 
 	.zoom-btn:active {
-		transform: scale(0.95);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+		transform: scale(0.98);
+		background: #1a1a1a;
 	}
 
 	.waveform-skeleton {
@@ -1487,7 +1451,17 @@ function playFullProgram() {
 
 	.markers-section {
 		padding: 0.5rem 1rem;
-		margin-top: 0.5rem;
+	}
+
+	.no-selection-message {
+		text-align: center;
+		padding: 2rem 1rem;
+		color: #9ca3af;
+		font-size: 0.95rem;
+	}
+
+	.no-selection-message p {
+		margin: 0;
 	}
 
 	.default-board-controls {
@@ -1509,11 +1483,11 @@ function playFullProgram() {
 	}
 
 	.default-board-select-button {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
+		background-color: #2a2a2a;
+		border: 1px solid #3a3a3a;
 		color: #e5e5e5;
 		padding: 0 2rem 0 0.75rem;
-		border-radius: 6px;
+		border-radius: 4px;
 		font-size: 0.875rem;
 		cursor: pointer;
 		width: 140px;
@@ -1596,10 +1570,10 @@ function playFullProgram() {
 	}
 
 	.btn-apply-default {
-		padding: 0 1.4rem 0 0.75rem;
-		background-color: #a855f7;
-		color: white;
-		border: none;
+		padding: 0 1rem;
+		background-color: #2a2a2a;
+		color: #e5e5e5;
+		border: 1px solid #3a3a3a;
 		border-radius: 6px;
 		font-size: 0.875rem;
 		font-weight: 600;
@@ -1612,10 +1586,12 @@ function playFullProgram() {
 		align-items: center;
 		justify-content: center;
 		box-sizing: border-box;
+		text-align: center;
 	}
 
 	.btn-apply-default:hover:not(:disabled) {
-		background-color: #9333ea;
+		background-color: #3a3a3a;
+		border-color: #4a4a4a;
 		transform: translateY(-1px);
 	}
 
@@ -1772,6 +1748,31 @@ function playFullProgram() {
 	.dropdown-option span {
 		font-size: 0.875rem;
 		color: #e5e5e5;
+	}
+
+	.action-select {
+		background-color: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		color: #e5e5e5;
+		padding: 0.5rem 2rem 0.5rem 0.75rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		min-width: 90px;
+		transition: border-color 0.2s;
+		appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23e5e5e5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 0.75rem center;
+	}
+
+	.action-select:hover {
+		border-color: #a855f7;
+	}
+
+	.action-select:focus {
+		outline: none;
+		border-color: #a855f7;
 	}
 
 	.preset-select {

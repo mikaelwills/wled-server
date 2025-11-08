@@ -13,6 +13,8 @@ pub struct Program {
     pub audio_file: Option<String>,  // New: filename reference
     pub cues: Vec<Cue>,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_target_board: Option<String>,  // Default board/group for new cues
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,11 +22,17 @@ pub struct Cue {
     pub time: f64,
     pub label: String,
     pub boards: Vec<String>,
+    #[serde(default = "default_action")]
+    pub action: String,
     pub preset: u8,
     pub color: String,
     pub effect: u8,
     pub brightness: u8,
     pub transition: u8,
+}
+
+fn default_action() -> String {
+    "preset".to_string()
 }
 
 impl Program {

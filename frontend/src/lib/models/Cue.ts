@@ -1,9 +1,12 @@
 // frontend/src/lib/models/Cue.ts
 
+export type CueAction = 'preset' | 'on' | 'off';
+
 export interface CueData {
   time: number;
   label: string;
   boards: string[];
+  action: CueAction;
   preset: number;
   color: string;
   effect: number;
@@ -15,6 +18,7 @@ export class Cue implements CueData {
   time: number;
   label: string;
   boards: string[];
+  action: CueAction;
   preset: number;
   color: string;
   effect: number;
@@ -25,6 +29,7 @@ export class Cue implements CueData {
     this.time = data.time;
     this.label = data.label;
     this.boards = data.boards;
+    this.action = data.action;
     this.preset = data.preset;
     this.color = data.color;
     this.effect = data.effect;
@@ -45,6 +50,7 @@ export class Cue implements CueData {
       time: data.time,
       label: data.label || `Cue ${Math.floor(data.time)}s`,
       boards: Array.isArray(data.boards) ? data.boards : [],
+      action: data.action || 'preset', // Default to 'preset' for backward compatibility
       preset: data.preset ?? 0,
       color: data.color || '#ff0000',
       effect: data.effect ?? 0,
@@ -61,6 +67,7 @@ export class Cue implements CueData {
       time: this.time,
       label: this.label,
       boards: this.boards,
+      action: this.action,
       preset: this.preset,
       color: this.color,
       effect: this.effect,

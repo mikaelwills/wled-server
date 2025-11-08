@@ -11,15 +11,7 @@ A Rust-based intermediary server for controlling WLED devices with light sequenc
 - Only deploy pre-built binaries and assets to target devices
 - Target devices (especially routers) cannot handle compilation workload
 
-**Testing Changes:** Use the restart script to quickly restart both frontend and backend:
-```bash
-./restart.sh
-```
-This will:
-- Kill existing processes
-- Start backend (Rust) on http://0.0.0.0:3010
-- Start frontend (SvelteKit) on http://localhost:5173
-- Both servers start in parallel for faster restarts
+
 
 ## Architecture Overview
 

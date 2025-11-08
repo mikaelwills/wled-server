@@ -2,7 +2,7 @@
 import { browser } from '$app/environment';
 import { currentlyPlayingProgram, activeTimeouts } from './store';
 import { API_URL } from './api';
-import { setBoardBrightness, setBoardColor, setBoardEffect, setBoardPreset } from './boards-db';
+import { setBoardBrightness, setBoardColor, setBoardEffect, setBoardPreset, setBoardPower } from './boards-db';
 import type { Program } from './models/Program';
 
 /**
@@ -160,20 +160,38 @@ export async function stopPlayback(): Promise<void> {
 async function sendCueCommands(cue: any, boardId: string): Promise<void> {
   if (!browser) return;
 
-  // Set preset if specified
-  if (cue.preset > 0) {
-    await setBoardPreset(boardId, cue.preset);
-  } else {
-    // Set color
-    const rgb = hexToRgb(cue.color);
-    await setBoardColor(boardId, rgb.r, rgb.g, rgb.b);
+  // Check action type (default to 'preset' for backward compatibility)
+  const action = cue.action || 'preset';
 
-    // Set effect
-    await setBoardEffect(boardId, cue.effect);
+  switch (action) {
+    case 'on':
+      // Lightweight: Send power on command with instant transition
+      await setBoardPower(boardId, true);
+      break;
+
+    case 'off':
+      // Lightweight: Send power off command with instant transition
+      await setBoardPower(boardId, false);
+      break;
+
+    case 'preset':
+    default:
+      // Heavy: Load preset (sets the "look")
+      if (cue.preset > 0) {
+        await setBoardPreset(boardId, cue.preset);
+      } else {
+        // Set color
+        const rgb = hexToRgb(cue.color);
+        await setBoardColor(boardId, rgb.r, rgb.g, rgb.b);
+
+        // Set effect
+        await setBoardEffect(boardId, cue.effect);
+      }
+
+      // Set brightness
+      await setBoardBrightness(boardId, cue.brightness);
+      break;
   }
-
-  // Set brightness
-  await setBoardBrightness(boardId, cue.brightness);
 }
 
 /**

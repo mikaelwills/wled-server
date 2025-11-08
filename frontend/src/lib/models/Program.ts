@@ -9,6 +9,7 @@ export interface ProgramData {
   audioData: string;
   cues: Cue[];
   createdAt: string;
+  defaultTargetBoard?: string;
 }
 
 export class Program implements ProgramData {
@@ -19,6 +20,7 @@ export class Program implements ProgramData {
   audioData: string;
   cues: Cue[];
   createdAt: string;
+  defaultTargetBoard?: string;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -28,6 +30,7 @@ export class Program implements ProgramData {
     this.audioData = data.audioData;
     this.cues = data.cues;
     this.createdAt = data.createdAt;
+    this.defaultTargetBoard = data.defaultTargetBoard;
   }
 
   /**
@@ -56,6 +59,7 @@ export class Program implements ProgramData {
       audioData,
       cues,
       createdAt: data.createdAt || data.created_at || new Date().toISOString(),
+      defaultTargetBoard: data.defaultTargetBoard || data.default_target_board,
     });
   }
 
@@ -71,6 +75,7 @@ export class Program implements ProgramData {
       audio_data: this.audioData,
       cues: this.cues.map(c => c.toJson()),
       created_at: this.createdAt,
+      default_target_board: this.defaultTargetBoard,
     };
   }
 }
