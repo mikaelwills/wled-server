@@ -1,4 +1,4 @@
-// WLED effects list (186 effects from WLED firmware)
+// WLED effects list - Curated selection of practical effects
 // Reference: https://kno.wled.ge/features/effects/
 
 export interface WledEffect {
@@ -6,8 +6,9 @@ export interface WledEffect {
 	name: string;
 }
 
-export const WLED_EFFECTS_RAW = [
-	'Solid',
+// Full WLED effects list (for reference and ID mapping)
+const WLED_EFFECTS_FULL = [
+	'Solid',           // 0
 	'Blink',
 	'Breathe',
 	'Wipe',
@@ -17,7 +18,7 @@ export const WLED_EFFECTS_RAW = [
 	'Dynamic',
 	'Colorloop',
 	'Rainbow',
-	'Scan',
+	'Scan',            // 10
 	'Scan Dual',
 	'Fade',
 	'Theater',
@@ -27,7 +28,7 @@ export const WLED_EFFECTS_RAW = [
 	'Twinkle',
 	'Dissolve',
 	'Dissolve Rnd',
-	'Sparkle',
+	'Sparkle',         // 20
 	'Sparkle Dark',
 	'Sparkle+',
 	'Strobe',
@@ -37,7 +38,7 @@ export const WLED_EFFECTS_RAW = [
 	'Android',
 	'Chase',
 	'Chase Random',
-	'Chase Rainbow',
+	'Chase Rainbow',   // 30
 	'Chase Flash',
 	'Chase Flash Rnd',
 	'Rainbow Runner',
@@ -47,7 +48,7 @@ export const WLED_EFFECTS_RAW = [
 	'Chase 2',
 	'Aurora',
 	'Stream',
-	'Scanner',
+	'Scanner',         // 40
 	'Lighthouse',
 	'Fireworks',
 	'Rain',
@@ -57,7 +58,7 @@ export const WLED_EFFECTS_RAW = [
 	'Loading',
 	'Rolling Balls',
 	'Fairy',
-	'Two Dots',
+	'Two Dots',        // 50
 	'Fairytwinkle',
 	'Running Dual',
 	'RSVD',
@@ -67,7 +68,7 @@ export const WLED_EFFECTS_RAW = [
 	'Lightning',
 	'ICU',
 	'Multi Comet',
-	'Scanner Dual',
+	'Scanner Dual',    // 60
 	'Stream 2',
 	'Oscillate',
 	'Pride 2015',
@@ -77,7 +78,7 @@ export const WLED_EFFECTS_RAW = [
 	'Colorwaves',
 	'Bpm',
 	'Fill Noise',
-	'Noise 1',
+	'Noise 1',         // 70
 	'Noise 2',
 	'Noise 3',
 	'Noise 4',
@@ -87,7 +88,7 @@ export const WLED_EFFECTS_RAW = [
 	'Meteor Smooth',
 	'Railway',
 	'Ripple',
-	'Twinklefox',
+	'Twinklefox',      // 80
 	'Twinklecat',
 	'Halloween Eyes',
 	'Solid Pattern',
@@ -97,7 +98,7 @@ export const WLED_EFFECTS_RAW = [
 	'Glitter',
 	'Candle',
 	'Fireworks Starburst',
-	'Fireworks 1D',
+	'Fireworks 1D',    // 90
 	'Bouncing Balls',
 	'Sinelon',
 	'Sinelon Dual',
@@ -107,7 +108,7 @@ export const WLED_EFFECTS_RAW = [
 	'Plasma',
 	'Percent',
 	'Ripple Rainbow',
-	'Heartbeat',
+	'Heartbeat',       // 100
 	'Pacifica',
 	'Candle Multi',
 	'Solid Glitter',
@@ -117,7 +118,7 @@ export const WLED_EFFECTS_RAW = [
 	'Noise Pal',
 	'Sine',
 	'Phased Noise',
-	'Flow',
+	'Flow',            // 110
 	'Chunchun',
 	'Dancing Shadows',
 	'Washing Machine',
@@ -127,7 +128,7 @@ export const WLED_EFFECTS_RAW = [
 	'Dynamic Smooth',
 	'Spaceships',
 	'Crazy Bees',
-	'Ghost Rider',
+	'Ghost Rider',     // 120
 	'Blobs',
 	'Scrolling Text',
 	'Drift Rose',
@@ -137,7 +138,7 @@ export const WLED_EFFECTS_RAW = [
 	'Waving Cell',
 	'Pixels',
 	'Pixelwave',
-	'Juggles',
+	'Juggles',         // 130
 	'Matripix',
 	'Gravimeter',
 	'Plasmoid',
@@ -147,7 +148,7 @@ export const WLED_EFFECTS_RAW = [
 	'Freqwave',
 	'Freqmatrix',
 	'GEQ',
-	'Waterfall',
+	'Waterfall',       // 140
 	'Freqpixels',
 	'RSVD',
 	'Noisefire',
@@ -157,7 +158,7 @@ export const WLED_EFFECTS_RAW = [
 	'Perlin Move',
 	'Ripple Peak',
 	'Firenoise',
-	'Squared Swirl',
+	'Squared Swirl',   // 150
 	'RSVD',
 	'DNA',
 	'Matrix',
@@ -167,7 +168,7 @@ export const WLED_EFFECTS_RAW = [
 	'Gravcentric',
 	'Gravfreq',
 	'DJ Light',
-	'Funky Plank',
+	'Funky Plank',     // 160
 	'RSVD',
 	'Pulser',
 	'Blurz',
@@ -177,7 +178,7 @@ export const WLED_EFFECTS_RAW = [
 	'Colored Bursts',
 	'Julia',
 	'RSVD',
-	'RSVD',
+	'RSVD',            // 170
 	'RSVD',
 	'Game Of Life',
 	'Tartan',
@@ -187,16 +188,56 @@ export const WLED_EFFECTS_RAW = [
 	'Frizzles',
 	'Plasma Ball',
 	'Flow Stripe',
-	'Hiphotic',
+	'Hiphotic',        // 180
 	'Sindots',
 	'DNA Spiral',
 	'Black Hole',
 	'Wavesins',
 	'Rocktaves',
-	'Akemi',
+	'Akemi',           // 186
 ];
 
-// Sorted effects list with IDs
-export const WLED_EFFECTS: WledEffect[] = WLED_EFFECTS_RAW.map((name, id) => ({ id, name })).sort(
-	(a, b) => a.name.localeCompare(b.name)
-);
+// Curated effects - only the practical and visually interesting ones
+const CURATED_EFFECT_NAMES = [
+	'Blurz',
+	'Bouncing Balls',
+	'Chunchun',
+	'Fire 2012',
+	'Gravcenter',
+	'Gravcentric',
+	'Halloween Eyes',
+	'Heartbeat',
+	'Lightning',
+	'Loading',
+	'Noisefire',
+	'Noisemove',
+	'Pixelwave',
+	'Puddlepeak',
+	'Puddles',
+	'Rain',
+	'Ripple',
+	'Ripple Peak',
+	'Rocktaves',
+	'Scan Dual',
+	'Scan',
+	'Sine',
+	'Sinelon Dual',
+	'Solid',
+	'Solid Glitter',
+	'Sparkle',
+	'Strobe',
+	'Strobe Mega',
+	'Tri Wipe',
+	'Twinkle',
+	'Wavesins',
+	'Wipe',
+];
+
+// Map curated effect names to their IDs
+export const WLED_EFFECTS: WledEffect[] = CURATED_EFFECT_NAMES
+	.map(name => {
+		const id = WLED_EFFECTS_FULL.indexOf(name);
+		return id >= 0 ? { id, name } : null;
+	})
+	.filter((effect): effect is WledEffect => effect !== null)
+	.sort((a, b) => a.name.localeCompare(b.name));

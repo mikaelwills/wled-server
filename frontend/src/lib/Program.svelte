@@ -4,9 +4,9 @@
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/playback-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, dimProgramBoards } from '$lib/playback-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
-	import { programs as programsStore, boards, presets, currentlyPlayingProgramId } from '$lib/store';
+	import { programs as programsStore, boards, presets, currentlyPlayingProgram } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 
 	// Props
@@ -31,6 +31,10 @@
 
 	// Dropdown state
 	let openDropdownId = $state(null);
+
+	// Default target board for new cues
+	let defaultTargetBoard = $state(null);
+	let defaultBoardDropdownOpen = $state(false);
 
 	onMount(async () => {
 		// Boards, groups, and presets are now loaded via stores in parent component
@@ -149,14 +153,35 @@
 					isPlaying = false;
 				});
 
-				// Click on waveform to add marker
-				wavesurfer.on('click', (relativeX) => {
+				// Handle left-click (seek) and right-click (add marker) on waveform
+				const waveformContainer = wavesurfer.getWrapper();
+				waveformContainer.addEventListener('mousedown', (event) => {
 					if (!isLoaded) return;
 
+					// Prevent default context menu on right-click
+					if (event.button === 2) {
+						event.preventDefault();
+					}
+
+					const bounds = waveformContainer.getBoundingClientRect();
+					const relativeX = (event.clientX - bounds.left) / bounds.width;
 					const duration = wavesurfer.getDuration();
 					const clickTime = relativeX * duration;
 
-					addMarker(clickTime);
+					if (event.button === 0) {
+						// Left-click: Seek to position
+						console.log('🖱️ Left-click: Seeking to', clickTime);
+						wavesurfer.seekTo(relativeX);
+					} else if (event.button === 2) {
+						// Right-click: Add marker
+						console.log('🖱️ Right-click: Adding marker at', clickTime);
+						addMarker(clickTime);
+					}
+				});
+
+				// Prevent context menu on right-click
+				waveformContainer.addEventListener('contextmenu', (event) => {
+					event.preventDefault();
 				});
 
 				// Update marker list when regions change
@@ -272,14 +297,35 @@
 					isPlaying = false;
 				});
 
-				// Click on waveform to add marker
-				wavesurfer.on('click', (relativeX) => {
+				// Handle left-click (seek) and right-click (add marker) on waveform
+				const waveformContainer = wavesurfer.getWrapper();
+				waveformContainer.addEventListener('mousedown', (event) => {
 					if (!isLoaded) return;
 
+					// Prevent default context menu on right-click
+					if (event.button === 2) {
+						event.preventDefault();
+					}
+
+					const bounds = waveformContainer.getBoundingClientRect();
+					const relativeX = (event.clientX - bounds.left) / bounds.width;
 					const duration = wavesurfer.getDuration();
 					const clickTime = relativeX * duration;
 
-					addMarker(clickTime);
+					if (event.button === 0) {
+						// Left-click: Seek to position
+						console.log('🖱️ Left-click: Seeking to', clickTime);
+						wavesurfer.seekTo(relativeX);
+					} else if (event.button === 2) {
+						// Right-click: Add marker
+						console.log('🖱️ Right-click: Adding marker at', clickTime);
+						addMarker(clickTime);
+					}
+				});
+
+				// Prevent context menu on right-click
+				waveformContainer.addEventListener('contextmenu', (event) => {
+					event.preventDefault();
 				});
 
 				// Update marker list when regions change
@@ -376,6 +422,7 @@
 	}
 
 	function addMarker(time) {
+		console.log('📍 addMarker called with time:', time);
 		const currentCount = markers.length;
 		const labelText = `Cue ${currentCount + 1}`;
 		const labelElement = createRegionLabel(labelText, time);
@@ -388,11 +435,14 @@
 			resize: false
 		});
 
+		// Inherit default target board if set, otherwise empty
+		const initialBoards = defaultTargetBoard ? [defaultTargetBoard] : [];
+
 		const newMarker = {
 			id: markerRegion.id,
 			time: time,
 			label: `Cue ${currentCount + 1}`,
-			boards: [],
+			boards: initialBoards,
 			preset: 0,
 			effect: 0,
 			color: '#ff0000',
@@ -422,15 +472,15 @@
 		}
 	}
 
-	function updateMarkerPreset(markerId, presetId) {
+	function updateMarkerPreset(markerId, presetSlot) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
-			marker.preset = presetId;
+			marker.preset = presetSlot;
 
-			// Update label to preset name
-			const preset = $presets.find(p => p.id === presetId);
+			// Update label to preset name (find by wled_slot)
+			const preset = $presets.find(p => p.id === presetSlot);
 			if (preset) {
-				console.log('Updating marker with preset:', markerId, preset.name);
+				console.log('Updating marker with preset slot:', markerId, presetSlot, preset.name);
 				marker.label = preset.name;
 
 				// Update WaveSurfer region label (HTML element)
@@ -566,13 +616,16 @@ function playFullProgram() {
 		const currentTime = wavesurfer ? wavesurfer.getCurrentTime() : 0;
 		console.log('▶️ PLAY pressed - starting from position:', currentTime);
 
+		// Capture the EXACT moment audio starts
+		const audioStartTime = performance.now();
+
 		// Play from current position (or from start if at beginning)
 		if (wavesurfer) {
 			wavesurfer.play();
 		}
 
-		// Play program via service layer (schedules LED cues from current position)
-		playProgramService(currentProgram, currentTime);
+		// IMMEDIATELY schedule LED cues with audio start timestamp
+		playProgramService(currentProgram, currentTime, audioStartTime);
 	}
 
 	function stopFullProgram() {
@@ -582,18 +635,45 @@ function playFullProgram() {
 		if (wavesurfer) {
 			wavesurfer.pause();
 		}
-		// Stop LED cue playback via service layer
+
+		// Stop global playback
 		stopPlaybackService();
+
+		// Dim THIS program's boards (fire-and-forget, don't block UI)
+		let currentProgram = null;
+		const unsubscribe = programsStore.subscribe(programs => {
+			currentProgram = programs.find(p => p.id === programId);
+		});
+		unsubscribe();
+
+		if (currentProgram) {
+			dimProgramBoards(currentProgram).catch(err => {
+				console.error('Failed to dim boards:', err);
+			});
+		}
 	}
 
 	function stopAndReset() {
 		const beforePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
 		console.log('⏹ STOP pressed - position before:', beforePosition);
 
-		// Stop LED cue playback via service layer
+		// Stop global playback
 		stopPlaybackService();
 
-		// Stop and reset to start
+		// Dim THIS program's boards (fire-and-forget, don't block UI)
+		let currentProgram = null;
+		const unsubscribe = programsStore.subscribe(programs => {
+			currentProgram = programs.find(p => p.id === programId);
+		});
+		unsubscribe();
+
+		if (currentProgram) {
+			dimProgramBoards(currentProgram).catch(err => {
+				console.error('Failed to dim boards:', err);
+			});
+		}
+
+		// Stop and reset to start IMMEDIATELY (don't wait for dimming)
 		if (wavesurfer) {
 			wavesurfer.stop();  // Should stop playback and reset to 0
 			setTimeout(() => {
@@ -691,6 +771,31 @@ function playFullProgram() {
 			deleteProgramFromStore(programId);
 		}
 	}
+
+	function applyDefaultBoardToAll() {
+		if (!defaultTargetBoard) {
+			alert('Please select a default target board first');
+			return;
+		}
+
+		// Apply default board to ALL cues
+		markers = markers.map(marker => ({
+			...marker,
+			boards: [defaultTargetBoard]
+		}));
+
+		syncMarkersToStore();
+	}
+
+	function selectDefaultBoard(boardId) {
+		defaultTargetBoard = boardId;
+		defaultBoardDropdownOpen = false;
+	}
+
+	function getDefaultBoardLabel() {
+		if (!defaultTargetBoard) return 'Default';
+		return defaultTargetBoard;
+	}
 </script>
 
 <div class="program-editor">
@@ -746,6 +851,64 @@ function playFullProgram() {
 		</div>
 		<div class="waveform-footer" class:has-cues={isLoaded && markers.length > 0}>
 			{#if isLoaded && markers.length > 0}
+				{@const groups = $boards.filter(b => b.isGroup)}
+				{@const regularBoards = $boards.filter(b => !b.isGroup)}
+
+				<div class="default-board-dropdown-wrapper">
+					<button
+						class="default-board-select-button"
+						onclick={(e) => {
+							e.stopPropagation();
+							defaultBoardDropdownOpen = !defaultBoardDropdownOpen;
+						}}
+					>
+						{getDefaultBoardLabel()}
+						<span class="dropdown-arrow">▼</span>
+					</button>
+					{#if defaultBoardDropdownOpen}
+						<div class="default-board-dropdown-menu">
+							{#if groups.length > 0}
+								<div class="dropdown-section">
+									<div class="dropdown-section-label">GROUPS</div>
+									{#each groups as group}
+										<label class="dropdown-option">
+											<input
+												type="checkbox"
+												checked={defaultTargetBoard === group.id}
+												onchange={() => selectDefaultBoard(group.id)}
+											/>
+											<span>{group.id}</span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+
+							{#if regularBoards.length > 0}
+								<div class="dropdown-section">
+									<div class="dropdown-section-label">BOARDS</div>
+									{#each regularBoards as board}
+										<label class="dropdown-option">
+											<input
+												type="checkbox"
+												checked={defaultTargetBoard === board.id}
+												onchange={() => selectDefaultBoard(board.id)}
+											/>
+											<span>{board.id}</span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+				<button
+					class="btn-apply-default"
+					onclick={applyDefaultBoardToAll}
+					disabled={!defaultTargetBoard}
+				>
+					Apply to All Cues
+				</button>
+
 				<button class="btn-collapse" onclick={() => cuesExpanded = !cuesExpanded}>
 					<span>{cuesExpanded ? '▼' : '▶'} Cues</span>
 				</button>
@@ -840,34 +1003,6 @@ function playFullProgram() {
 									{/each}
 								</select>
 
-								{#if marker.preset === 0}
-									<input
-										type="color"
-										value={marker.color}
-										onchange={(e) => updateMarkerColor(marker.id, e.target.value)}
-										class="color-picker"
-									/>
-
-									<select
-										value={marker.effect}
-										onchange={(e) => updateMarkerEffect(marker.id, parseInt(e.target.value))}
-										class="effect-select"
-									>
-										{#each WLED_EFFECTS as effect}
-											<option value={effect.id}>{effect.name}</option>
-										{/each}
-									</select>
-								{/if}
-
-								<input
-									type="range"
-									min="0"
-									max="255"
-									value={marker.brightness}
-									oninput={(e) => updateMarkerBrightness(marker.id, parseInt(e.target.value))}
-									class="brightness-slider"
-								/>
-
 								<div class="transition-input-wrapper">
 									<input
 										type="text"
@@ -916,7 +1051,6 @@ function playFullProgram() {
 		gap: 0.5rem;
 		padding: 1rem 1.5rem;
 		background: linear-gradient(to bottom, #1f1f1f, #1a1a1a);
-		border-bottom: 1px solid #2a2a2a;
 	}
 
 	.spacer {
@@ -1065,7 +1199,7 @@ function playFullProgram() {
 
 	.cue-count-badge {
 		color: #e5e5e5;
-		width: 28px;
+		width: 32px;
 		height: 28px;
 		display: inline-flex;
 		align-items: center;
@@ -1209,7 +1343,7 @@ function playFullProgram() {
 		display: flex;
 		justify-content: flex-end;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.75rem;
 		min-height: 40px;
 		opacity: 0;
 		transition: opacity 0.3s ease;
@@ -1256,9 +1390,147 @@ function playFullProgram() {
 	}
 
 	.markers-section {
-		border-top: 1px solid #2a2a2a;
 		padding: 0.5rem 1rem;
 		margin-top: 0.5rem;
+	}
+
+	.default-board-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 1rem;
+	}
+
+	.default-board-label {
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: #a8a29e;
+		white-space: nowrap;
+	}
+
+	.default-board-dropdown-wrapper {
+		position: relative;
+	}
+
+	.default-board-select-button {
+		background-color: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		color: #e5e5e5;
+		padding: 0 2rem 0 0.75rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		width: 140px;
+		height: 28px;
+		transition: border-color 0.2s;
+		display: flex;
+		align-items: center;
+		position: relative;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		box-sizing: border-box;
+	}
+
+	.default-board-select-button:hover {
+		border-color: #a855f7;
+	}
+
+	.default-board-select-button .dropdown-arrow {
+		position: absolute;
+		right: 0.75rem;
+		font-size: 0.7rem;
+		color: #9ca3af;
+	}
+
+	.default-board-dropdown-menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		background-color: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		border-radius: 6px;
+		min-width: 200px;
+		max-height: 300px;
+		overflow-y: auto;
+		z-index: 1000;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+	}
+
+	.default-board-dropdown-menu .dropdown-section {
+		padding: 0.5rem 0;
+	}
+
+	.default-board-dropdown-menu .dropdown-section:last-child {
+		padding-bottom: 0.5rem;
+	}
+
+	.default-board-dropdown-menu .dropdown-section-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: #6b7280;
+		margin-bottom: 0.25rem;
+		padding: 0.25rem 0.5rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.default-board-dropdown-menu .dropdown-option {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		cursor: pointer;
+		border-radius: 4px;
+		transition: background-color 0.15s;
+	}
+
+	.default-board-dropdown-menu .dropdown-option:hover {
+		background-color: #2a2a2a;
+	}
+
+	.default-board-dropdown-menu .dropdown-option input[type="checkbox"] {
+		cursor: pointer;
+	}
+
+	.default-board-dropdown-menu .dropdown-option span {
+		color: #e5e5e5;
+		font-size: 0.875rem;
+		flex: 1;
+	}
+
+	.btn-apply-default {
+		padding: 0 1.4rem 0 0.75rem;
+		background-color: #a855f7;
+		color: white;
+		border: none;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+		white-space: nowrap;
+		height: 28px;
+		min-width: 105px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
+	}
+
+	.btn-apply-default:hover:not(:disabled) {
+		background-color: #9333ea;
+		transform: translateY(-1px);
+	}
+
+	.btn-apply-default:active:not(:disabled) {
+		transform: translateY(0);
+	}
+
+	.btn-apply-default:disabled {
+		background-color: #2a2a2a;
+		color: #666;
+		cursor: not-allowed;
 	}
 
 	.markers-list {

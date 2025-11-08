@@ -3,19 +3,19 @@
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import favicon from '$lib/assets/favicon.svg';
-	import { initBoardsListener, cleanupBoardsListener, initPresets } from '$lib/boards-db';
+	import { initBoardsListener, cleanupBoardsListener, fetchPresets } from '$lib/boards-db';
 	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
 
 	let { children } = $props();
 
 	// Initialize data listeners on mount
-	onMount(() => {
+	onMount(async () => {
 		if (browser) {
 			// Initialize boards SSE listener
 			initBoardsListener();
 
-			// Initialize presets (static list)
-			initPresets();
+			// Fetch presets from server
+			await fetchPresets();
 
 			// Initialize programs from API
 			initPrograms();

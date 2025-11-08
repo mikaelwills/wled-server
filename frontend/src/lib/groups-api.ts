@@ -110,11 +110,17 @@ export async function setGroupPreset(
 ): Promise<GroupOperationResult> {
   if (!browser) throw new Error('Not in browser environment');
 
+  const fetchStartTime = performance.now();
+  console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: group='${groupId}' preset=${preset}`);
+
   const response = await fetch(`${API_URL}/group/${groupId}/preset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preset, transition }),
   });
+
+  const fetchEndTime = performance.now();
+  console.log(`✅ [${fetchEndTime.toFixed(3)}ms] HTTP response received: group='${groupId}' (took ${(fetchEndTime - fetchStartTime).toFixed(1)}ms)`);
 
   if (!response.ok) {
     throw new Error(`Failed to set group preset: ${response.statusText}`);

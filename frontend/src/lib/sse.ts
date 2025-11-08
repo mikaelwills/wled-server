@@ -13,19 +13,19 @@ export function createSseConnection(
   const eventSource = new EventSource(`${API_URL}/events`);
 
   eventSource.onmessage = (event) => {
-    console.log('SSE received:', event.data);
+    // console.log('SSE received:', event.data);
     try {
       const data: SseEvent = JSON.parse(event.data);
-      console.log('SSE parsed:', data);
+      // console.log('SSE parsed:', data);
 
       if (data.type === 'state_update') {
-        console.log('State update for:', data.board_id);
+        // console.log('State update for:', data.board_id);
         onStateUpdate(data.board_id, data.state);
       } else if (data.type === 'connection_status') {
-        console.log('Connection status for:', data.board_id, 'connected:', data.connected);
+        // console.log('Connection status for:', data.board_id, 'connected:', data.connected);
         onConnectionStatus(data.board_id, data.connected);
       } else if (data.type === 'connected') {
-        console.log('SSE connected:', data.message);
+        // console.log('SSE connected:', data.message);
       }
     } catch (err) {
       console.error('Failed to parse SSE event:', err);

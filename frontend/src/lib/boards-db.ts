@@ -189,27 +189,66 @@ export async function refreshGroups(): Promise<void> {
 }
 
 /**
- * Initialize presets (static list from presets.json)
+ * Fetch all presets from server
  */
-export function initPresets(): void {
-  const presetsList = [
-    { id: 0, name: 'No Preset' },
-    { id: 1, name: 'Lightning Cyan' },
-    { id: 2, name: 'Lightning Cyan' },
-    { id: 3, name: 'Lightning Red' },
-    { id: 4, name: 'Lightning Green' },
-    { id: 5, name: 'Puddles Green' },
-    { id: 7, name: 'Puddles Cyan' },
-    { id: 8, name: 'Puddles Red' },
-    { id: 9, name: 'Candles' },
-    { id: 11, name: 'Puddles Pink' },
-    { id: 12, name: 'Wipe Cyan' },
-    { id: 13, name: 'Wipe White' },
-    { id: 14, name: 'Wipe Red' },
-    { id: 15, name: 'Wipe Green' },
-  ];
+export async function fetchPresets(): Promise<void> {
+  if (!browser) return;
 
-  presets.set(presetsList);
+  try {
+    const response = await fetch(`${API_URL}/presets`);
+    if (response.ok) {
+      const presetsData = await response.json();
+      // Add "No Preset" option at the front, sorted by effect type then name
+      const presetsList = [
+        { id: 0, name: 'No Preset' },
+        ...presetsData
+          .map((p: any) => ({ id: p.wled_slot, name: p.name }))
+          .sort((a: any, b: any) => {
+            // Extract first word (effect type) from preset name
+            const typeA = a.name.split(' ')[0];
+            const typeB = b.name.split(' ')[0];
+
+            // Sort by type first, then by full name
+            if (typeA === typeB) {
+              return a.name.localeCompare(b.name);
+            }
+            return typeA.localeCompare(typeB);
+          })
+      ];
+      presets.set(presetsList);
+    } else {
+      console.error('Failed to fetch presets:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error fetching presets:', error);
+  }
+}
+
+/**
+ * Sync all presets to a board
+ */
+export async function syncPresetsToBoard(boardId: string): Promise<{ success: boolean; message: string }> {
+  if (!browser) return { success: false, message: 'Not in browser context' };
+
+  try {
+    const response = await fetch(`${API_URL}/board/${boardId}/presets/sync`, {
+      method: 'POST'
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      return {
+        success: true,
+        message: `Synced ${result.synced} of ${result.total} presets`
+      };
+    } else {
+      const error = await response.text();
+      return { success: false, message: error };
+    }
+  } catch (error) {
+    console.error('Error syncing presets:', error);
+    return { success: false, message: String(error) };
+  }
 }
 
 /**
@@ -233,9 +272,9 @@ export async function setBoardPower(boardId: string, power: boolean): Promise<vo
         const result: GroupOperationResult = await setGroupPower(boardId, power);
         
         // Log any failures for debugging
-        if (result.failed_members.length > 0) {
-          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        }
+        // if (result.failed_members.length > 0) {
+        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        // }
         
         // Update group's state optimistically, preserving group identity
         boards.update((currentBoards) =>
@@ -311,9 +350,9 @@ export async function setBoardColor(
         const result: GroupOperationResult = await setGroupColor(boardId, red, green, blue);
         
         // Log any failures for debugging
-        if (result.failed_members.length > 0) {
-          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        }
+        // if (result.failed_members.length > 0) {
+        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        // }
         
         // Update group's state optimistically, preserving group identity
         boards.update((currentBoards) =>
@@ -379,9 +418,9 @@ export async function setBoardBrightness(boardId: string, brightness: number): P
         const result: GroupOperationResult = await setGroupBrightness(boardId, brightness);
         
         // Log any failures for debugging
-        if (result.failed_members.length > 0) {
-          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        }
+        // if (result.failed_members.length > 0) {
+        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        // }
         
         // Update group's state optimistically, preserving group identity
         boards.update((currentBoards) =>
@@ -447,9 +486,9 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
         const result: GroupOperationResult = await setGroupEffect(boardId, effect);
         
         // Log any failures for debugging
-        if (result.failed_members.length > 0) {
-          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        }
+        // if (result.failed_members.length > 0) {
+        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        // }
         
         // Update group's state optimistically, preserving group identity
         boards.update((currentBoards) =>
@@ -581,9 +620,9 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
         const result: GroupOperationResult = await setGroupPreset(boardId, preset);
         
         // Log any failures for debugging
-        if (result.failed_members.length > 0) {
-          console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        }
+        // if (result.failed_members.length > 0) {
+        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
+        // }
         
         // Note: We don't update group state optimistically for presets since they can have complex effects
         // SSE will update individual member states, which will then trigger group recalculation
@@ -593,11 +632,18 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
       }
     } else {
       // Regular board - SSE will update the state
+      const fetchStartTime = performance.now();
+      console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: board='${boardId}' preset=${preset}`);
+
       const response = await fetch(`${API_URL}/board/${boardId}/preset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preset, transition: 0 }),
       });
+
+      const fetchEndTime = performance.now();
+      console.log(`✅ [${fetchEndTime.toFixed(3)}ms] HTTP response received: board='${boardId}' (took ${(fetchEndTime - fetchStartTime).toFixed(1)}ms)`);
+
       if (!response.ok) throw new Error('Failed to set preset');
     }
   } catch (error) {

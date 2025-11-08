@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { boards, boardsLoading, boardsError } from '$lib/store';
+	import { onMount } from 'svelte';
+	import { boards, boardsLoading, boardsError, presets } from '$lib/store';
 	import {
 		setBoardPower,
 		setBoardColor,
@@ -15,29 +16,18 @@
 		deleteBoard as deleteBoardService,
 		refreshGroups,
 		fetchBoards,
+		fetchPresets,
+		syncPresetsToBoard,
 	} from '$lib/boards-db';
 	import { addGroup, deleteGroup, updateGroup } from '$lib/groups-db';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
+	import { API_URL } from '$lib/api';
 	import ColorWheel from '$lib/ColorWheel.svelte';
-	import type { BoardState } from '$lib/types';
+	import type { BoardState, WledPreset } from '$lib/types';
 
-	// WLED Presets (1-15 from presets.json)
-	const WLED_PRESETS = [
-		{ id: 0, name: 'No Preset' },
-		{ id: 1, name: 'Lightning Cyan' },
-		{ id: 2, name: 'Lightning Cyan' },
-		{ id: 3, name: 'Lightning Red' },
-		{ id: 4, name: 'Lightning Green' },
-		{ id: 5, name: 'Puddles Green' },
-		{ id: 7, name: 'Puddles Cyan' },
-		{ id: 8, name: 'Puddles Red' },
-		{ id: 9, name: 'Candles' },
-		{ id: 11, name: 'Puddles Pink' },
-		{ id: 12, name: 'Wipe Cyan' },
-		{ id: 13, name: 'Wipe White' },
-		{ id: 14, name: 'Wipe Red' },
-		{ id: 15, name: 'Wipe Green' },
-	];
+	// Per-board presets loaded from API
+	let boardPresets: { [boardId: string]: any[] } = {};
+	let boardPresetsLoading: { [boardId: string]: boolean } = {};
 
 	// UI state (local to component)
 	let expandedBoard: string | null = null;
@@ -61,6 +51,109 @@
 	// Save preset state
 	let savingPresetForBoard: string | null = null; // Board ID showing save preset form
 	let newPresetName = '';
+
+	// Sync presets state
+	let syncingBoard: string | null = null;
+
+	// Sync presets handler
+	async function handleSyncPresets(boardId: string) {
+		const board = $boards.find(b => b.id === boardId);
+		if (!board) return;
+
+		syncingBoard = boardId;
+
+		try {
+			if (board.isGroup) {
+				// Sync presets to all group members
+				const response = await fetch(`${API_URL}/group/${boardId}/presets/sync`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' }
+				});
+
+				if (!response.ok) {
+					throw new Error(`Failed to sync group presets: ${response.statusText}`);
+				}
+
+				const result = await response.json();
+				console.log('Group sync result:', result);
+
+				// Refresh presets for all member boards
+				if (board.memberIds) {
+					for (const memberId of board.memberIds) {
+						const memberBoard = $boards.find(b => b.id === memberId);
+						if (memberBoard && !memberBoard.isGroup) {
+							await fetchBoardPresets(memberId, memberBoard.ip);
+						}
+					}
+				}
+
+				alert(`Successfully synced ${result.total_successful_syncs} presets to group members`);
+			} else {
+				// Sync presets to individual board
+				const result = await syncPresetsToBoard(boardId);
+				if (result.success) {
+					// Refresh presets for this board after syncing
+					await fetchBoardPresets(boardId, board.ip);
+				} else {
+					throw new Error(result.message);
+				}
+			}
+		} catch (error) {
+			console.error('Error syncing presets:', error);
+			alert(error instanceof Error ? error.message : 'Failed to sync presets');
+		} finally {
+			syncingBoard = null;
+		}
+	}
+
+	// Fetch presets for a specific board from its WLED API
+	async function fetchBoardPresets(boardId: string, boardIp: string) {
+		if (boardPresetsLoading[boardId]) return; // Already loading
+
+		boardPresetsLoading = { ...boardPresetsLoading, [boardId]: true };
+		try {
+			const response = await fetch(`${API_URL}/board/${boardId}/presets`);
+			if (response.ok) {
+				const presetsData = await response.json();
+				// Convert WLED presets format to our format
+				const presets = [];
+				if (presetsData && Object.keys(presetsData).length > 0) {
+					for (const [slot, preset] of Object.entries(presetsData)) {
+						if (preset && preset.n) { // Only include presets with names
+							presets.push({
+								wled_slot: parseInt(slot),
+								name: preset.n,
+								data: preset
+							});
+						}
+					}
+				}
+				boardPresets = { ...boardPresets, [boardId]: presets };
+			} else {
+				// Only log error if it's not a gateway error (board unreachable/no presets)
+				if (response.status !== 502) {
+					const errorText = await response.text();
+					console.error(`Failed to fetch presets for board ${boardId}:`, response.status, errorText);
+				}
+				// Set empty array - board has no presets or is unreachable
+				boardPresets = { ...boardPresets, [boardId]: [] };
+			}
+		} catch (error) {
+			console.error(`Error fetching presets for board ${boardId}:`, error);
+			boardPresets = { ...boardPresets, [boardId]: [] };
+		} finally {
+			boardPresetsLoading = { ...boardPresetsLoading, [boardId]: false };
+		}
+	}
+
+	// Fetch presets for all boards when they load
+	$: if ($boards && $boards.length > 0) {
+		for (const board of $boards) {
+			if (!board.isGroup && board.connected && !boardPresets[board.id] && !boardPresetsLoading[board.id]) {
+				fetchBoardPresets(board.id, board.ip);
+			}
+		}
+	}
 
 	// Event handlers that call service functions
 	function toggleExpanded(boardId: string) {
@@ -146,17 +239,31 @@
 
 	async function handleSavePreset(boardId: string) {
 		if (!newPresetName.trim()) {
-			alert('Please enter a preset name');
 			return;
 		}
 
 		try {
+			// Get current board state
+			const board = $boards.find(b => b.id === boardId);
+			if (!board) {
+				throw new Error('Board not found');
+			}
+
 			const response = await fetch(`${API_URL}/presets`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					name: newPresetName.trim(),
-					boardId
+					wled_slot: 0, // Let server auto-assign
+					board_id: boardId,
+					state: {
+						on: board.on,
+						brightness: board.brightness,
+						color: board.color,
+						effect: board.effect,
+						speed: board.speed,
+						intensity: board.intensity
+					}
 				}),
 			});
 
@@ -164,35 +271,52 @@
 				throw new Error('Failed to save preset');
 			}
 
-			alert(`Preset "${newPresetName}" saved successfully!`);
+			const preset = await response.json();
+			console.log('Preset saved with slot:', preset.wled_slot);
+
+			// Apply the preset to the current board immediately
+			await handleLoadPreset(boardId, preset.wled_slot);
+
+			// Refresh presets list
+			await fetchPresets();
+
+			// Refresh board presets to show the new preset
+			await fetchBoardPresets(boardId, board.ip);
+
 			cancelSavePreset();
 		} catch (error) {
 			console.error('Error saving preset:', error);
-			alert('Failed to save preset');
+			alert(error instanceof Error ? error.message : 'Failed to save preset');
 		}
 	}
 
-	async function handleSyncPresets(boardId: string) {
-		if (!confirm(`Load all presets to board "${boardId}"? This will overwrite existing presets on the board.`)) {
-			return;
-		}
-
+	async function handleLoadPreset(boardId: string, presetSlot: number) {
 		try {
-			const response = await fetch(`${window.location.protocol}//${window.location.hostname}:3010/api/board/${boardId}/presets/sync`, {
-				method: 'POST'
+			// Check if this is a group or individual board
+			const board = $boards.find(b => b.id === boardId);
+			if (!board) {
+				throw new Error('Board/Group not found');
+			}
+
+			// Use appropriate endpoint for groups vs boards
+			const endpoint = board.isGroup
+				? `${API_URL}/group/${boardId}/preset`
+				: `${API_URL}/board/${boardId}/preset`;
+
+			const response = await fetch(endpoint, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ preset: presetSlot, transition: 0 })
 			});
 
 			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(`Failed to sync presets: ${errorText}`);
+				throw new Error(`Failed to load preset: ${response.statusText}`);
 			}
-
-			const result = await response.json();
-			alert(`Successfully loaded ${result.synced} of ${result.total} presets to board "${boardId}"`);
-		} catch (e) {
-			alert(e instanceof Error ? e.message : 'Failed to sync presets');
+		} catch (error) {
+			console.error('Error loading preset:', error);
 		}
 	}
+
 
 	async function handleResetSegment(boardId: string) {
 		if (!confirm(`Reset segment settings to defaults for board "${boardId}"? This will reset grouping, spacing, and offset to defaults.`)) {
@@ -552,16 +676,89 @@
 									</div>
 
 									<div class="preset-section">
-										<select
-											value={0}
-											disabled={board.isGroup ? false : !board.connected}
-											on:change={(e) => setBoardPreset(board.id, parseInt(e.currentTarget.value))}
-											class="preset-dropdown"
-										>
-											{#each WLED_PRESETS as preset}
-												<option value={preset.id}>{preset.name}</option>
-											{/each}
-										</select>
+										{#if board.isGroup}
+											<!-- Groups show server presets -->
+											<div class="preset-container">
+												{#if $presets && $presets.length > 0}
+													<select
+														value=""
+														on:change={(e) => {
+															const value = e.currentTarget.value;
+															if (value) {
+																handleLoadPreset(board.id, parseInt(value));
+																e.currentTarget.value = ''; // Reset dropdown
+															}
+														}}
+														class="preset-dropdown"
+													>
+														<option value="">Server Presets ({$presets.length})</option>
+														{#each $presets.sort((a, b) => a.name.localeCompare(b.name)) as preset}
+															<option value={preset.id}>{preset.name}</option>
+														{/each}
+													</select>
+												{:else}
+													<select disabled class="preset-dropdown no-presets">
+														<option>No server presets available</option>
+													</select>
+												{/if}
+												<button
+													class="sync-presets-btn prominent"
+													on:click={() => handleSyncPresets(board.id)}
+													disabled={syncingBoard === board.id}
+												>
+													{#if syncingBoard === board.id}
+														Syncing...
+													{:else}
+														Sync Presets
+													{/if}
+												</button>
+											</div>
+										{:else if !board.connected}
+											<select disabled class="preset-dropdown">
+												<option>Board disconnected</option>
+											</select>
+										{:else if boardPresetsLoading[board.id]}
+											<select disabled class="preset-dropdown">
+												<option>Loading presets...</option>
+											</select>
+										{:else if boardPresets[board.id] && boardPresets[board.id].length > 0}
+											<select
+												value=""
+												on:change={(e) => {
+													const value = e.currentTarget.value;
+													if (value) {
+														handleLoadPreset(board.id, parseInt(value));
+														e.currentTarget.value = ''; // Reset dropdown
+													}
+												}}
+												class="preset-dropdown"
+											>
+												<option value="">Presets ({boardPresets[board.id].length})</option>
+												{#each boardPresets[board.id].sort((a, b) => a.name.localeCompare(b.name)) as preset}
+													<option value={preset.wled_slot}>{preset.name}</option>
+												{/each}
+											</select>
+										{:else}
+											<div class="no-presets-container">
+												<select disabled class="preset-dropdown no-presets">
+													<option>No presets - click Sync</option>
+												</select>
+												<button
+													class="sync-presets-btn prominent"
+													on:click={() => {
+														fetchBoardPresets(board.id, board.ip);
+														handleSyncPresets(board.id);
+													}}
+													disabled={syncingBoard === board.id}
+												>
+													{#if syncingBoard === board.id}
+														Syncing...
+													{:else}
+														Sync Presets
+													{/if}
+												</button>
+											</div>
+										{/if}
 									</div>
 
 									<div class="effects-section">
@@ -633,8 +830,12 @@
 												<button class="action-btn action-btn-save" on:click={() => openSavePresetForm(board)}>
 													Save Preset
 												</button>
-												<button class="action-btn action-btn-presets" on:click={() => handleSyncPresets(board.id)}>
-													Load Presets
+												<button
+													class="action-btn action-btn-presets"
+													on:click={() => handleSyncPresets(board.id)}
+													disabled={syncingBoard === board.id}
+												>
+													{syncingBoard === board.id ? 'Syncing...' : 'Sync Presets'}
 												</button>
 											</div>
 											<div class="action-buttons-row">
@@ -1042,6 +1243,55 @@
 	.preset-dropdown:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+
+	.no-presets-container {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.preset-container {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.preset-dropdown.no-presets {
+		background: #444;
+		color: #999;
+		border-color: #555;
+	}
+
+	.sync-presets-btn.prominent {
+		background: linear-gradient(135deg, #4caf50, #45a049);
+		color: white;
+		border: none;
+		padding: 0.75rem 1rem;
+		border-radius: 6px;
+		font-size: 0.9rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		text-align: center;
+		box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+	}
+
+	.sync-presets-btn.prominent:hover:not(:disabled) {
+		background: linear-gradient(135deg, #45a049, #3d8b40);
+		transform: translateY(-1px);
+		box-shadow: 0 4px 8px rgba(76, 175, 80, 0.4);
+	}
+
+	.sync-presets-btn.prominent:active:not(:disabled) {
+		transform: translateY(0);
+		box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+	}
+
+	.sync-presets-btn.prominent:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+		transform: none;
 	}
 
 	.effects-section {

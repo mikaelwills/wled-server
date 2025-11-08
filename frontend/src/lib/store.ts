@@ -22,5 +22,5 @@ export interface Preset {
 export const presets: Writable<Preset[]> = writable([]);
 
 // Playback store - manages currently playing program
-export const currentlyPlayingProgramId: Writable<string | null> = writable(null);
+export const currentlyPlayingProgram: Writable<Program | null> = writable(null);
 export const activeTimeouts: Writable<number[]> = writable([]);
