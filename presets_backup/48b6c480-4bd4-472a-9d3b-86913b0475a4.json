@@ -1,0 +1,18 @@
+{
+  "id": "48b6c480-4bd4-472a-9d3b-86913b0475a4",
+  "name": "Sparkle Cyan",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 128,
+    "color": [
+      5,
+      189,
+      255
+    ],
+    "effect": 20,
+    "speed": 208,
+    "intensity": 255
+  },
+  "created_at": "2025-11-06T20:55:06.289096164+00:00"
+}

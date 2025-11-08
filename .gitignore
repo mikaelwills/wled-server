@@ -38,3 +38,6 @@ restart.sh
 
  .claude/settings.local.json
 
+
+# Don't deploy local presets - they would overwrite user-created presets on remote
+presets/

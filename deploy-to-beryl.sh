@@ -30,7 +30,7 @@ echo ""
 
 # Create directory on router if it doesn't exist
 echo "📁 Ensuring directories exist on router..."
-ssh ${ROUTER_USER}@${ROUTER_IP} "mkdir -p ${ROUTER_PATH}/frontend/build && mkdir -p /var/log/lighttpd"
+ssh ${ROUTER_USER}@${ROUTER_IP} "mkdir -p ${ROUTER_PATH}/frontend/build && mkdir -p /var/log/lighttpd && mkdir -p ${ROUTER_PATH}/presets"
 echo ""
 
 # Copy files to router
@@ -38,10 +38,18 @@ echo "📤 Copying binaries and runtime files to router..."
 scp \
   target/aarch64-unknown-linux-musl/release/rust-wled-server \
   lighttpd.conf \
-  presets.json \
   wled-server.init \
   wled-server-wrapper.sh \
   ${ROUTER_USER}@${ROUTER_IP}:${ROUTER_PATH}/
+
+# Copy presets only if presets.json doesn't exist on router
+echo "Checking for existing presets..."
+if ssh ${ROUTER_USER}@${ROUTER_IP} "[ ! -f ${ROUTER_PATH}/presets/presets.json ]"; then
+  echo "No existing presets found, copying presets directory..."
+  scp -r presets/* ${ROUTER_USER}@${ROUTER_IP}:${ROUTER_PATH}/presets/
+else
+  echo "Presets already exist on router, skipping copy to preserve user data"
+fi
 
 # Copy frontend build files
 scp -r frontend/build/* ${ROUTER_USER}@${ROUTER_IP}:${ROUTER_PATH}/frontend/build/

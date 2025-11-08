@@ -18,6 +18,7 @@ mod actor;
 mod board;
 mod config;
 mod group;
+mod preset;
 mod program;
 mod sse;
 mod types;
@@ -27,9 +28,10 @@ use board::{BoardCommand, BoardState, GroupCommand};
 use config::Config;
 use sse::SseEvent;
 use types::{
-    AppState, BoardEntry, CreateGroupRequest, GroupBrightnessRequest, GroupColorRequest, 
-    GroupEffectRequest, GroupOperationResult, GroupPresetRequest, OscRequest, PowerRequest, RegisterBoardRequest, 
-    SharedState, UpdateBoardRequest, UpdateGroupRequest,
+    AppState, BoardEntry, CreateGroupRequest, GroupBrightnessRequest, GroupColorRequest,
+    GroupEffectRequest, GroupOperationResult, GroupPresetRequest, OscRequest, PowerRequest,
+    PresetState, RegisterBoardRequest, SavePresetRequest, SharedState, UpdateBoardRequest,
+    UpdateGroupRequest, WledPreset,
 };
 
 use http::Method;
@@ -114,6 +116,7 @@ async fn main() {
         .route("/group/:id/color", post(set_group_color))
         .route("/group/:id/effect", post(set_group_effect))
         .route("/group/:id/preset", post(set_group_preset))
+        .route("/group/:id/presets/sync", post(sync_presets_to_group))
         .route("/board/:id/power", post(set_board_power))
         .route("/board/:id/brightness", post(set_brightness))
         .route("/board/:id/color", post(set_color))
@@ -121,6 +124,7 @@ async fn main() {
         .route("/board/:id/speed", post(set_speed))
         .route("/board/:id/intensity", post(set_intensity))
         .route("/board/:id/preset", post(set_preset))
+        .route("/board/:id/presets", get(get_board_presets))
         .route("/board/:id/led-count", post(set_led_count))
         .route("/board/:id/reset-segment", post(reset_segment))
         .route("/board/:id/presets/sync", post(sync_presets_to_board))
@@ -130,6 +134,8 @@ async fn main() {
         .route("/programs/:id", get(get_program))
         .route("/programs/:id", delete(delete_program))
         .route("/programs/:id", put(update_program))
+        .route("/presets", post(save_preset).get(list_presets))
+        .route("/presets/:id", get(get_preset).delete(delete_preset))
         .route("/osc", post(send_osc))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit
         .with_state(state.clone());
@@ -180,7 +186,10 @@ async fn update_program(
 
     program
         .save_to_file(&state.storage_paths.programs)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to save program '{}' to {}: {}", program.id, state.storage_paths.programs.display(), e)
+        ))?;
 
     Ok(StatusCode::OK)
 }
@@ -211,7 +220,10 @@ async fn delete_program(
         .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
 
     program.delete(&state.storage_paths.programs, &state.storage_paths.audio)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to delete program '{}': {}", id, e)
+        ))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -238,7 +250,10 @@ async fn list_programs(
     }
 
     let programs = program::Program::load_all(&state.storage_paths.programs)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load programs from {}: {}", state.storage_paths.programs.display(), e)
+        ))?;
 
     Ok(Json(programs))
 }
@@ -603,19 +618,31 @@ async fn set_board_power(
     sender
         .send(BoardCommand::SetPower(payload.on, payload.transition))
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            eprintln!("Failed to send power command to board '{}': {:?}", board_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // Get updated state
     let (tx, rx) = tokio::sync::oneshot::channel();
     sender
         .send(BoardCommand::GetState(tx))
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            eprintln!("Failed to send get state command to board '{}': {:?}", board_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let board_state = match tokio::time::timeout(tokio::time::Duration::from_secs(1), rx).await {
         Ok(Ok(state)) => state,
-        Ok(Err(_)) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(Err(_)) => {
+            eprintln!("Board '{}' state channel closed", board_id);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            eprintln!("Board '{}' state query timed out", board_id);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     };
 
     Ok(Json(board_state))
@@ -756,6 +783,12 @@ async fn set_preset(
     let preset = payload["preset"].as_u64().unwrap_or(1) as u8;
     let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
 
+    let received_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    println!("🎨 [{}ms] HTTP received: board='{}' preset={} transition={}", received_at, board_id, preset, transition);
+
     let sender = {
         let senders_lock = state.boards.read().await;
 
@@ -769,6 +802,12 @@ async fn set_preset(
         .send(BoardCommand::SetPreset(preset, transition))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let sent_to_actor_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    println!("✅ [{}ms] Sent to actor: board='{}' preset={}", sent_to_actor_at, board_id, preset);
 
     Ok(StatusCode::OK)
 }
@@ -818,21 +857,86 @@ async fn reset_segment(
     Ok(StatusCode::OK)
 }
 
+async fn get_board_presets(
+    State(state): State<SharedState>,
+    Path(board_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Get board IP
+    let board_ip = {
+        let senders_lock = state.boards.read().await;
+        senders_lock.get(&board_id)
+            .map(|entry| entry.ip.clone())
+            .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/presets.json", board_ip);
+
+    match client.get(&url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                // Get raw text first to handle potential parsing issues
+                let text = response.text().await
+                    .map_err(|e| (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to read response from board {} ({}): {}", board_id, board_ip, e)
+                    ))?;
+
+                // Try to parse as JSON - if it fails, return empty object
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(presets_json) => Ok(Json(presets_json)),
+                    Err(e) => {
+                        // Log the error but return empty presets instead of failing
+                        eprintln!("Warning: Board {} ({}) returned invalid JSON for presets: {}. Response: {}",
+                            board_id, board_ip, e, text);
+                        Ok(Json(serde_json::json!({})))
+                    }
+                }
+            } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+                // Board doesn't have presets.json endpoint - return empty object
+                Ok(Json(serde_json::json!({})))
+            } else {
+                Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("Board {} ({}) returned HTTP {} when fetching presets",
+                        board_id, board_ip, response.status())
+                ))
+            }
+        }
+        Err(e) => {
+            Err((
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to connect to board {} ({}) for presets: {}", board_id, board_ip, e)
+            ))
+        }
+    }
+}
+
 async fn sync_presets_to_board(
     State(state): State<SharedState>,
     Path(board_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    // Read presets.json file
-    let presets_content = std::fs::read_to_string("presets.json")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read presets.json: {}", e)))?;
+    if !state.storage_paths.is_available() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Storage directories not available. Configured paths: programs={}, audio={}, presets={}",
+                state.storage_paths.programs.display(),
+                state.storage_paths.audio.display(),
+                state.storage_paths.presets.display()
+            )
+        ));
+    }
 
-    let presets: serde_json::Value = serde_json::from_str(&presets_content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to parse presets.json: {}", e)))?;
+    // Load ALL global presets from centralized storage
+    let presets = WledPreset::load_all(&state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load presets from {}: {}", state.storage_paths.presets.display(), e)
+        ))?;
 
-    // Get board IP from state
+    // Get board IP
     let board_ip = {
         let senders_lock = state.boards.read().await;
-
         senders_lock.get(&board_id)
             .map(|entry| entry.ip.clone())
             .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
@@ -842,73 +946,76 @@ async fn sync_presets_to_board(
     let mut results = Vec::new();
     let mut success_count = 0;
 
-    // Iterate through all presets and push each one
-    if let Some(presets_obj) = presets.as_object() {
-        for (preset_id_str, preset_data) in presets_obj {
-            // Skip empty preset slot 0
-            if preset_id_str == "0" || preset_data.is_null() || preset_data.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                continue;
-            }
+    // Push each preset to its designated WLED slot
+    for preset in &presets {
+        let payload = preset.to_wled_json();
+        let url = format!("http://{}/json/state", board_ip);
 
-            let preset_id: u8 = preset_id_str.parse().unwrap_or(0);
-            if preset_id == 0 {
-                continue;
-            }
-
-            // Add "psave" to the preset data
-            let mut payload = preset_data.as_object().cloned().unwrap_or_default();
-            payload.insert("psave".to_string(), serde_json::json!(preset_id));
-
-            // Send to WLED board
-            let url = format!("http://{}/json/state", board_ip);
-            match client.post(&url).json(&payload).send().await {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        success_count += 1;
-                        results.push(serde_json::json!({
-                            "preset_id": preset_id,
-                            "status": "success"
-                        }));
-                    } else {
-                        results.push(serde_json::json!({
-                            "preset_id": preset_id,
-                            "status": "failed",
-                            "error": format!("HTTP {}", response.status())
-                        }));
-                    }
-                }
-                Err(e) => {
+        match client.post(&url).json(&payload).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    success_count += 1;
                     results.push(serde_json::json!({
-                        "preset_id": preset_id,
+                        "preset_id": preset.id,
+                        "name": preset.name,
+                        "wled_slot": preset.wled_slot,
+                        "status": "success"
+                    }));
+                } else {
+                    results.push(serde_json::json!({
+                        "preset_id": preset.id,
+                        "name": preset.name,
+                        "wled_slot": preset.wled_slot,
                         "status": "failed",
-                        "error": e.to_string()
+                        "error": format!("HTTP {}", response.status())
                     }));
                 }
             }
-
-            // Small delay to avoid overwhelming the board
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "preset_id": preset.id,
+                    "name": preset.name,
+                    "wled_slot": preset.wled_slot,
+                    "status": "failed",
+                    "error": format!("Network error to {}: {}", board_ip, e)
+                }));
+            }
         }
+
+        // Delay to avoid overwhelming board's filesystem (prevents corruption)
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
     Ok(Json(serde_json::json!({
         "synced": success_count,
-        "total": results.len(),
+        "total": presets.len(),
         "results": results
     })))
 }
 
 async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusCode> {
-    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| {
+            eprintln!("Failed to create OSC socket: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
     let packet = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
-        addr: payload.address,
+        addr: payload.address.clone(),
         args: vec![],
     }))
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        eprintln!("Failed to encode OSC message '{}': {}", payload.address, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
+    let target = "192.168.1.242:9595";
     socket
-        .send_to(&packet, "192.168.1.242:9595")
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .send_to(&packet, target)
+        .map_err(|e| {
+            eprintln!("Failed to send OSC message to {}: {}", target, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(StatusCode::OK)
 }
@@ -1122,11 +1229,312 @@ async fn set_group_preset(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupPresetRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
+    let received_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    println!("🎨 [{}ms] HTTP received: group='{}' preset={} transition={}", received_at, group_id, payload.preset, payload.transition);
+
     match group::execute_group_command(state, &group_id, GroupCommand::SetPreset(payload.preset, payload.transition)).await {
-        Ok(result) => Ok(Json(result)),
+        Ok(result) => {
+            let sent_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            println!("✅ [{}ms] Group command executed: group='{}' preset={}", sent_at, group_id, payload.preset);
+            Ok(Json(result))
+        },
         Err(e) => {
             error!(group_id = %group_id, "Error setting group preset: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+async fn sync_presets_to_group(
+    State(state): State<SharedState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    // Get group member boards from frontend groups (stored in localStorage, so we need to get from request)
+    // For now, we'll implement a simpler version that syncs to all boards
+    let all_boards: Vec<String> = {
+        let boards_lock = state.boards.read().await;
+        boards_lock.keys().cloned().collect()
+    };
+
+    if all_boards.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "No boards available".to_string()));
+    }
+
+    // Load ALL global presets from centralized storage
+    let presets = WledPreset::load_all(&state.storage_paths.presets)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load presets: {}", e)))?;
+
+    let mut all_results = Vec::new();
+    let mut total_success = 0;
+
+    // Sync to each board in parallel
+    let mut tasks = Vec::new();
+    
+    for board_id in all_boards {
+        let state_clone = state.clone();
+        let presets_clone = presets.clone();
+        
+        let task = tokio::spawn(async move {
+            sync_presets_to_board_internal(state_clone, &board_id, presets_clone).await
+        });
+        tasks.push(task);
+    }
+
+    // Wait for all sync operations to complete
+    let results = futures::future::join_all(tasks).await;
+    
+    for (index, result) in results.into_iter().enumerate() {
+        match result {
+            Ok(Ok(sync_result)) => {
+                let sync_json = sync_result.0;
+                if let Ok(sync_data) = serde_json::from_value::<serde_json::Value>(sync_json) {
+                    if let Some(synced) = sync_data.get("synced").and_then(|v| v.as_u64()) {
+                        total_success += synced as usize;
+                    }
+                    all_results.push(serde_json::json!({
+                        "board_index": index,
+                        "result": sync_data
+                    }));
+                }
+            }
+            Ok(Err(e)) => {
+                all_results.push(serde_json::json!({
+                    "board_index": index,
+                    "error": e.1
+                }));
+            }
+            Err(e) => {
+                all_results.push(serde_json::json!({
+                    "board_index": index,
+                    "error": format!("Task failed: {}", e)
+                }));
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "group_id": group_id,
+        "total_presets": presets.len(),
+        "total_successful_syncs": total_success,
+        "member_results": all_results
+    })))
+}
+
+// Helper function to sync presets to a specific board (extracted from sync_presets_to_board)
+async fn sync_presets_to_board_internal(
+    state: SharedState,
+    board_id: &str,
+    presets: Vec<WledPreset>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Get board IP
+    let board_ip = {
+        let senders_lock = state.boards.read().await;
+        senders_lock.get(board_id)
+            .map(|entry| entry.ip.clone())
+            .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
+    };
+
+    let client = reqwest::Client::new();
+    let mut results = Vec::new();
+    let mut success_count = 0;
+
+    // Push each preset to its designated WLED slot
+    for preset in &presets {
+        let payload = preset.to_wled_json();
+        let url = format!("http://{}/json/state", board_ip);
+
+        match client.post(&url).json(&payload).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    success_count += 1;
+                    results.push(serde_json::json!({
+                        "preset_id": preset.id,
+                        "name": preset.name,
+                        "wled_slot": preset.wled_slot,
+                        "status": "success"
+                    }));
+                } else {
+                    results.push(serde_json::json!({
+                        "preset_id": preset.id,
+                        "name": preset.name,
+                        "wled_slot": preset.wled_slot,
+                        "status": "failed",
+                        "error": format!("HTTP {}", response.status())
+                    }));
+                }
+            }
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "preset_id": preset.id,
+                    "name": preset.name,
+                    "wled_slot": preset.wled_slot,
+                    "status": "failed",
+                    "error": format!("Network error to {}: {}", board_ip, e)
+                }));
+            }
+        }
+
+        // Delay to avoid overwhelming board's filesystem (prevents corruption)
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    Ok(Json(serde_json::json!({
+        "synced": success_count,
+        "total": presets.len(),
+        "results": results
+    })))
+}
+
+// Preset management handlers
+
+async fn save_preset(
+    State(state): State<SharedState>,
+    Json(req): Json<SavePresetRequest>,
+) -> Result<Json<WledPreset>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    // Load existing presets
+    let mut presets = WledPreset::load_all(&state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load presets from {}: {}", state.storage_paths.presets.display(), e)
+        ))?;
+
+    // Find next available slot (or use provided slot if specified)
+    let wled_slot = if req.wled_slot > 0 {
+        // Validate provided slot number
+        if req.wled_slot < 1 || req.wled_slot > 250 {
+            return Err((StatusCode::BAD_REQUEST, "wled_slot must be between 1 and 250".to_string()));
+        }
+        
+        // Check if slot is already used
+        if let Some(existing) = presets.iter().find(|p| p.wled_slot == req.wled_slot) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("Slot {} is already used by preset '{}'", req.wled_slot, existing.name)
+            ));
+        }
+        req.wled_slot
+    } else {
+        // Auto-assign next available slot
+        let mut next_slot = 1;
+        while presets.iter().any(|p| p.wled_slot == next_slot) && next_slot <= 250 {
+            next_slot += 1;
+        }
+        
+        if next_slot > 250 {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "No available preset slots (1-250)".to_string()));
+        }
+        
+        next_slot
+    };
+
+    // Use provided state or default
+    let preset_state = req.state.unwrap_or(PresetState {
+        on: true,
+        brightness: 255,
+        color: [255, 255, 255],
+        effect: 0,
+        speed: 128,
+        intensity: 128,
+    });
+
+    // Create new preset
+    let preset = WledPreset {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: req.name,
+        wled_slot,
+        description: req.description,
+        state: preset_state,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    // Add to collection and save
+    presets.push(preset.clone());
+    WledPreset::save_all(&presets, &state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to save {} presets to {}: {}", presets.len(), state.storage_paths.presets.display(), e)
+        ))?;
+
+    Ok(Json(preset))
+}
+
+async fn list_presets(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<WledPreset>>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    let presets = WledPreset::load_all(&state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to list presets from {}: {}", state.storage_paths.presets.display(), e)
+        ))?;
+
+    Ok(Json(presets))
+}
+
+async fn get_preset(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<WledPreset>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    let preset = WledPreset::find_by_id(&id, &state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error loading presets while searching for '{}': {}", id, e)
+        ))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Preset {} not found", id)))?;
+
+    Ok(Json(preset))
+}
+
+async fn delete_preset(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    // Load all presets
+    let mut presets = WledPreset::load_all(&state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load presets for deletion of '{}': {}", id, e)
+        ))?;
+
+    // Find and remove
+    let initial_len = presets.len();
+    presets.retain(|p| p.id != id);
+
+    if presets.len() == initial_len {
+        return Err((StatusCode::NOT_FOUND, format!("Preset {} not found", id)));
+    }
+
+    // Save updated collection
+    WledPreset::save_all(&presets, &state.storage_paths.presets)
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to save presets after deleting '{}': {}", id, e)
+        ))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

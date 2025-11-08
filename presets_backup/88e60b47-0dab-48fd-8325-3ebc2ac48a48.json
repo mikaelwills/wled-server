@@ -1,0 +1,18 @@
+{
+  "id": "88e60b47-0dab-48fd-8325-3ebc2ac48a48",
+  "name": "Wipe Cyan",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 255,
+    "color": [
+      0,
+      221,
+      255
+    ],
+    "effect": 3,
+    "speed": 252,
+    "intensity": 250
+  },
+  "created_at": "2025-11-06T21:09:57.106532+00:00"
+}

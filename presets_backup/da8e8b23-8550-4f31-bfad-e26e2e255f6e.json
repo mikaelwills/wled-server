@@ -1,0 +1,18 @@
+{
+  "id": "da8e8b23-8550-4f31-bfad-e26e2e255f6e",
+  "name": "Waterfall Pink",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 128,
+    "color": [
+      255,
+      3,
+      184
+    ],
+    "effect": 184,
+    "speed": 144,
+    "intensity": 5
+  },
+  "created_at": "2025-11-06T20:59:14.159091607+00:00"
+}

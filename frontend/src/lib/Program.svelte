@@ -36,6 +36,9 @@
 	let defaultTargetBoard = $state(null);
 	let defaultBoardDropdownOpen = $state(false);
 
+	// Zoom state
+	let zoomLevel = $state(50); // pixels per second
+
 	onMount(async () => {
 		// Boards, groups, and presets are now loaded via stores in parent component
 		// No need to fetch here
@@ -108,7 +111,7 @@
 					cursorColor: 'rgb(192, 132, 252)',
 					barWidth: 2,
 					barRadius: 3,
-					height: 128,
+					height: 200,
 					plugins: [regions]
 				});
 
@@ -252,7 +255,7 @@
 					cursorColor: 'rgb(192, 132, 252)',
 					barWidth: 2,
 					barRadius: 3,
-					height: 128,
+					height: 200,
 					plugins: [regions]
 				});
 
@@ -355,28 +358,17 @@
 			});
 	}
 
-	// Helper function to create styled label elements with vertical staggering
+	// Helper function to create styled label elements - always centered
 	function createRegionLabel(text, time) {
 		const label = document.createElement('div');
 		label.textContent = text;
 		label.title = text; // Tooltip for full text
 
-		// Calculate vertical offset based on nearby markers
-		// No nearby markers: center the label (0px)
-		// Nearby markers exist: use staggering (5px / 25px below)
-		const overlapping = markers.filter(m => Math.abs(m.time - time) < 2.0);
-		let verticalOffset;
-		if (overlapping.length === 0) {
-			// No nearby markers - center the label
-			verticalOffset = 0;
-		} else {
-			// Nearby markers exist - use staggering
-			verticalOffset = (overlapping.length % 2 === 0) ? 5 : 25;
-		}
-
+		// Always center labels vertically on the waveform
 		label.style.cssText = `
 			position: absolute;
-			transform: translateY(${verticalOffset}px);
+			top: 50%;
+			transform: translateY(-50%);
 			background-color: rgba(20, 20, 20, 0.95);
 			color: #e5e5e5 !important;
 			padding: 3px 8px;
@@ -599,6 +591,52 @@
 		const mins = Math.floor(seconds / 60);
 		const secs = (seconds % 60).toFixed(2);
 		return `${mins}:${secs.padStart(5, '0')}`;
+	}
+
+	function zoomIn() {
+		if (!wavesurfer || !isLoaded) return;
+
+		// Get current playhead position
+		const currentTime = wavesurfer.getCurrentTime();
+		const duration = wavesurfer.getDuration();
+		const relativePosition = currentTime / duration;
+
+		// Increase zoom by 50%
+		zoomLevel = Math.min(zoomLevel * 1.5, 500);
+		wavesurfer.zoom(zoomLevel);
+
+		// Maintain playhead position in viewport
+		setTimeout(() => {
+			const waveformContainer = wavesurfer.getWrapper();
+			const scrollContainer = waveformContainer.parentElement;
+			if (scrollContainer) {
+				const scrollPosition = (relativePosition * scrollContainer.scrollWidth) - (scrollContainer.clientWidth / 2);
+				scrollContainer.scrollLeft = Math.max(0, scrollPosition);
+			}
+		}, 0);
+	}
+
+	function zoomOut() {
+		if (!wavesurfer || !isLoaded) return;
+
+		// Get current playhead position
+		const currentTime = wavesurfer.getCurrentTime();
+		const duration = wavesurfer.getDuration();
+		const relativePosition = currentTime / duration;
+
+		// Decrease zoom by 33%, or reset to 0 if close
+		zoomLevel = Math.max(zoomLevel / 1.5, 0);
+		wavesurfer.zoom(zoomLevel);
+
+		// Maintain playhead position in viewport
+		setTimeout(() => {
+			const waveformContainer = wavesurfer.getWrapper();
+			const scrollContainer = waveformContainer.parentElement;
+			if (scrollContainer) {
+				const scrollPosition = (relativePosition * scrollContainer.scrollWidth) - (scrollContainer.clientWidth / 2);
+				scrollContainer.scrollLeft = Math.max(0, scrollPosition);
+			}
+		}, 0);
 	}
 
 
@@ -853,6 +891,9 @@ function playFullProgram() {
 			{#if isLoaded && markers.length > 0}
 				{@const groups = $boards.filter(b => b.isGroup)}
 				{@const regularBoards = $boards.filter(b => !b.isGroup)}
+
+				<button class="zoom-btn" onclick={zoomOut} title="Zoom Out">−</button>
+				<button class="zoom-btn" onclick={zoomIn} title="Zoom In">+</button>
 
 				<div class="default-board-dropdown-wrapper">
 					<button
@@ -1326,8 +1367,32 @@ function playFullProgram() {
 		margin-bottom: -40px;
 	}
 
+	/* Custom scrollbar for waveform */
+	.waveform-wrapper ::-webkit-scrollbar {
+		height: 8px;
+	}
+
+	.waveform-wrapper ::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	.waveform-wrapper ::-webkit-scrollbar-thumb {
+		background: rgba(168, 85, 247, 0.5);
+		border-radius: 4px;
+	}
+
+	.waveform-wrapper ::-webkit-scrollbar-thumb:hover {
+		background: rgba(168, 85, 247, 0.7);
+	}
+
+	/* Firefox scrollbar */
+	.waveform-wrapper * {
+		scrollbar-width: thin;
+		scrollbar-color: rgba(168, 85, 247, 0.5) transparent;
+	}
+
 	div[id^="waveform-"] {
-		padding: 1.5rem 2rem 1.5rem 2rem;
+		padding: 3rem 2rem 3rem 2rem;
 		min-height: 128px;
 	}
 
@@ -1351,6 +1416,37 @@ function playFullProgram() {
 
 	.waveform-footer.has-cues {
 		opacity: 1;
+	}
+
+	.zoom-btn {
+		width: 32px;
+		height: 28px;
+		background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+		border: 1px solid #3a3a3a;
+		color: #ffffff;
+		border-radius: 4px;
+		font-size: 1rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
+		padding: 0;
+		line-height: 1;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+	}
+
+	.zoom-btn:hover {
+		background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
+		border-color: #a855f7;
+		box-shadow: 0 2px 4px rgba(168, 85, 247, 0.2);
+	}
+
+	.zoom-btn:active {
+		transform: scale(0.95);
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 	}
 
 	.waveform-skeleton {

@@ -8,6 +8,7 @@ use std::env;
 pub struct StoragePaths {
     pub programs: PathBuf,
     pub audio: PathBuf,
+    pub presets: PathBuf,
 }
 
 impl Default for StoragePaths {
@@ -19,6 +20,9 @@ impl Default for StoragePaths {
             audio: env::var("WLED_AUDIO_PATH")
                 .unwrap_or_else(|_| "audio".to_string())
                 .into(),
+            presets: env::var("WLED_PRESETS_PATH")
+                .unwrap_or_else(|_| "presets".to_string())
+                .into(),
         }
     }
 }
@@ -27,14 +31,16 @@ impl StoragePaths {
     pub fn init(&self) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(&self.programs)?;
         fs::create_dir_all(&self.audio)?;
+        fs::create_dir_all(&self.presets)?;
         tracing::info!("Storage paths initialized:");
         tracing::info!("  Programs: {:?}", self.programs);
         tracing::info!("  Audio: {:?}", self.audio);
+        tracing::info!("  Presets: {:?}", self.presets);
         Ok(())
     }
 
     pub fn is_available(&self) -> bool {
-        self.programs.exists() && self.audio.exists()
+        self.programs.exists() && self.audio.exists() && self.presets.exists()
     }
 }
 

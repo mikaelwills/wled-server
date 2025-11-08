@@ -1,0 +1,18 @@
+{
+  "id": "7ebb72af-988d-4082-a279-7202eedf71ab",
+  "name": "Puddles Red",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 255,
+    "color": [
+      255,
+      18,
+      5
+    ],
+    "effect": 134,
+    "speed": 77,
+    "intensity": 255
+  },
+  "created_at": "2025-11-06T21:09:57.106611+00:00"
+}

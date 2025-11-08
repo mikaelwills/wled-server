@@ -111,9 +111,9 @@ async fn execute_board_command(
             Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to send get state command"))
         })?;
 
-    // Wait for the state response with timeout
+    // Wait for the state response with short timeout (20ms - don't block on offline boards)
     let board_state = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_millis(20),
         rx
     ).await
     .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {

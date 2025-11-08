@@ -54,7 +54,8 @@ impl BoardActor {
             let ws_stream = match connect_async(url).await {
                 Ok((stream, _)) => stream,
                 Err(e) => {
-                    warn!(board_id = %self.id, "Failed to connect: {}, retrying in 5 seconds...", e);
+                    // Temporarily commented out to reduce noise in logs
+                    // warn!(board_id = %self.id, "Failed to connect: {}, retrying in 5 seconds...", e);
                     self.state.connected = false;
                     self.broadcast_connection_status();
 
@@ -251,10 +252,23 @@ impl BoardActor {
                                 self.broadcast_state();
                             }
                             Some(BoardCommand::SetPreset(preset, transition)) => {
+                                let before_ws_send = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis();
+                                println!("📤 [{}ms] Sending to WS: board='{}' preset={}", before_ws_send, self.id, preset);
+
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":{}}}"#, preset, transition));
                                 timeout(tokio::time::Duration::from_secs(5), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
+
+                                let after_ws_send = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis();
+                                println!("✅ [{}ms] Sent via WS: board='{}' preset={}", after_ws_send, self.id, preset);
+
                                 self.broadcast_state();
                             }
                             Some(BoardCommand::SetLedCount(led_count)) => {

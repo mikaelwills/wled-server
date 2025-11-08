@@ -85,7 +85,37 @@ pub struct GroupPresetRequest {
 
 fn default_transition() -> u8 { 0 }
 
+// Preset request structs
+#[derive(Deserialize)]
+pub struct SavePresetRequest {
+    pub name: String,
+    pub wled_slot: u8,
+    pub description: Option<String>,
+    pub state: Option<PresetState>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WledPreset {
+    pub id: String,
+    pub name: String,
+    pub wled_slot: u8,
+    pub description: Option<String>,
+    pub state: PresetState,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PresetState {
+    pub on: bool,
+    pub brightness: u8,
+    pub color: [u8; 3],
+    pub effect: u8,
+    pub speed: u8,
+    pub intensity: u8,
+}
+
 // Application state structs
+#[derive(Clone)]
 pub struct BoardEntry {
     pub ip: String,
     pub sender: mpsc::Sender<BoardCommand>,

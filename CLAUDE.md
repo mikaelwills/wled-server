@@ -55,6 +55,13 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - ✓ CORS enabled for cross-origin requests (including DELETE)
 - ✓ Network-accessible server (0.0.0.0 binding)
 - ✓ Graceful fallback for unreachable boards in list_boards
+- ✓ **Per-Board Presets** - Board-specific preset management
+  - GET /board/:id/presets endpoint fetches actual presets from each WLED board
+  - Frontend shows only presets that exist on that specific board
+  - Clear indication when boards need syncing ("No presets - click Sync")
+  - Prominent "Sync Presets" button for boards without presets
+  - Automatic preset fetching when boards connect
+  - Cached preset lists per board in frontend state
 - ✓ SvelteKit frontend with static adapter
 - ✓ WLED-style HSV color wheel component with working selector circle
 - ✓ Complete effects list (186 effects, alphabetically sorted)
@@ -140,6 +147,55 @@ frontend/
 
 **Why Active Monitoring:**
 TCP connections don't immediately close when devices power off. Without active pings, the actor won't detect the disconnection until it tries to read/write, which could take a long time if the board is idle.
+
+## API Endpoints
+
+### Board Management
+- `GET /api/boards` - List all boards and groups with current state
+- `POST /api/boards` - Register new board
+- `PUT /api/boards/:id` - Update board (ID or IP)
+- `DELETE /api/boards/:id` - Delete board
+
+### Board Control
+- `POST /api/board/:id/power` - Toggle power (JSON: `{"on": true, "transition": 0}`)
+- `POST /api/board/:id/brightness` - Set brightness (JSON: `{"brightness": 128, "transition": 0}`)
+- `POST /api/board/:id/color` - Set RGB color (JSON: `{"r": 255, "g": 255, "b": 255, "transition": 0}`)
+- `POST /api/board/:id/effect` - Set effect (JSON: `{"effect": 0, "transition": 0}`)
+- `POST /api/board/:id/speed` - Set effect speed (JSON: `{"speed": 128, "transition": 0}`)
+- `POST /api/board/:id/intensity` - Set effect intensity (JSON: `{"intensity": 128, "transition": 0}`)
+- `POST /api/board/:id/preset` - Apply preset (JSON: `{"preset": 1, "transition": 0}`)
+- `POST /api/board/:id/led-count` - Set LED count (JSON: `{"led_count": 30}`)
+- `POST /api/board/:id/reset-segment` - Reset segment to defaults
+- `GET /api/board/:id/presets` - Get actual presets from WLED board
+- `POST /api/board/:id/presets/sync` - Sync global presets to board
+
+### Group Management
+- `POST /api/groups` - Create group
+- `PUT /api/groups/:id` - Update group
+- `DELETE /api/groups/:id` - Delete group
+- `POST /api/group/:id/power` - Set group power
+- `POST /api/group/:id/brightness` - Set group brightness
+- `POST /api/group/:id/color` - Set group color
+- `POST /api/group/:id/effect` - Set group effect
+- `POST /api/group/:id/preset` - Apply preset to group
+
+### Preset Management
+- `GET /api/presets` - List all global presets
+- `POST /api/presets` - Save new preset
+- `GET /api/presets/:id` - Get specific preset
+- `DELETE /api/presets/:id` - Delete preset
+
+### Program Management (Sequencer)
+- `GET /api/programs` - List all programs
+- `POST /api/programs` - Save new program
+- `GET /api/programs/:id` - Get specific program
+- `PUT /api/programs/:id` - Update program
+- `DELETE /api/programs/:id` - Delete program
+
+### Real-time & Utilities
+- `GET /api/events` - Server-Sent Events stream for real-time updates
+- `POST /api/osc` - Send OSC message
+- `GET /api/health` - Health check
 
 ### Known Limitations:
 - Sequencer programs stored in localStorage only (not synced across devices)

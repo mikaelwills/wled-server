@@ -5,9 +5,10 @@
 
 echo "🔄 Restarting WLED Server..."
 
-# Kill existing processes
+# Kill existing processes (more targeted to avoid killing tmux sessions)
 echo "⏹️  Stopping existing processes..."
-pkill -f rust-wled-server
+pkill -f "cargo run"
+pkill -f "target.*rust-wled-server"
 pkill -f "vite dev"
 
 # Wait a moment for processes to clean up

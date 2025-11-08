@@ -14,10 +14,12 @@ services:
       - ./data:/app/data
       - ./programs:/app/programs
       - ./audio:/app/audio
+      - ./presets:/app/presets
     environment:
       - RUST_LOG=info
       - WLED_PROGRAMS_PATH=/app/programs
       - WLED_AUDIO_PATH=/app/audio
+      - WLED_PRESETS_PATH=/app/presets
     networks:
       - wled-network
 

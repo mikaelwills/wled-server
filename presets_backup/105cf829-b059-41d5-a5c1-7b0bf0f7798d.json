@@ -1,0 +1,18 @@
+{
+  "id": "105cf829-b059-41d5-a5c1-7b0bf0f7798d",
+  "name": "Lightning White",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 255,
+    "color": [
+      0,
+      221,
+      255
+    ],
+    "effect": 57,
+    "speed": 255,
+    "intensity": 255
+  },
+  "created_at": "2025-11-06T21:09:57.106198+00:00"
+}

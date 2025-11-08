@@ -1,0 +1,18 @@
+{
+  "id": "4d29f3ac-5983-4ba5-9046-64e982fee840",
+  "name": "Waterfall Red",
+  "board_id": "Three",
+  "state": {
+    "on": true,
+    "brightness": 128,
+    "color": [
+      255,
+      29,
+      0
+    ],
+    "effect": 184,
+    "speed": 144,
+    "intensity": 5
+  },
+  "created_at": "2025-11-06T20:58:44.318114302+00:00"
+}

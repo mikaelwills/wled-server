@@ -55,7 +55,7 @@ COPYFILE_DISABLE=1 tar czf - \
   docker-start.sh \
   lighttpd-docker.conf \
   data \
-  presets.json \
+  presets \
   | ssh ${NAS_USER}@${NAS_IP} "cd ${NAS_PATH} && tar xzf - 2>/dev/null"
 echo "✅ Copy complete"
 echo ""
