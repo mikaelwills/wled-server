@@ -46,84 +46,47 @@ function recalculateGroupStates(currentBoards: BoardState[]): BoardState[] {
 }
 
 /**
- * Optimized: Only recalculate groups that contain the specified board
- * Used for SSE updates where only one board changes at a time
- * Uses Map for O(1) lookups instead of O(n) filter operations
- */
-function recalculateAffectedGroups(
-  boardId: string,
-  currentBoards: BoardState[]
-): BoardState[] {
-  // Build Map for O(1) board lookups (avoids repeated filter operations)
-  const boardsMap = new Map<string, BoardState>();
-  for (const board of currentBoards) {
-    if (!board.isGroup) {
-      boardsMap.set(board.id, board);
-    }
-  }
-
-  return currentBoards.map((board) => {
-    // Only recalculate groups that contain this board as a member
-    if (board.isGroup && board.memberIds?.includes(boardId)) {
-      // Use Map for O(1) member lookups instead of O(n) filter
-      const members: BoardState[] = [];
-      if (board.memberIds) {
-        for (const memberId of board.memberIds) {
-          const member = boardsMap.get(memberId);
-          if (member) members.push(member);
-        }
-      }
-
-      // CRITICAL: Preserve immutable group identity, only update derived operational state
-      return {
-        // Preserve all existing group properties
-        ...board,
-        // Only update derived operational state from member boards:
-        color: members.length > 0 ? members[0].color : board.color,
-        brightness: members.length > 0 ? members[0].brightness : board.brightness,
-        effect: members.length > 0 ? members[0].effect : board.effect,
-        on: members.length > 0 ? members.some((m) => m.on) : board.on,
-      };
-    }
-    return board;
-  });
-}
-
-/**
  * Initialize SSE listener for real-time board updates
+ * IMPORTANT: Waits for initial fetch to complete before starting SSE to avoid race condition
  */
-export function initBoardsListener(): void {
+export async function initBoardsListener(): Promise<void> {
   if (!browser) return;
 
   boardsLoading.set(true);
   boardsError.set(null);
 
   try {
-    // Initial fetch to populate boards
-    fetchBoards();
+    // Wait for initial fetch to complete BEFORE starting SSE
+    // This prevents race condition where SSE updates arrive before boards are loaded
+    await fetchBoards();
 
-    // Set up SSE for real-time updates
+    // Set up SSE for real-time updates (now boards are guaranteed to be populated)
     sseConnection = createSseConnection(
       (boardId: string, state: BoardState) => {
         // Optimized: Single-pass update of board state and affected groups
         boards.update((currentBoards) => {
-          // Build Map for O(1) board lookups
-          const boardsMap = new Map<string, BoardState>();
+          // Early return if board doesn't exist (defensive - avoids wasted work in edge cases)
+          if (!currentBoards.some(b => b.id === boardId && !b.isGroup)) {
+            return currentBoards;
+          }
 
-          return currentBoards.map((board) => {
-            // Track non-group boards for group member lookups
+          // Build Map ONCE before iteration for O(1) board lookups
+          const boardsMap = new Map<string, BoardState>();
+          for (const board of currentBoards) {
             if (!board.isGroup) {
               boardsMap.set(board.id, board);
             }
+          }
+          // Update map with new state for the changed board
+          boardsMap.set(boardId, state);
 
+          return currentBoards.map((board) => {
             // Update the specific board that changed
             if (board.id === boardId) {
               // Groups should not receive individual state updates via SSE
               if (board.isGroup) {
                 return board; // Skip silently - this shouldn't happen in normal operation
               }
-              // Update individual board with new state from SSE
-              boardsMap.set(boardId, state); // Update map with new state
               return state;
             }
 
@@ -133,7 +96,7 @@ export function initBoardsListener(): void {
               const members: BoardState[] = [];
               if (board.memberIds) {
                 for (const memberId of board.memberIds) {
-                  const member = memberId === boardId ? state : boardsMap.get(memberId);
+                  const member = boardsMap.get(memberId);
                   if (member) members.push(member);
                 }
               }
@@ -154,25 +117,36 @@ export function initBoardsListener(): void {
       (boardId: string, connected: boolean) => {
         // Optimized: Single-pass update of connection status and affected groups
         boards.update((currentBoards) => {
-          // Build Map for O(1) board lookups
+          // Early return if board doesn't exist (defensive - avoids wasted work in edge cases)
+          if (!currentBoards.some(b => b.id === boardId && !b.isGroup)) {
+            return currentBoards;
+          }
+
+          // Build Map ONCE before iteration for O(1) board lookups
           const boardsMap = new Map<string, BoardState>();
           let updatedBoard: BoardState | null = null;
 
-          return currentBoards.map((board) => {
-            // Track non-group boards for group member lookups
+          // First pass: build complete map and find/update target board
+          for (const board of currentBoards) {
             if (!board.isGroup) {
-              boardsMap.set(board.id, board);
+              if (board.id === boardId) {
+                // Update connection status for target board
+                updatedBoard = { ...board, connected };
+                boardsMap.set(board.id, updatedBoard);
+              } else {
+                boardsMap.set(board.id, board);
+              }
             }
+          }
 
-            // Update connection status for the specific board
+          return currentBoards.map((board) => {
+            // Return updated board if this is the target
             if (board.id === boardId) {
               // Groups don't have connection status changes via SSE
               if (board.isGroup) {
                 return board; // Skip silently
               }
-              updatedBoard = { ...board, connected };
-              boardsMap.set(boardId, updatedBoard); // Update map with new connection status
-              return updatedBoard;
+              return updatedBoard!;
             }
 
             // Recalculate groups that contain the updated board
@@ -181,7 +155,7 @@ export function initBoardsListener(): void {
               const members: BoardState[] = [];
               if (board.memberIds) {
                 for (const memberId of board.memberIds) {
-                  const member = memberId === boardId && updatedBoard ? updatedBoard : boardsMap.get(memberId);
+                  const member = boardsMap.get(memberId);
                   if (member) members.push(member);
                 }
               }

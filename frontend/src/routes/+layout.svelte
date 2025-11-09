@@ -11,8 +11,8 @@
 	// Initialize data listeners on mount
 	onMount(async () => {
 		if (browser) {
-			// Initialize boards SSE listener
-			initBoardsListener();
+			// Initialize boards SSE listener (waits for initial fetch to avoid race condition)
+			await initBoardsListener();
 
 			// Fetch presets from server
 			await fetchPresets();
