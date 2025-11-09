@@ -27,6 +27,7 @@ export function createSseConnection(
   eventSource.onmessage = (event) => {
     try {
       const data: SseEvent = JSON.parse(event.data);
+      console.log('SSE event received:', data);
 
       if (data.type === 'state_update') {
         onStateUpdate(data.board_id, data.state);

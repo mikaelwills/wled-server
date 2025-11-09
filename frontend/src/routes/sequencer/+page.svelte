@@ -128,7 +128,8 @@
 
 		const timestamp = Date.now();
 		const fileName = file.name;
-		const programId = `new-program-${timestamp}`;
+		const baseFileName = fileName.replace(/\.[^/.]+$/, ''); // Remove extension
+		const programId = `${baseFileName}-${timestamp}`;
 
 		try {
 			let audioDataURL;

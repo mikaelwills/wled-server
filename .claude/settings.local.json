@@ -46,7 +46,9 @@
       "Bash(brew install:*)",
       "Bash(find:*)",
       "Bash(scp:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "WebFetch(domain:kno.wled.ge)",
+      "WebFetch(domain:wled.discourse.group)"
     ],
     "deny": [],
     "ask": []

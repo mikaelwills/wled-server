@@ -194,65 +194,65 @@ impl BoardActor {
                   }
                   cmd = cmd_rx.recv() => {
                         match cmd {
-                            Some(BoardCommand::SetPower(target_state, transition)) => {
+                            Some(BoardCommand::SetPower(target_state, _transition)) => {
                                 self.state.on = target_state;
-                                let msg = Message::Text(format!(r#"{{"on":{},"tt":{}}}"#, target_state, transition));
+                                let msg = Message::Text(format!(r#"{{"on":{},"tt":0}}"#, target_state));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetBrightness(bri, transition)) => {
+                            Some(BoardCommand::SetBrightness(bri, _transition)) => {
                                 self.state.brightness = bri;
-                                let msg = Message::Text(format!(r#"{{"bri":{},"tt":{}}}"#, bri, transition));
+                                let msg = Message::Text(format!(r#"{{"bri":{},"tt":0}}"#, bri));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetColor { r, g, b, transition }) => {
+                            Some(BoardCommand::SetColor { r, g, b, transition: _ }) => {
                                 self.state.color = [r, g, b];
                                 let msg = Message::Text(format!(
-                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":{}}}"#,
-                                    r, g, b, transition
+                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":0}}"#,
+                                    r, g, b
                                 ));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetEffect(effect, transition)) => {
+                            Some(BoardCommand::SetEffect(effect, _transition)) => {
                                 self.state.effect = effect;
-                                let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}],"tt":{}}}"#, effect, transition));
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}],"tt":0}}"#, effect));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetSpeed(speed, transition)) => {
+                            Some(BoardCommand::SetSpeed(speed, _transition)) => {
                                 self.state.speed = speed;
-                                let msg = Message::Text(format!(r#"{{"seg":[{{"sx":{}}}],"tt":{}}}"#, speed, transition));
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"sx":{}}}],"tt":0}}"#, speed));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetIntensity(intensity, transition)) => {
+                            Some(BoardCommand::SetIntensity(intensity, _transition)) => {
                                 self.state.intensity = intensity;
-                                let msg = Message::Text(format!(r#"{{"seg":[{{"ix":{}}}],"tt":{}}}"#, intensity, transition));
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"ix":{}}}],"tt":0}}"#, intensity));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetPreset(preset, transition)) => {
+                            Some(BoardCommand::SetPreset(preset, _transition)) => {
                                 let before_ws_send = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis();
                                 println!("📤 [{}ms] Sending to WS: board='{}' preset={}", before_ws_send, self.id, preset);
 
-                                let msg = Message::Text(format!(r#"{{"ps":{},"tt":{}}}"#, preset, transition));
+                                let msg = Message::Text(format!(r#"{{"ps":{},"tt":0}}"#, preset));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;

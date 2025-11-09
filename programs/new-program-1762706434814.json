@@ -1,0 +1,50 @@
+{
+  "id": "new-program-1762706434814",
+  "song_name": "Overwhelmed Ouija 04-11",
+  "loopy_pro_track": "",
+  "file_name": "Overwhelmed Ouija 04-11.wav",
+  "audio_file": "new-program-1762706434814.mp3",
+  "cues": [
+    {
+      "time": 9.118107407009113,
+      "label": "Cue 1",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 27.42849174540213,
+      "label": "Strobe White",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 26,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 34.29925059683191,
+      "label": "Cue 14",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "off",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    }
+  ],
+  "created_at": "2025-11-09T16:40:45.185Z",
+  "default_target_board": "GROUP"
+}

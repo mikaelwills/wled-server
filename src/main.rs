@@ -107,7 +107,7 @@ async fn main() {
     // Build API router
     let api_router = Router::new()
         .route("/health", get(hello))
-        .route("/boards", get(lightweight_list_boards).post(register_board))
+        .route("/boards", get(list_boards).post(register_board))
         .route("/boards/:id", put(update_board).delete(delete_board))
         .route("/groups", post(create_group))
         .route("/groups/:id", put(update_group).delete(delete_group))
@@ -136,7 +136,10 @@ async fn main() {
         .route("/programs/:id", put(update_program))
         .route("/presets", post(save_preset).get(list_presets))
         .route("/presets/:id", get(get_preset).delete(delete_preset))
-        .route("/audio/:id", post(upload_audio).get(get_audio).delete(delete_audio))
+        .route(
+            "/audio/:id",
+            post(upload_audio).get(get_audio).delete(delete_audio),
+        )
         .route("/osc", post(send_osc))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit
         .with_state(state.clone());
@@ -564,117 +567,6 @@ async fn list_boards(
             states.push(state);
         }
     }
-
-    // Add groups from config with calculated state
-    if let Ok(config) = Config::load() {
-        for group in config.groups {
-            // Get member board states
-            let member_states: Vec<BoardState> = group
-                .members
-                .iter()
-                .filter_map(|member_id| {
-                    states
-                        .iter()
-                        .find(|s| s.id == *member_id && s.is_group != Some(true))
-                })
-                .cloned()
-                .collect();
-
-            // Calculate group state from members (same logic as frontend)
-            let group_on = if !member_states.is_empty() {
-                member_states.iter().any(|m| m.on) // Group is ON if any member is ON
-            } else {
-                false
-            };
-
-            let group_connected = if !member_states.is_empty() {
-                member_states.iter().any(|m| m.connected) // Group is connected if any member is connected
-            } else {
-                false
-            };
-
-            let group_color = if !member_states.is_empty() {
-                member_states[0].color
-            } else {
-                [255, 255, 255]
-            };
-
-            let group_brightness = if !member_states.is_empty() {
-                member_states[0].brightness
-            } else {
-                128
-            };
-
-            let group_effect = if !member_states.is_empty() {
-                member_states[0].effect
-            } else {
-                0
-            };
-
-            let group_speed = if !member_states.is_empty() {
-                member_states[0].speed
-            } else {
-                128
-            };
-
-            let group_intensity = if !member_states.is_empty() {
-                member_states[0].intensity
-            } else {
-                128
-            };
-
-            states.push(BoardState {
-                id: group.id,
-                ip: String::new(),
-                on: group_on,
-                brightness: group_brightness,
-                color: group_color,
-                effect: group_effect,
-                speed: group_speed,
-                intensity: group_intensity,
-                connected: group_connected,
-                led_count: None,
-                max_leds: None,
-                is_group: Some(true),
-                member_ids: Some(group.members),
-            });
-        }
-    }
-
-    Ok(Json(states))
-}
-
-async fn lightweight_list_boards(
-    State(state): State<SharedState>,
-) -> Result<Json<Vec<BoardState>>, StatusCode> {
-    // Collect board entries - just IDs and IPs, no state queries
-    let board_entries: Vec<(String, String)> = {
-        let senders_lock = state.boards.read().await;
-        senders_lock
-            .iter()
-            .map(|(id, entry)| (id.clone(), entry.ip.clone()))
-            .collect()
-    };
-
-    // Create boards with default state - SSE will update them
-    let mut states: Vec<BoardState> = board_entries
-        .into_iter()
-        .map(|(id, ip)| BoardState {
-            id,
-            ip,
-            on: false,
-            brightness: 0,
-            color: [0, 0, 0],
-            effect: 0,
-            speed: 128,
-            intensity: 128,
-            connected: false,
-            led_count: None,
-            max_leds: None,
-            is_group: None,
-            member_ids: None,
-        })
-        .collect();
 
     // Add groups from config with calculated state
     if let Ok(config) = Config::load() {
@@ -1828,7 +1720,9 @@ async fn upload_audio(
 
     info!("Uploaded audio file: {}", filename);
 
-    Ok(Json(UploadAudioResponse { audio_file: filename }))
+    Ok(Json(UploadAudioResponse {
+        audio_file: filename,
+    }))
 }
 
 /// Download/stream audio file
@@ -1840,11 +1734,10 @@ async fn get_audio(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let bytes = audio::AudioFile::load(&id, &state.storage_paths.audio)
-        .map_err(|e| {
-            error!("Failed to load audio file '{}': {}", id, e);
-            StatusCode::NOT_FOUND
-        })?;
+    let bytes = audio::AudioFile::load(&id, &state.storage_paths.audio).map_err(|e| {
+        error!("Failed to load audio file '{}': {}", id, e);
+        StatusCode::NOT_FOUND
+    })?;
 
     let mime_type = audio::AudioFile::extension_to_mime(&id).to_string();
 
@@ -1860,11 +1753,10 @@ async fn delete_audio(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    audio::AudioFile::delete(&id, &state.storage_paths.audio)
-        .map_err(|e| {
-            error!("Failed to delete audio file '{}': {}", id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    audio::AudioFile::delete(&id, &state.storage_paths.audio).map_err(|e| {
+        error!("Failed to delete audio file '{}': {}", id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     info!("Deleted audio file: {}", id);
 
