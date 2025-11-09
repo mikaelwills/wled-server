@@ -257,12 +257,7 @@ export async function syncPresetsToBoard(boardId: string): Promise<{ success: bo
 export async function setBoardPower(boardId: string, power: boolean): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -335,12 +330,7 @@ export async function setBoardColor(
   const green = Number(g);
   const blue = Number(b);
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -403,12 +393,7 @@ export async function setBoardColor(
 export async function setBoardBrightness(boardId: string, brightness: number): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -471,12 +456,7 @@ export async function setBoardBrightness(boardId: string, brightness: number): P
 export async function setBoardEffect(boardId: string, effect: number): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -539,12 +519,7 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
 export async function setBoardSpeed(boardId: string, speed: number): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -572,12 +547,7 @@ export async function setBoardSpeed(boardId: string, speed: number): Promise<voi
 export async function setBoardIntensity(boardId: string, intensity: number): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
@@ -605,12 +575,7 @@ export async function setBoardIntensity(boardId: string, intensity: number): Pro
 export async function setBoardPreset(boardId: string, preset: number): Promise<void> {
   if (!browser) return;
 
-  let currentBoards: BoardState[] = [];
-  const unsubscribe = boards.subscribe((b) => {
-    currentBoards = b;
-  });
-  unsubscribe();
-
+  const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
 
   try {
