@@ -45,8 +45,7 @@ async fn main() {
     // Set log level with RUST_LOG environment variable (default: info)
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -141,13 +140,11 @@ async fn main() {
         .with_state(state.clone());
 
     // API-only server
-    let app = Router::new()
-        .nest("/api", api_router)
-        .layer(cors);
+    let app = Router::new().nest("/api", api_router).layer(cors);
 
-let port = std::env::var("PORT").unwrap_or_else(|_| "3010".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3010".to_string());
     let addr = format!("0.0.0.0:{}", port);
-    
+
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => {
             info!("API Server running on http://{}", addr);
@@ -177,7 +174,10 @@ async fn update_program(
     Json(program): Json<program::Program>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     if id != program.id {
@@ -186,10 +186,17 @@ async fn update_program(
 
     program
         .save_to_file(&state.storage_paths.programs)
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to save program '{}' to {}: {}", program.id, state.storage_paths.programs.display(), e)
-        ))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Failed to save program '{}' to {}: {}",
+                    program.id,
+                    state.storage_paths.programs.display(),
+                    e
+                ),
+            )
+        })?;
 
     Ok(StatusCode::OK)
 }
@@ -199,7 +206,10 @@ async fn get_program(
     Path(id): Path<String>,
 ) -> Result<Json<program::Program>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     let program = program::Program::load_from_file(&id, &state.storage_paths.programs)
@@ -213,17 +223,23 @@ async fn delete_program(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     let program = program::Program::load_from_file(&id, &state.storage_paths.programs)
         .map_err(|_| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
 
-    program.delete(&state.storage_paths.programs, &state.storage_paths.audio)
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to delete program '{}': {}", id, e)
-        ))?;
+    program
+        .delete(&state.storage_paths.programs, &state.storage_paths.audio)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to delete program '{}': {}", id, e),
+            )
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -233,10 +249,14 @@ async fn save_program(
     Json(program): Json<program::Program>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
-    program.save_to_file(&state.storage_paths.programs)
+    program
+        .save_to_file(&state.storage_paths.programs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::CREATED)
@@ -246,14 +266,22 @@ async fn list_programs(
     State(state): State<SharedState>,
 ) -> Result<Json<Vec<program::Program>>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
-    let programs = program::Program::load_all(&state.storage_paths.programs)
-        .map_err(|e| (
+    let programs = program::Program::load_all(&state.storage_paths.programs).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to load programs from {}: {}", state.storage_paths.programs.display(), e)
-        ))?;
+            format!(
+                "Failed to load programs from {}: {}",
+                state.storage_paths.programs.display(),
+                e
+            ),
+        )
+    })?;
 
     Ok(Json(programs))
 }
@@ -480,100 +508,114 @@ async fn list_boards(
 
     let mut states = Vec::new();
 
-    for (board_id, ip, sender) in board_entries {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+    let query_tasks: Vec<_> = board_entries
+        .into_iter()
+        .map(|(board_id, ip, sender)| {
+            tokio::spawn(async move {
+                let (tx, rx) = tokio::sync::oneshot::channel();
 
-        if sender.send(BoardCommand::GetState(tx)).await.is_err() {
-            warn!(board_id = %board_id, "Failed to send GetState to board");
-            // Return fallback state for unresponsive actor
-            states.push(BoardState {
-                id: board_id.clone(),
-                ip: ip.clone(),
-                on: false,
-                brightness: 0,
-                color: [0, 0, 0],
-                effect: 0,
-                speed: 128,
-                intensity: 128,
-                connected: false,
-                led_count: None,
-                max_leds: None,
-                is_group: None,
-                member_ids: None,
-            });
-            continue;
-        }
-
-        // Add timeout to prevent hanging on unresponsive actors
-        let state = match tokio::time::timeout(tokio::time::Duration::from_secs(1), rx).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(_)) | Err(_) => {
-                warn!(board_id = %board_id, "Board timed out or channel closed");
-                // Return fallback state instead of skipping
-                BoardState {
-                    id: board_id.clone(),
-                    ip: ip.clone(),
-                    on: false,
-                    brightness: 0,
-                    color: [0, 0, 0],
-                    effect: 0,
-                    speed: 128,
-                    intensity: 128,
-                    connected: false,
-                    led_count: None,
-                    max_leds: None,
-                    is_group: None,
-                    member_ids: None,
+                if sender.send(BoardCommand::GetState(tx)).await.is_err() {
+                    warn!(board_id = %board_id, "Failed to send getState to board");
+                    return BoardState {
+                        id: board_id.clone(),
+                        ip: ip.clone(),
+                        on: false,
+                        brightness: 0,
+                        color: [0, 0, 0],
+                        effect: 0,
+                        speed: 128,
+                        intensity: 128,
+                        connected: false,
+                        led_count: None,
+                        max_leds: None,
+                        is_group: None,
+                        member_ids: None,
+                    };
                 }
-            }
-        };
+                match tokio::time::timeout(tokio::time::Duration::from_millis(100), rx).await {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(_)) | Err(_) => {
+                        warn!(board_id = %board_id, "Board timed out or channel closed");
+                        BoardState {
+                            id: board_id.clone(),
+                            ip: ip.clone(),
+                            on: false,
+                            brightness: 0,
+                            color: [0, 0, 0],
+                            effect: 0,
+                            speed: 128,
+                            intensity: 128,
+                            connected: false,
+                            led_count: None,
+                            max_leds: None,
+                            is_group: None,
+                            member_ids: None,
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
 
-        states.push(state);
+    for task in query_tasks {
+        if let Ok(state) = task.await {
+            states.push(state);
+        }
     }
 
     // Add groups from config with calculated state
     if let Ok(config) = Config::load() {
         for group in config.groups {
             // Get member board states
-            let member_states: Vec<BoardState> = group.members.iter()
+            let member_states: Vec<BoardState> = group
+                .members
+                .iter()
                 .filter_map(|member_id| {
-                    states.iter().find(|s| s.id == *member_id && s.is_group != Some(true))
+                    states
+                        .iter()
+                        .find(|s| s.id == *member_id && s.is_group != Some(true))
                 })
                 .cloned()
                 .collect();
 
             // Calculate group state from members (same logic as frontend)
-            let group_on = if member_states.len() > 0 {
-                member_states.iter().any(|m| m.on)  // Group is ON if any member is ON
+            let group_on = if !member_states.is_empty() {
+                member_states.iter().any(|m| m.on) // Group is ON if any member is ON
             } else {
                 false
             };
 
-            let group_color = if member_states.len() > 0 {
+            let group_connected = if !member_states.is_empty() {
+                member_states.iter().any(|m| m.connected) // Group is connected if any member is connected
+            } else {
+                false
+            };
+
+            let group_color = if !member_states.is_empty() {
                 member_states[0].color
             } else {
                 [255, 255, 255]
             };
 
-            let group_brightness = if member_states.len() > 0 {
+            let group_brightness = if !member_states.is_empty() {
                 member_states[0].brightness
             } else {
                 128
             };
 
-            let group_effect = if member_states.len() > 0 {
+            let group_effect = if !member_states.is_empty() {
                 member_states[0].effect
             } else {
                 0
             };
 
-            let group_speed = if member_states.len() > 0 {
+            let group_speed = if !member_states.is_empty() {
                 member_states[0].speed
             } else {
                 128
             };
 
-            let group_intensity = if member_states.len() > 0 {
+            let group_intensity = if !member_states.is_empty() {
                 member_states[0].intensity
             } else {
                 128
@@ -588,7 +630,7 @@ async fn list_boards(
                 effect: group_effect,
                 speed: group_speed,
                 intensity: group_intensity,
-                connected: true,
+                connected: group_connected,
                 led_count: None,
                 max_leds: None,
                 is_group: Some(true),
@@ -619,19 +661,22 @@ async fn set_board_power(
         .send(BoardCommand::SetPower(payload.on, payload.transition))
         .await
         .map_err(|e| {
-            eprintln!("Failed to send power command to board '{}': {:?}", board_id, e);
+            eprintln!(
+                "Failed to send power command to board '{}': {:?}",
+                board_id, e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
     // Get updated state
     let (tx, rx) = tokio::sync::oneshot::channel();
-    sender
-        .send(BoardCommand::GetState(tx))
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to send get state command to board '{}': {:?}", board_id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    sender.send(BoardCommand::GetState(tx)).await.map_err(|e| {
+        eprintln!(
+            "Failed to send get state command to board '{}': {:?}",
+            board_id, e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let board_state = match tokio::time::timeout(tokio::time::Duration::from_secs(1), rx).await {
         Ok(Ok(state)) => state,
@@ -693,7 +738,12 @@ async fn set_color(
     };
 
     sender
-        .send(BoardCommand::SetColor { r, g, b, transition })
+        .send(BoardCommand::SetColor {
+            r,
+            g,
+            b,
+            transition,
+        })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -787,7 +837,10 @@ async fn set_preset(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    println!("🎨 [{}ms] HTTP received: board='{}' preset={} transition={}", received_at, board_id, preset, transition);
+    println!(
+        "🎨 [{}ms] HTTP received: board='{}' preset={} transition={}",
+        received_at, board_id, preset, transition
+    );
 
     let sender = {
         let senders_lock = state.boards.read().await;
@@ -807,7 +860,10 @@ async fn set_preset(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    println!("✅ [{}ms] Sent to actor: board='{}' preset={}", sent_to_actor_at, board_id, preset);
+    println!(
+        "✅ [{}ms] Sent to actor: board='{}' preset={}",
+        sent_to_actor_at, board_id, preset
+    );
 
     Ok(StatusCode::OK)
 }
@@ -864,7 +920,8 @@ async fn get_board_presets(
     // Get board IP
     let board_ip = {
         let senders_lock = state.boards.read().await;
-        senders_lock.get(&board_id)
+        senders_lock
+            .get(&board_id)
             .map(|entry| entry.ip.clone())
             .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
     };
@@ -876,11 +933,15 @@ async fn get_board_presets(
         Ok(response) => {
             if response.status().is_success() {
                 // Get raw text first to handle potential parsing issues
-                let text = response.text().await
-                    .map_err(|e| (
+                let text = response.text().await.map_err(|e| {
+                    (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to read response from board {} ({}): {}", board_id, board_ip, e)
-                    ))?;
+                        format!(
+                            "Failed to read response from board {} ({}): {}",
+                            board_id, board_ip, e
+                        ),
+                    )
+                })?;
 
                 // Try to parse as JSON - if it fails, return empty object
                 match serde_json::from_str::<serde_json::Value>(&text) {
@@ -898,17 +959,22 @@ async fn get_board_presets(
             } else {
                 Err((
                     StatusCode::BAD_GATEWAY,
-                    format!("Board {} ({}) returned HTTP {} when fetching presets",
-                        board_id, board_ip, response.status())
+                    format!(
+                        "Board {} ({}) returned HTTP {} when fetching presets",
+                        board_id,
+                        board_ip,
+                        response.status()
+                    ),
                 ))
             }
         }
-        Err(e) => {
-            Err((
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to board {} ({}) for presets: {}", board_id, board_ip, e)
-            ))
-        }
+        Err(e) => Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "Failed to connect to board {} ({}) for presets: {}",
+                board_id, board_ip, e
+            ),
+        )),
     }
 }
 
@@ -928,16 +994,22 @@ async fn sync_presets_to_board(
     }
 
     // Load ALL global presets from centralized storage
-    let presets = WledPreset::load_all(&state.storage_paths.presets)
-        .map_err(|e| (
+    let presets = WledPreset::load_all(&state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to load presets from {}: {}", state.storage_paths.presets.display(), e)
-        ))?;
+            format!(
+                "Failed to load presets from {}: {}",
+                state.storage_paths.presets.display(),
+                e
+            ),
+        )
+    })?;
 
     // Get board IP
     let board_ip = {
         let senders_lock = state.boards.read().await;
-        senders_lock.get(&board_id)
+        senders_lock
+            .get(&board_id)
             .map(|entry| entry.ip.clone())
             .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
     };
@@ -994,11 +1066,10 @@ async fn sync_presets_to_board(
 }
 
 async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusCode> {
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| {
-            eprintln!("Failed to create OSC socket: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
+        eprintln!("Failed to create OSC socket: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let packet = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
         addr: payload.address.clone(),
@@ -1010,12 +1081,10 @@ async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusC
     })?;
 
     let target = "192.168.1.242:9595";
-    socket
-        .send_to(&packet, target)
-        .map_err(|e| {
-            eprintln!("Failed to send OSC message to {}: {}", target, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    socket.send_to(&packet, target).map_err(|e| {
+        eprintln!("Failed to send OSC message to {}: {}", target, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1168,7 +1237,13 @@ async fn set_group_power(
     Path(group_id): Path<String>,
     Json(payload): Json<PowerRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(state, &group_id, GroupCommand::SetPower(payload.on, payload.transition)).await {
+    match group::execute_group_command(
+        state,
+        &group_id,
+        GroupCommand::SetPower(payload.on, payload.transition),
+    )
+    .await
+    {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group power: {}", e);
@@ -1182,7 +1257,13 @@ async fn set_group_brightness(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupBrightnessRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(state, &group_id, GroupCommand::SetBrightness(payload.brightness, payload.transition)).await {
+    match group::execute_group_command(
+        state,
+        &group_id,
+        GroupCommand::SetBrightness(payload.brightness, payload.transition),
+    )
+    .await
+    {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group brightness: {}", e);
@@ -1196,12 +1277,18 @@ async fn set_group_color(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupColorRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(state, &group_id, GroupCommand::SetColor {
-        r: payload.r,
-        g: payload.g,
-        b: payload.b,
-        transition: payload.transition
-    }).await {
+    match group::execute_group_command(
+        state,
+        &group_id,
+        GroupCommand::SetColor {
+            r: payload.r,
+            g: payload.g,
+            b: payload.b,
+            transition: payload.transition,
+        },
+    )
+    .await
+    {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group color: {}", e);
@@ -1215,7 +1302,13 @@ async fn set_group_effect(
     Path(group_id): Path<String>,
     Json(payload): Json<GroupEffectRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(state, &group_id, GroupCommand::SetEffect(payload.effect, payload.transition)).await {
+    match group::execute_group_command(
+        state,
+        &group_id,
+        GroupCommand::SetEffect(payload.effect, payload.transition),
+    )
+    .await
+    {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group effect: {}", e);
@@ -1233,17 +1326,29 @@ async fn set_group_preset(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    println!("🎨 [{}ms] HTTP received: group='{}' preset={} transition={}", received_at, group_id, payload.preset, payload.transition);
+    println!(
+        "🎨 [{}ms] HTTP received: group='{}' preset={} transition={}",
+        received_at, group_id, payload.preset, payload.transition
+    );
 
-    match group::execute_group_command(state, &group_id, GroupCommand::SetPreset(payload.preset, payload.transition)).await {
+    match group::execute_group_command(
+        state,
+        &group_id,
+        GroupCommand::SetPreset(payload.preset, payload.transition),
+    )
+    .await
+    {
         Ok(result) => {
             let sent_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis();
-            println!("✅ [{}ms] Group command executed: group='{}' preset={}", sent_at, group_id, payload.preset);
+            println!(
+                "✅ [{}ms] Group command executed: group='{}' preset={}",
+                sent_at, group_id, payload.preset
+            );
             Ok(Json(result))
-        },
+        }
         Err(e) => {
             error!(group_id = %group_id, "Error setting group preset: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1256,7 +1361,10 @@ async fn sync_presets_to_group(
     Path(group_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     // Get group member boards from frontend groups (stored in localStorage, so we need to get from request)
@@ -1271,19 +1379,23 @@ async fn sync_presets_to_group(
     }
 
     // Load ALL global presets from centralized storage
-    let presets = WledPreset::load_all(&state.storage_paths.presets)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load presets: {}", e)))?;
+    let presets = WledPreset::load_all(&state.storage_paths.presets).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load presets: {}", e),
+        )
+    })?;
 
     let mut all_results = Vec::new();
     let mut total_success = 0;
 
     // Sync to each board in parallel
     let mut tasks = Vec::new();
-    
+
     for board_id in all_boards {
         let state_clone = state.clone();
         let presets_clone = presets.clone();
-        
+
         let task = tokio::spawn(async move {
             sync_presets_to_board_internal(state_clone, &board_id, presets_clone).await
         });
@@ -1292,7 +1404,7 @@ async fn sync_presets_to_group(
 
     // Wait for all sync operations to complete
     let results = futures::future::join_all(tasks).await;
-    
+
     for (index, result) in results.into_iter().enumerate() {
         match result {
             Ok(Ok(sync_result)) => {
@@ -1339,7 +1451,8 @@ async fn sync_presets_to_board_internal(
     // Get board IP
     let board_ip = {
         let senders_lock = state.boards.read().await;
-        senders_lock.get(board_id)
+        senders_lock
+            .get(board_id)
             .map(|entry| entry.ip.clone())
             .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
     };
@@ -1402,28 +1515,42 @@ async fn save_preset(
     Json(req): Json<SavePresetRequest>,
 ) -> Result<Json<WledPreset>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     // Load existing presets
-    let mut presets = WledPreset::load_all(&state.storage_paths.presets)
-        .map_err(|e| (
+    let mut presets = WledPreset::load_all(&state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to load presets from {}: {}", state.storage_paths.presets.display(), e)
-        ))?;
+            format!(
+                "Failed to load presets from {}: {}",
+                state.storage_paths.presets.display(),
+                e
+            ),
+        )
+    })?;
 
     // Find next available slot (or use provided slot if specified)
     let wled_slot = if req.wled_slot > 0 {
         // Validate provided slot number
         if req.wled_slot < 1 || req.wled_slot > 250 {
-            return Err((StatusCode::BAD_REQUEST, "wled_slot must be between 1 and 250".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "wled_slot must be between 1 and 250".to_string(),
+            ));
         }
-        
+
         // Check if slot is already used
         if let Some(existing) = presets.iter().find(|p| p.wled_slot == req.wled_slot) {
             return Err((
                 StatusCode::CONFLICT,
-                format!("Slot {} is already used by preset '{}'", req.wled_slot, existing.name)
+                format!(
+                    "Slot {} is already used by preset '{}'",
+                    req.wled_slot, existing.name
+                ),
             ));
         }
         req.wled_slot
@@ -1433,11 +1560,14 @@ async fn save_preset(
         while presets.iter().any(|p| p.wled_slot == next_slot) && next_slot <= 250 {
             next_slot += 1;
         }
-        
+
         if next_slot > 250 {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "No available preset slots (1-250)".to_string()));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "No available preset slots (1-250)".to_string(),
+            ));
         }
-        
+
         next_slot
     };
 
@@ -1463,11 +1593,17 @@ async fn save_preset(
 
     // Add to collection and save
     presets.push(preset.clone());
-    WledPreset::save_all(&presets, &state.storage_paths.presets)
-        .map_err(|e| (
+    WledPreset::save_all(&presets, &state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to save {} presets to {}: {}", presets.len(), state.storage_paths.presets.display(), e)
-        ))?;
+            format!(
+                "Failed to save {} presets to {}: {}",
+                presets.len(),
+                state.storage_paths.presets.display(),
+                e
+            ),
+        )
+    })?;
 
     Ok(Json(preset))
 }
@@ -1476,14 +1612,22 @@ async fn list_presets(
     State(state): State<SharedState>,
 ) -> Result<Json<Vec<WledPreset>>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
-    let presets = WledPreset::load_all(&state.storage_paths.presets)
-        .map_err(|e| (
+    let presets = WledPreset::load_all(&state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to list presets from {}: {}", state.storage_paths.presets.display(), e)
-        ))?;
+            format!(
+                "Failed to list presets from {}: {}",
+                state.storage_paths.presets.display(),
+                e
+            ),
+        )
+    })?;
 
     Ok(Json(presets))
 }
@@ -1493,14 +1637,19 @@ async fn get_preset(
     Path(id): Path<String>,
 ) -> Result<Json<WledPreset>, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     let preset = WledPreset::find_by_id(&id, &state.storage_paths.presets)
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Error loading presets while searching for '{}': {}", id, e)
-        ))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error loading presets while searching for '{}': {}", id, e),
+            )
+        })?
         .ok_or((StatusCode::NOT_FOUND, format!("Preset {} not found", id)))?;
 
     Ok(Json(preset))
@@ -1511,15 +1660,19 @@ async fn delete_preset(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if !state.storage_paths.is_available() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
     }
 
     // Load all presets
-    let mut presets = WledPreset::load_all(&state.storage_paths.presets)
-        .map_err(|e| (
+    let mut presets = WledPreset::load_all(&state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to load presets for deletion of '{}': {}", id, e)
-        ))?;
+            format!("Failed to load presets for deletion of '{}': {}", id, e),
+        )
+    })?;
 
     // Find and remove
     let initial_len = presets.len();
@@ -1530,11 +1683,12 @@ async fn delete_preset(
     }
 
     // Save updated collection
-    WledPreset::save_all(&presets, &state.storage_paths.presets)
-        .map_err(|e| (
+    WledPreset::save_all(&presets, &state.storage_paths.presets).map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to save presets after deleting '{}': {}", id, e)
-        ))?;
+            format!("Failed to save presets after deleting '{}': {}", id, e),
+        )
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }

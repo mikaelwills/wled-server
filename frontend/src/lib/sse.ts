@@ -11,29 +11,44 @@ export function createSseConnection(
   onConnectionStatus: (boardId: string, connected: boolean) => void
 ): EventSource {
   const eventSource = new EventSource(`${API_URL}/events`);
+  let isPageUnloading = false;
+
+  // Detect page unload to suppress expected disconnect errors
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', () => {
+      isPageUnloading = true;
+    });
+  }
+
+  eventSource.onopen = () => {
+    console.log('SSE connected');
+  };
 
   eventSource.onmessage = (event) => {
-    // console.log('SSE received:', event.data);
     try {
       const data: SseEvent = JSON.parse(event.data);
-      // console.log('SSE parsed:', data);
 
       if (data.type === 'state_update') {
-        // console.log('State update for:', data.board_id);
         onStateUpdate(data.board_id, data.state);
       } else if (data.type === 'connection_status') {
-        // console.log('Connection status for:', data.board_id, 'connected:', data.connected);
         onConnectionStatus(data.board_id, data.connected);
-      } else if (data.type === 'connected') {
-        // console.log('SSE connected:', data.message);
       }
     } catch (err) {
       console.error('Failed to parse SSE event:', err);
     }
   };
 
-  eventSource.onerror = () => {
-    console.error('SSE connection error');
+  eventSource.onerror = (event) => {
+    // Don't log errors during page unload/refresh - it's expected
+    if (isPageUnloading) {
+      return;
+    }
+
+    if (eventSource.readyState === EventSource.CONNECTING) {
+      console.log('SSE reconnecting...');
+    } else if (eventSource.readyState === EventSource.CLOSED) {
+      console.warn('SSE connection closed');
+    }
   };
 
   return eventSource;

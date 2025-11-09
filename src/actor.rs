@@ -4,7 +4,6 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -53,7 +52,7 @@ impl BoardActor {
             // Try to connect, but don't crash if it fails
             let ws_stream = match connect_async(url).await {
                 Ok((stream, _)) => stream,
-                Err(e) => {
+                Err(_) => {
                     // Temporarily commented out to reduce noise in logs
                     // warn!(board_id = %self.id, "Failed to connect: {}, retrying in 5 seconds...", e);
                     self.state.connected = false;
@@ -61,7 +60,7 @@ impl BoardActor {
 
                     // Handle commands while disconnected
                     tokio::select! {
-                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {},
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {},
                         cmd = cmd_rx.recv() => {
                             match cmd {
                                 Some(BoardCommand::GetState(response_tx)) => {
@@ -121,7 +120,7 @@ impl BoardActor {
 
             // First, read the board's current state to sync with reality
             // Wait for first message from WLED (it sends state on connection)
-            match timeout(tokio::time::Duration::from_secs(3), read.next()).await {
+            match timeout(tokio::time::Duration::from_millis(500), read.next()).await {
                 Ok(Some(Ok(Message::Text(text)))) => {
                     if let Ok(json) = serde_json::from_str::<Value>(&text) {
                         self.update_state_from_json(&json);
@@ -146,7 +145,6 @@ impl BoardActor {
 
             // Create ping interval for keepalive (5 seconds)
             let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            let mut last_message_time = Instant::now();
 
             loop {
                 tokio::select! {
@@ -167,11 +165,9 @@ impl BoardActor {
                                   self.update_state_from_json(&json);
                                   self.broadcast_state();
                               }
-                              last_message_time = Instant::now();
                           }
                           Ok(Some(Ok(Message::Pong(_)))) => {
-                              // Connection alive - reset timer
-                              last_message_time = Instant::now();
+                              // Connection alive - keep going
                           }
                           Ok(Some(Ok(Message::Close(_)))) => {
                               info!(board_id = %self.id, "Connection closed by remote");
@@ -180,8 +176,7 @@ impl BoardActor {
                               break;
                           }
                           Ok(Some(Err(e))) => {
-                              let elapsed = last_message_time.elapsed().as_secs();
-                              error!(board_id = %self.id, elapsed = %elapsed, "Connection lost: {:?}", e);
+                              error!(board_id = %self.id, "Connection lost: {:?}", e);
                               self.state.connected = false;
                               self.broadcast_connection_status();
                               break;
@@ -193,8 +188,7 @@ impl BoardActor {
                               break;
                           }
                           _ => {
-                              // Other message types (Binary, Ping, etc.) - ignore but reset timer
-                              last_message_time = Instant::now();
+                              // Other message types (Binary, Ping, etc.) - ignore
                           }
                       }
                   }
@@ -203,7 +197,7 @@ impl BoardActor {
                             Some(BoardCommand::SetPower(target_state, transition)) => {
                                 self.state.on = target_state;
                                 let msg = Message::Text(format!(r#"{{"on":{},"tt":{}}}"#, target_state, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -211,7 +205,7 @@ impl BoardActor {
                             Some(BoardCommand::SetBrightness(bri, transition)) => {
                                 self.state.brightness = bri;
                                 let msg = Message::Text(format!(r#"{{"bri":{},"tt":{}}}"#, bri, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -222,7 +216,7 @@ impl BoardActor {
                                     r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":{}}}"#,
                                     r, g, b, transition
                                 ));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -230,7 +224,7 @@ impl BoardActor {
                             Some(BoardCommand::SetEffect(effect, transition)) => {
                                 self.state.effect = effect;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}],"tt":{}}}"#, effect, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -238,7 +232,7 @@ impl BoardActor {
                             Some(BoardCommand::SetSpeed(speed, transition)) => {
                                 self.state.speed = speed;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"sx":{}}}],"tt":{}}}"#, speed, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -246,7 +240,7 @@ impl BoardActor {
                             Some(BoardCommand::SetIntensity(intensity, transition)) => {
                                 self.state.intensity = intensity;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"ix":{}}}],"tt":{}}}"#, intensity, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -259,7 +253,7 @@ impl BoardActor {
                                 println!("📤 [{}ms] Sending to WS: board='{}' preset={}", before_ws_send, self.id, preset);
 
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":{}}}"#, preset, transition));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
 
@@ -273,7 +267,7 @@ impl BoardActor {
                             }
                             Some(BoardCommand::SetLedCount(led_count)) => {
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"len":{}}}]}}"#, led_count));
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.state.led_count = Some(led_count);
@@ -282,7 +276,7 @@ impl BoardActor {
                             Some(BoardCommand::ResetSegment) => {
                                 // Reset segment to defaults: grp=1, spc=0, of=0
                                 let msg = Message::Text(r#"{"seg":[{"id":0,"grp":1,"spc":0,"of":0}]}"#.to_string());
-                                timeout(tokio::time::Duration::from_secs(5), write.send(msg))
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
@@ -300,8 +294,8 @@ impl BoardActor {
                 }
             }
 
-            info!(board_id = %self.id, "WebSocket closed, reconnecting in 5 seconds...");
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            info!(board_id = %self.id, "WebSocket closed, reconnecting in 3 seconds...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
     }
 
@@ -315,10 +309,10 @@ impl BoardActor {
 
         // Parse color and effect from segment data
         if let Some(seg) = json["state"]["seg"].as_array() {
-            if let Some(first_seg) = seg.get(0) {
+            if let Some(first_seg) = seg.first() {
                 // Parse color: state.seg[0].col[0] is the RGB array
                 if let Some(col) = first_seg["col"].as_array() {
-                    if let Some(color_array) = col.get(0).and_then(|c| c.as_array()) {
+                    if let Some(color_array) = col.first().and_then(|c| c.as_array()) {
                         if color_array.len() >= 3 {
                             self.state.color = [
                                 color_array[0].as_u64().unwrap_or(255) as u8,

@@ -13,6 +13,16 @@ const config = {
 			precompress: false,
 			strict: true
 		})
+	},
+
+	compilerOptions: {
+		// Disable a11y warnings (for personal project)
+		warningFilter: (warning) => {
+			// Filter out accessibility warnings
+			if (warning.code.startsWith('a11y_')) return false;
+			// Show all other warnings including unused CSS
+			return true;
+		}
 	}
 };
 

@@ -542,7 +542,7 @@
 									{/if}
 								</p>
 							</div>
-							{#if board.connected || board.isGroup}
+							{#if board.connected}
 								<label class="toggle-switch" on:click={(e) => e.stopPropagation()}>
 									<input
 										type="checkbox"
@@ -1067,15 +1067,6 @@
 		border-color: #81c784;
 	}
 
-	.action-btn-reset {
-		color: #ffb74d;
-	}
-
-	.action-btn-reset:hover {
-		background: #2d2620;
-		border-color: #ffb74d;
-	}
-
 	.action-btn-delete {
 		color: #e57373;
 	}
@@ -1472,28 +1463,6 @@
 		color: #ff6b6b;
 	}
 
-	.loopy-btn {
-		padding: 12px 24px;
-		font-size: 1.1rem;
-		background: #7b2cbf;
-		color: white;
-		border: none;
-		border-radius: 8px;
-		cursor: pointer;
-		transition: all 0.2s;
-		font-weight: 600;
-	}
-
-	.loopy-btn:hover {
-		background: #9d4edd;
-		transform: translateY(-2px);
-		box-shadow: 0 4px 8px rgba(123, 44, 191, 0.4);
-	}
-
-	.loopy-btn:active {
-		transform: translateY(0);
-	}
-
 	.edit-form {
 		padding: 0.75rem;
 	}
@@ -1569,21 +1538,6 @@
 		border-color: #e57373;
 	}
 
-	.label-icon {
-		margin-right: 0.5rem;
-		font-size: 0.9rem;
-	}
-
-	.member-count {
-		margin-left: auto;
-		background: #4a5568;
-		color: #e2e8f0;
-		padding: 0.2rem 0.5rem;
-		border-radius: 12px;
-		font-size: 0.75rem;
-		font-weight: 500;
-	}
-
 	.member-grid {
 		display: flex;
 		flex-direction: column;
@@ -1646,35 +1600,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.member-status {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.8rem;
-		color: #a0aec0;
-		flex-shrink: 0;
-	}
-
-	.status-dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-	}
-
-	.status-dot.connected {
-		background-color: #48bb78;
-		box-shadow: 0 0 4px rgba(72, 187, 120, 0.6);
-	}
-
-	.status-dot.disconnected {
-		background-color: #f56565;
-		box-shadow: 0 0 4px rgba(245, 101, 101, 0.6);
-	}
-
-	.btn-icon {
-		margin-right: 0.5rem;
 	}
 
 	/* Custom Confirmation Dialog */
