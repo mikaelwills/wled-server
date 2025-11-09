@@ -46,6 +46,50 @@ function recalculateGroupStates(currentBoards: BoardState[]): BoardState[] {
 }
 
 /**
+ * Optimized: Only recalculate groups that contain the specified board
+ * Used for SSE updates where only one board changes at a time
+ * Uses Map for O(1) lookups instead of O(n) filter operations
+ */
+function recalculateAffectedGroups(
+  boardId: string,
+  currentBoards: BoardState[]
+): BoardState[] {
+  // Build Map for O(1) board lookups (avoids repeated filter operations)
+  const boardsMap = new Map<string, BoardState>();
+  for (const board of currentBoards) {
+    if (!board.isGroup) {
+      boardsMap.set(board.id, board);
+    }
+  }
+
+  return currentBoards.map((board) => {
+    // Only recalculate groups that contain this board as a member
+    if (board.isGroup && board.memberIds?.includes(boardId)) {
+      // Use Map for O(1) member lookups instead of O(n) filter
+      const members: BoardState[] = [];
+      if (board.memberIds) {
+        for (const memberId of board.memberIds) {
+          const member = boardsMap.get(memberId);
+          if (member) members.push(member);
+        }
+      }
+
+      // CRITICAL: Preserve immutable group identity, only update derived operational state
+      return {
+        // Preserve all existing group properties
+        ...board,
+        // Only update derived operational state from member boards:
+        color: members.length > 0 ? members[0].color : board.color,
+        brightness: members.length > 0 ? members[0].brightness : board.brightness,
+        effect: members.length > 0 ? members[0].effect : board.effect,
+        on: members.length > 0 ? members.some((m) => m.on) : board.on,
+      };
+    }
+    return board;
+  });
+}
+
+/**
  * Initialize SSE listener for real-time board updates
  */
 export function initBoardsListener(): void {
@@ -61,41 +105,98 @@ export function initBoardsListener(): void {
     // Set up SSE for real-time updates
     sseConnection = createSseConnection(
       (boardId: string, state: BoardState) => {
-        // Update specific board state and recalculate groups
+        // Optimized: Single-pass update of board state and affected groups
         boards.update((currentBoards) => {
-          const updatedBoards = currentBoards.map((b) => {
-            if (b.id === boardId) {
-              // CRITICAL: Preserve group identity - never overwrite group properties with individual board state
-              if (b.isGroup) {
-                // This is a group, don't overwrite with individual board state
-                console.warn(`SSE: Ignoring individual board update for group ${boardId}`);
-                return b;
+          // Build Map for O(1) board lookups
+          const boardsMap = new Map<string, BoardState>();
+
+          return currentBoards.map((board) => {
+            // Track non-group boards for group member lookups
+            if (!board.isGroup) {
+              boardsMap.set(board.id, board);
+            }
+
+            // Update the specific board that changed
+            if (board.id === boardId) {
+              // Groups should not receive individual state updates via SSE
+              if (board.isGroup) {
+                return board; // Skip silently - this shouldn't happen in normal operation
               }
-              // This is an individual board, update its state
+              // Update individual board with new state from SSE
+              boardsMap.set(boardId, state); // Update map with new state
               return state;
             }
-            return b;
+
+            // Recalculate groups that contain the updated board
+            if (board.isGroup && board.memberIds?.includes(boardId)) {
+              // Use Map for O(1) member lookups
+              const members: BoardState[] = [];
+              if (board.memberIds) {
+                for (const memberId of board.memberIds) {
+                  const member = memberId === boardId ? state : boardsMap.get(memberId);
+                  if (member) members.push(member);
+                }
+              }
+
+              return {
+                ...board,
+                color: members.length > 0 ? members[0].color : board.color,
+                brightness: members.length > 0 ? members[0].brightness : board.brightness,
+                effect: members.length > 0 ? members[0].effect : board.effect,
+                on: members.length > 0 ? members.some((m) => m.on) : board.on,
+              };
+            }
+
+            return board;
           });
-          return recalculateGroupStates(updatedBoards);
         });
       },
       (boardId: string, connected: boolean) => {
-        // Update connection status and recalculate groups
+        // Optimized: Single-pass update of connection status and affected groups
         boards.update((currentBoards) => {
-          const updatedBoards = currentBoards.map((b) => {
-            if (b.id === boardId) {
-              // CRITICAL: Preserve group identity - never overwrite group properties with individual board state
-              if (b.isGroup) {
-                // This is a group, don't overwrite with individual board state
-                console.warn(`SSE: Ignoring connection update for group ${boardId}`);
-                return b;
-              }
-              // This is an individual board, update its connection status
-              return { ...b, connected };
+          // Build Map for O(1) board lookups
+          const boardsMap = new Map<string, BoardState>();
+          let updatedBoard: BoardState | null = null;
+
+          return currentBoards.map((board) => {
+            // Track non-group boards for group member lookups
+            if (!board.isGroup) {
+              boardsMap.set(board.id, board);
             }
-            return b;
+
+            // Update connection status for the specific board
+            if (board.id === boardId) {
+              // Groups don't have connection status changes via SSE
+              if (board.isGroup) {
+                return board; // Skip silently
+              }
+              updatedBoard = { ...board, connected };
+              boardsMap.set(boardId, updatedBoard); // Update map with new connection status
+              return updatedBoard;
+            }
+
+            // Recalculate groups that contain the updated board
+            if (board.isGroup && board.memberIds?.includes(boardId)) {
+              // Use Map for O(1) member lookups
+              const members: BoardState[] = [];
+              if (board.memberIds) {
+                for (const memberId of board.memberIds) {
+                  const member = memberId === boardId && updatedBoard ? updatedBoard : boardsMap.get(memberId);
+                  if (member) members.push(member);
+                }
+              }
+
+              return {
+                ...board,
+                color: members.length > 0 ? members[0].color : board.color,
+                brightness: members.length > 0 ? members[0].brightness : board.brightness,
+                effect: members.length > 0 ? members[0].effect : board.effect,
+                on: members.length > 0 ? members.some((m) => m.on) : board.on,
+              };
+            }
+
+            return board;
           });
-          return recalculateGroupStates(updatedBoards);
         });
       }
     );
