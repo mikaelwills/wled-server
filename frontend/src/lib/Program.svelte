@@ -23,6 +23,7 @@
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
+	let audioToUpload = $state(null);
 
 	// Program metadata
 	let songName = $state('');
@@ -53,15 +54,34 @@
 		// Load initial data if provided
 		if (program) {
 			console.log(`[Program.svelte] onMount - program for ${program.id}:`, {
+				hasAudioId: !!program.audioId,
 				hasAudioData: !!program.audioData,
-				audioDataLength: program.audioData?.length || 0,
-				audioDataPrefix: program.audioData?.substring(0, 50)
+				audioId: program.audioId
 			});
 
 			loadProgramData(program);
 
-			// Auto-load audio if compressed audio data is present
-			if (program.audioData) {
+			// Load audio: try backend API first (new), then embedded data (legacy)
+			if (program.audioId) {
+				// Fetch from backend API
+				console.log(`[Program.svelte] Loading audio from backend API: ${program.audioId}`);
+				setTimeout(async () => {
+					try {
+						const response = await fetch(`${API_URL}/audio/${program.audioId}`);
+						if (response.ok) {
+							const blob = await response.blob();
+							const audioUrl = URL.createObjectURL(blob);
+							loadCompressedAudio(audioUrl);
+						} else {
+							console.error(`Failed to fetch audio: ${response.statusText}`);
+						}
+					} catch (err) {
+						console.error('Error loading audio from API:', err);
+					}
+				}, 100);
+			} else if (program.audioData) {
+				// Fallback to embedded audio for legacy programs
+				console.log(`[Program.svelte] Loading legacy embedded audio`);
 				setTimeout(() => {
 					loadCompressedAudio(program.audioData);
 				}, 100);
@@ -250,6 +270,14 @@
 		// Check if it's an audio file
 		if (file.type.startsWith('audio/') || file.name.endsWith('.wav') || file.name.endsWith('.mp3')) {
 			fileName = file.name;
+
+			// Store for upload
+			const reader = new FileReader();
+			reader.onload = (e) => {
+				audioToUpload = e.target.result;
+				console.log('[Program.svelte] Audio file stored for upload.');
+			};
+			reader.readAsDataURL(file);
 
 			// Wait for DOM to update, then initialize WaveSurfer
 			setTimeout(() => {
@@ -666,7 +694,7 @@ function playFullProgram() {
 		const trackSuffix = loopyProTrack.trim() ? `-${loopyProTrack.trim()}` : '';
 		const newProgramId = programId || `${sanitizedSongName}${trackSuffix}-${timestamp}`;
 
-		// Get existing program data to preserve audioData
+		// Get existing program data to preserve audioId
 		let existingProgram = null;
 		if (programId) {
 			programsStore.subscribe(programs => {
@@ -680,7 +708,7 @@ function playFullProgram() {
 			songName: songName.trim(),
 			loopyProTrack: loopyProTrack.trim(),
 			fileName: fileName,
-			audioData: existingProgram?.audioData || program?.audioData || '', // Preserve audio data
+			audioId: existingProgram?.audioId || program?.audioId || programId || newProgramId, // Use audioId reference
 			cues: markers.map(m => ({
 				time: m.time,
 				label: m.label,
@@ -697,11 +725,14 @@ function playFullProgram() {
 		};
 
 		// Create Program model using factory
-		const program = ProgramModel.fromJson(programData);
+		const programInstance = ProgramModel.fromJson(programData);
 
-		if (program) {
+		if (programInstance) {
 			// Save through service layer - store will update automatically
-			saveProgramToStore(program);
+			saveProgramToStore(programInstance, audioToUpload);
+
+			// Clear audio data after saving
+			audioToUpload = null;
 
 			// Update local programId if new
 			if (!programId) {
@@ -807,10 +838,10 @@ function playFullProgram() {
 			{/if}
 		</div>
 		<div class="waveform-wrapper">
-			{#if !isLoaded && program?.audioData}
+			{#if !isLoaded && (program?.audioId || program?.audioData)}
 				<div class="waveform-skeleton"></div>
 			{/if}
-			<div id="waveform-{programId}" class:hidden={!isLoaded && program?.audioData}></div>
+			<div id="waveform-{programId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
 		<div class="waveform-footer" class:has-cues={isLoaded && markers.length > 0}>
 			{#if isLoaded && markers.length > 0}
@@ -883,7 +914,7 @@ function playFullProgram() {
 				</button>
 			{/if}
 		</div>
-		{#if !isLoaded && !program?.audioData}
+		{#if !isLoaded && !program?.audioId && !program?.audioData}
 			<div class="audio-missing">
 				<p>⚠️ Audio file missing</p>
 				<p class="audio-missing-hint">This program was saved without audio. Please re-upload the file.</p>
@@ -1313,7 +1344,7 @@ function playFullProgram() {
 
 	.waveform-wrapper {
 		position: relative;
-		min-height: 120px;
+		min-height: 140px;
 	}
 
 	.waveform-wrapper:has(+ .waveform-footer:not(.has-cues)) {
@@ -1345,8 +1376,8 @@ function playFullProgram() {
 	}
 
 	div[id^="waveform-"] {
-		padding: 3rem 2rem 3rem 2rem;
-		min-height: 128px;
+		padding: 0 2rem;
+		min-height: 130px;
 	}
 
 	div[id^="waveform-"].hidden {
@@ -1416,11 +1447,9 @@ function playFullProgram() {
 	.waveform-skeleton {
 		position: absolute;
 		top: 0;
-		left: 0;
-		right: 0;
+		left: 2rem;
+		right: 2rem;
 		bottom: 0;
-		margin: 1.5rem 2rem;
-		height: 128px;
 		background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
 		background-size: 200% 100%;
 		animation: shimmer 1.5s infinite;

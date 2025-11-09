@@ -6,7 +6,7 @@
 	import { Program as ProgramModel } from '$lib/models/Program';
 
 	let isDragging = $state(false);
-	let isCompressing = $state(false);
+	let isLoading = $state(false);
 
 	function handleDragOver(event) {
 		event.preventDefault();
@@ -35,9 +35,24 @@
 	}
 
 	async function compressAudio(file) {
-		console.log('Compressing audio file...');
+		console.log('Compressing audio file to MP3...');
 
 		try {
+			// Load lamejs browser bundle if not already loaded
+			// @ts-ignore - lamejs is loaded globally
+			if (!window.lamejs) {
+				const script = document.createElement('script');
+				script.src = '/lame.min.js';
+				await new Promise((resolve, reject) => {
+					script.onload = resolve;
+					script.onerror = reject;
+					document.head.appendChild(script);
+				});
+			}
+
+			// @ts-ignore - lamejs is loaded globally
+			const Mp3Encoder = window.lamejs.Mp3Encoder;
+
 			// Read file as ArrayBuffer
 			const arrayBuffer = await file.arrayBuffer();
 
@@ -45,68 +60,63 @@
 			const audioContext = new AudioContext();
 			const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-			// Create MediaStreamSource from AudioBuffer
-			const offlineContext = new OfflineAudioContext(
-				audioBuffer.numberOfChannels,
-				audioBuffer.length,
-				audioBuffer.sampleRate
-			);
+			// Get audio data as PCM samples
+			const channels = audioBuffer.numberOfChannels;
+			const sampleRate = audioBuffer.sampleRate;
+			const samples = audioBuffer.length;
 
-			const source = offlineContext.createBufferSource();
-			source.buffer = audioBuffer;
-			source.connect(offlineContext.destination);
-			source.start();
+			// Convert to mono for MP3 encoding (more efficient)
+			let left, right;
+			if (channels === 2) {
+				left = audioBuffer.getChannelData(0);
+				right = audioBuffer.getChannelData(1);
+			} else {
+				left = audioBuffer.getChannelData(0);
+				right = left; // Duplicate for mono
+			}
 
-			// Render to get the audio data
-			const renderedBuffer = await offlineContext.startRendering();
+			// Convert Float32Array to Int16Array for lamejs
+			const leftInt16 = new Int16Array(samples);
+			const rightInt16 = new Int16Array(samples);
+			for (let i = 0; i < samples; i++) {
+				leftInt16[i] = Math.max(-32768, Math.min(32767, left[i] * 32768));
+				rightInt16[i] = Math.max(-32768, Math.min(32767, right[i] * 32768));
+			}
 
-			// Create MediaStream from rendered audio
-			const mediaStreamDestination = audioContext.createMediaStreamDestination();
-			const mediaSource = audioContext.createBufferSource();
-			mediaSource.buffer = renderedBuffer;
-			mediaSource.connect(mediaStreamDestination);
-			mediaSource.start();
+			// Create MP3 encoder (128kbps for balance of quality and performance)
+			const mp3encoder = new Mp3Encoder(channels, sampleRate, 128);
+			const mp3Data = [];
 
-			// Use MediaRecorder to compress to WebM/Opus
-			const mediaRecorder = new MediaRecorder(mediaStreamDestination.stream, {
-				mimeType: 'audio/webm;codecs=opus',
-				audioBitsPerSecond: 64000 // 64kbps
-			});
+			// Encode in chunks (1152 samples per chunk for MP3)
+			const chunkSize = 1152;
+			for (let i = 0; i < samples; i += chunkSize) {
+				const leftChunk = leftInt16.subarray(i, i + chunkSize);
+				const rightChunk = rightInt16.subarray(i, i + chunkSize);
+				const mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
+				if (mp3buf.length > 0) {
+					mp3Data.push(mp3buf);
+				}
+			}
 
-			const chunks = [];
+			// Finish encoding
+			const mp3buf = mp3encoder.flush();
+			if (mp3buf.length > 0) {
+				mp3Data.push(mp3buf);
+			}
 
+			// Create MP3 Blob
+			const mp3Blob = new Blob(mp3Data, { type: 'audio/mp3' });
+			console.log(`Compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB -> ${(mp3Blob.size / 1024 / 1024).toFixed(2)}MB (${((1 - mp3Blob.size / file.size) * 100).toFixed(1)}% reduction)`);
+
+			// Convert to base64 data URL
+			const reader = new FileReader();
 			return new Promise((resolve, reject) => {
-				mediaRecorder.ondataavailable = (e) => {
-					if (e.data.size > 0) {
-						chunks.push(e.data);
-					}
-				};
-
-				mediaRecorder.onstop = async () => {
-					const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-					console.log(`Compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB -> ${(blob.size / 1024 / 1024).toFixed(2)}MB`);
-
-					// Convert to base64
-					const reader = new FileReader();
-					reader.onloadend = () => {
-						resolve(reader.result);
-					};
-					reader.onerror = reject;
-					reader.readAsDataURL(blob);
-				};
-
-				mediaRecorder.onerror = reject;
-
-				mediaRecorder.start();
-
-				// Stop recording after the audio duration
-				setTimeout(() => {
-					mediaRecorder.stop();
-					audioContext.close();
-				}, (renderedBuffer.duration * 1000) + 100);
+				reader.onloadend = () => resolve(reader.result);
+				reader.onerror = reject;
+				reader.readAsDataURL(mp3Blob);
 			});
 		} catch (err) {
-			console.error('Compression failed:', err);
+			console.error('MP3 compression failed:', err);
 			throw err;
 		}
 	}
@@ -114,27 +124,51 @@
 	async function createNewProgram(file) {
 		console.log('Creating new program with file:', file.name);
 
+		isLoading = true; // Set to true immediately to show loading card
+
 		const timestamp = Date.now();
 		const fileName = file.name;
+		const programId = `new-program-${timestamp}`;
 
 		try {
-			isCompressing = true;
+			let audioDataURL;
 
-			// Convert audio file to base64 data URL (no compression)
-			const reader = new FileReader();
-			const audioDataURL = await new Promise((resolve, reject) => {
-				reader.onloadend = () => resolve(reader.result);
-				reader.onerror = reject;
-				reader.readAsDataURL(file);
+			// --- To use MP3 compression, comment out the "Raw Audio" block and uncomment the "Compressed Audio" line. ---
+
+			// Option 1: Raw Audio (default)
+			// audioDataURL = await new Promise((resolve, reject) => {
+			// 	const reader = new FileReader();
+			// 	reader.onload = (e) => resolve(e.target.result);
+			// 	reader.onerror = reject;
+			// 	reader.readAsDataURL(file);
+			// });
+
+			// Option 2: Compressed Audio
+			audioDataURL = await compressAudio(file);
+
+
+			// Upload audio to backend API
+			console.log('Uploading audio to backend...');
+			const uploadResponse = await fetch(`${API_URL}/audio/${programId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ data_url: audioDataURL })
 			});
 
-			// Create Program using factory method
+			if (!uploadResponse.ok) {
+				throw new Error(`Failed to upload audio: ${uploadResponse.statusText}`);
+			}
+
+			const { audio_file } = await uploadResponse.json();
+			console.log('Audio uploaded:', audio_file);
+
+			// Create Program using factory method (with audioId reference)
 			const newProgramData = {
-				id: `new-program-${timestamp}`,
+				id: programId,
 				songName: fileName.replace(/\.[^/.]+$/, ''), // Remove extension
 				loopyProTrack: '',
 				fileName: fileName,
-				audioData: audioDataURL, // Uncompressed audio as base64 data URL
+				audioId: audio_file, // Reference to audio file on backend
 				cues: [],
 				createdAt: new Date().toISOString()
 			};
@@ -142,16 +176,15 @@
 			const newProgram = ProgramModel.fromJson(newProgramData);
 
 			if (newProgram) {
-				// Save through service layer (await to keep loading state)
+				// Save program (without embedded audio) through service layer
 				await saveProgram(newProgram);
-				console.log('Program saved with uncompressed audio');
+				console.log('Program saved with backend audio storage');
 			}
-
-			isCompressing = false;
 		} catch (err) {
 			console.error('Failed to create program:', err);
-			isCompressing = false;
-			alert('Failed to save audio file.');
+			alert('Failed to save audio file. Check console for details.');
+		} finally {
+			isLoading = false; // Ensure it's reset after process completes or errors
 		}
 	}
 
@@ -188,7 +221,7 @@
 		<div class="empty-state">
 			<p class="empty-text" style="color: #ef4444;">{$programsError}</p>
 		</div>
-	{:else if $programs.length === 0 && !isCompressing}
+	{:else if $programs.length === 0 && !isLoading}
 		<div class="empty-state">
 			<p class="empty-text">No light programs yet</p>
 			<p class="empty-hint">Drop a WAV file above to create your first program</p>
@@ -196,7 +229,7 @@
 	{:else}
 		<div class="programs-container">
 			<!-- Loading Card at Top (new programs appear here) -->
-			{#if isCompressing}
+			{#if isLoading}
 				<div class="program-wrapper">
 					<div class="compression-loading-card">
 						<div class="spinner"></div>

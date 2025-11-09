@@ -1,5 +1,6 @@
 // frontend/src/lib/programs-db.ts
 import { browser } from '$app/environment';
+import { get } from 'svelte/store';
 import { programs, programsLoading, programsError } from './store';
 import { Program } from './models/Program';
 import { API_URL } from '$lib/api';
@@ -39,7 +40,7 @@ export async function initPrograms(): Promise<void> {
 
     console.log('[programs-db] Loaded programs:', loadedPrograms.map(p => ({
       id: p.id,
-      audioDataLength: p.audioData?.length || 0
+      audioId: p.audioId
     })));
 
     programs.set(loadedPrograms);
@@ -53,32 +54,63 @@ export async function initPrograms(): Promise<void> {
 }
 
 /**
- * Save a program (create or update)
+ * Save a program (create or update) and optionally upload audio
  */
-export async function saveProgram(program: Program): Promise<void> {
+export async function saveProgram(program: Program, audioDataUrl: string | null = null): Promise<void> {
   if (!browser) return;
 
   try {
-    const response = await fetch(`${API_URL}/programs`, {
-      method: 'POST',
+    // If there's new audio, upload it first and update the program's audioId
+    if (audioDataUrl) {
+      try {
+        console.log(`[programs-db] Uploading audio for program: ${program.id}`);
+        const audioResponse = await fetch(`${API_URL}/audio/${program.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data_url: audioDataUrl })
+        });
+
+        if (!audioResponse.ok) {
+          throw new Error(`Failed to upload audio: ${audioResponse.statusText}`);
+        }
+        const result = await audioResponse.json();
+        console.log('[programs-db] Audio uploaded:', result);
+
+        // The backend returns a JSON object with the filename, e.g., { "filename": "..." }
+        if (result.filename) {
+          program.audioId = result.filename;
+        } else {
+          throw new Error('Audio upload response did not include a filename.');
+        }
+      } catch (error) {
+        console.error('[programs-db] Error uploading audio:', error);
+        programsError.set('Audio upload failed. Program was not saved.');
+        // Re-throw to prevent the program from being saved in a bad state
+        throw error;
+      }
+    }
+
+    const isUpdate = get(programs).some(p => p.id === program.id);
+    const url = isUpdate ? `${API_URL}/programs/${program.id}` : `${API_URL}/programs`;
+    const method = isUpdate ? 'PUT' : 'POST';
+
+    const response = await fetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(program.toJson())
     });
 
     if (!response.ok) {
-      throw new Error('Failed to save program to server');
+      throw new Error(`Failed to save program to server: ${response.statusText}`);
     }
 
     // Update local store
     programs.update(currentPrograms => {
       const existingIndex = currentPrograms.findIndex(p => p.id === program.id);
-
       if (existingIndex >= 0) {
-        // Update existing
         currentPrograms[existingIndex] = program;
         return [...currentPrograms];
       } else {
-        // Add new at beginning (newest first)
         return [program, ...currentPrograms];
       }
     });
@@ -89,6 +121,7 @@ export async function saveProgram(program: Program): Promise<void> {
   }
 }
 
+
 /**
  * Delete a program by ID
  */
@@ -96,6 +129,21 @@ export async function deleteProgram(programId: string): Promise<void> {
   if (!browser) return;
 
   try {
+    // Get program to find audio filename
+    const program = get(programs).find(p => p.id === programId);
+
+    // Delete audio from backend if it exists
+    if (program?.audioId) {
+      try {
+        await fetch(`${API_URL}/audio/${program.audioId}`, { method: 'DELETE' });
+        console.log(`Deleted audio file: ${program.audioId}`);
+      } catch (err) {
+        console.warn('Failed to delete audio file:', err);
+        // Continue with program deletion even if audio deletion fails
+      }
+    }
+
+    // Delete program from backend
     const response = await fetch(`${API_URL}/programs/${programId}`, {
       method: 'DELETE'
     });

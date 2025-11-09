@@ -85,6 +85,17 @@ pub struct GroupPresetRequest {
 
 fn default_transition() -> u8 { 0 }
 
+// Audio request/response structs
+#[derive(Deserialize)]
+pub struct UploadAudioRequest {
+    pub data_url: String,
+}
+
+#[derive(Serialize)]
+pub struct UploadAudioResponse {
+    pub audio_file: String,
+}
+
 // Preset request structs
 #[derive(Deserialize)]
 pub struct SavePresetRequest {
