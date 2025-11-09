@@ -48,7 +48,8 @@
       "Bash(scp:*)",
       "Bash(cargo check:*)",
       "WebFetch(domain:kno.wled.ge)",
-      "WebFetch(domain:wled.discourse.group)"
+      "WebFetch(domain:wled.discourse.group)",
+      "WebFetch(domain:docs.rs)"
     ],
     "deny": [],
     "ask": []

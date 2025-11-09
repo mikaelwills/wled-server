@@ -137,6 +137,7 @@ pub struct AppState {
     pub boards: Arc<RwLock<HashMap<String, BoardEntry>>>,
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     pub storage_paths: Arc<crate::config::StoragePaths>,
+    pub group_e131: Arc<RwLock<Option<crate::transport::E131Transport>>>,
 }
 
 pub type SharedState = Arc<AppState>;

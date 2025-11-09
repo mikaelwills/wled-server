@@ -1,5 +1,7 @@
 use crate::board::{BoardCommand, BoardState};
+use crate::config::E131Config;
 use crate::sse::SseEvent;
+use crate::transport::E131Transport;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::error::Error;
@@ -14,15 +16,36 @@ pub struct BoardActor {
     pub ip: String,
     pub state: BoardState,
     broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+    e131_transport: Option<E131Transport>,
 }
 
 impl BoardActor {
-    pub fn new(id: String, ip: String, broadcast_tx: Arc<broadcast::Sender<SseEvent>>) -> Self {
+    pub fn new(
+        id: String,
+        ip: String,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        e131_config: Option<E131Config>,
+    ) -> Self {
+        // Initialize E1.31 transport if configured
+        let e131_transport = e131_config.and_then(|config| {
+            match E131Transport::new(&ip, config.universe) {
+                Ok(transport) => {
+                    info!(board_id = %id, universe = config.universe, "E1.31 transport enabled");
+                    Some(transport)
+                }
+                Err(e) => {
+                    error!(board_id = %id, error = %e, "Failed to initialize E1.31 transport, falling back to WebSocket-only");
+                    None
+                }
+            }
+        });
+
         Self {
             id: id.clone(),
             ip: ip.clone(),
             state: BoardState::new(id, ip),
             broadcast_tx,
+            e131_transport,
         }
     }
 
@@ -196,6 +219,18 @@ impl BoardActor {
                         match cmd {
                             Some(BoardCommand::SetPower(target_state, _transition)) => {
                                 self.state.on = target_state;
+
+                                // Route via E1.31 if available (faster, no buffer overflow)
+                                if let Some(ref mut e131) = self.e131_transport {
+                                    if let Err(e) = e131.send_power(target_state, self.state.brightness) {
+                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
+                                    } else {
+                                        self.broadcast_state();
+                                        continue; // Skip WebSocket send
+                                    }
+                                }
+
+                                // WebSocket fallback
                                 let msg = Message::Text(format!(r#"{{"on":{},"tt":0}}"#, target_state));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
@@ -204,6 +239,19 @@ impl BoardActor {
                             }
                             Some(BoardCommand::SetBrightness(bri, _transition)) => {
                                 self.state.brightness = bri;
+
+                                // Route via E1.31 if available (faster, no buffer overflow)
+                                if let Some(ref mut e131) = self.e131_transport {
+                                    let current_preset = self.state.preset.unwrap_or(0);
+                                    if let Err(e) = e131.send_brightness(bri, current_preset) {
+                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
+                                    } else {
+                                        self.broadcast_state();
+                                        continue; // Skip WebSocket send
+                                    }
+                                }
+
+                                // WebSocket fallback
                                 let msg = Message::Text(format!(r#"{{"bri":{},"tt":0}}"#, bri));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
@@ -246,11 +294,35 @@ impl BoardActor {
                                 self.broadcast_state();
                             }
                             Some(BoardCommand::SetPreset(preset, _transition)) => {
+                                self.state.preset = Some(preset);
+
+                                // Route via E1.31 if available (faster, no buffer overflow)
+                                if let Some(ref mut e131) = self.e131_transport {
+                                    let before_e131_send = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis();
+                                    println!("📤 [{}ms] Sending via E1.31: board='{}' preset={}", before_e131_send, self.id, preset);
+
+                                    if let Err(e) = e131.send_preset(preset, self.state.brightness) {
+                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
+                                    } else {
+                                        let after_e131_send = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_millis();
+                                        println!("✅ [{}ms] Sent via E1.31: board='{}' preset={}", after_e131_send, self.id, preset);
+                                        self.broadcast_state();
+                                        continue; // Skip WebSocket send
+                                    }
+                                }
+
+                                // WebSocket fallback
                                 let before_ws_send = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis();
-                                println!("📤 [{}ms] Sending to WS: board='{}' preset={}", before_ws_send, self.id, preset);
+                                println!("📤 [{}ms] Sending via WS: board='{}' preset={}", before_ws_send, self.id, preset);
 
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":0}}"#, preset));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))

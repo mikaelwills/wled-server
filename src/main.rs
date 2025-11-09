@@ -22,6 +22,7 @@ mod group;
 mod preset;
 mod program;
 mod sse;
+mod transport;
 mod types;
 
 use actor::BoardActor;
@@ -62,10 +63,25 @@ async fn main() {
     // Create global broadcast channel for SSE events
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
+    // Initialize shared E1.31 transport for groups (universe 1)
+    let group_e131 = transport::E131Transport::new("255.255.255.255", 1)
+        .map_err(|e| {
+            warn!("Failed to initialize group E1.31 transport: {}", e);
+            e
+        })
+        .ok();
+
+    if group_e131.is_some() {
+        info!("Group E1.31 transport initialized (universe 1)");
+    } else {
+        warn!("Group E1.31 transport disabled - groups will use WebSocket only");
+    }
+
     let state: SharedState = Arc::new(AppState {
         boards: Arc::new(RwLock::new(HashMap::new())),
         broadcast_tx: Arc::new(broadcast_tx),
         storage_paths: Arc::new(storage_paths),
+        group_e131: Arc::new(RwLock::new(group_e131)),
     });
 
     // Load boards from config if available
@@ -84,8 +100,9 @@ async fn main() {
                         },
                     );
                 }
+                let e131_config = board_config.e131_config();
                 let actor =
-                    BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone());
+                    BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone(), e131_config);
                 tokio::spawn(async move {
                     if let Err(e) = actor.run(rx).await {
                         error!("Actor error: {}", e);
@@ -312,10 +329,12 @@ async fn register_board(
         );
     }
 
+    // E1.31 defaults to disabled for dynamically registered boards
     let actor = BoardActor::new(
         payload.id.clone(),
         payload.ip.clone(),
         state.broadcast_tx.clone(),
+        None, // No E1.31 config for runtime-registered boards (configure in boards.toml)
     );
     let board_id_for_spawn = board_id.clone();
     tokio::spawn(async move {
@@ -332,6 +351,8 @@ async fn register_board(
     config.boards.push(config::BoardConfig {
         id: payload.id,
         ip: payload.ip,
+        e131_enabled: false,  // Default to disabled for runtime-registered boards
+        e131_universe: 1,     // Default universe
     });
 
     if let Err(e) = config.save() {
@@ -447,10 +468,12 @@ async fn update_board(
 
     // Start new actor with updated config
     let (tx, rx) = mpsc::channel::<BoardCommand>(32);
+    let e131_config = board_config.e131_config();
     let actor = BoardActor::new(
         board_config.id.clone(),
         board_config.ip.clone(),
         state.broadcast_tx.clone(),
+        e131_config,
     );
 
     tokio::spawn(async move {
@@ -531,6 +554,7 @@ async fn list_boards(
                         speed: 128,
                         intensity: 128,
                         connected: false,
+                        preset: None,
                         led_count: None,
                         max_leds: None,
                         is_group: None,
@@ -551,6 +575,7 @@ async fn list_boards(
                             speed: 128,
                             intensity: 128,
                             connected: false,
+                            preset: None,
                             led_count: None,
                             max_leds: None,
                             is_group: None,
@@ -636,6 +661,7 @@ async fn list_boards(
                 speed: group_speed,
                 intensity: group_intensity,
                 connected: group_connected,
+                preset: None,
                 led_count: None,
                 max_leds: None,
                 is_group: Some(true),
@@ -1239,17 +1265,18 @@ async fn update_group(
 
 async fn set_group_power(
     State(state): State<SharedState>,
-    Path(group_id): Path<String>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
     Json(payload): Json<PowerRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(
+    let result = group::execute_group_command(
         state,
         &group_id,
         GroupCommand::SetPower(payload.on, payload.transition),
     )
-    .await
-    {
-        Ok(result) => Ok(Json(result)),
+    .await;
+
+    match result {
+        Ok(r) => Ok(Json(r)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group power: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1259,17 +1286,18 @@ async fn set_group_power(
 
 async fn set_group_brightness(
     State(state): State<SharedState>,
-    Path(group_id): Path<String>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
     Json(payload): Json<GroupBrightnessRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
-    match group::execute_group_command(
+    let result = group::execute_group_command(
         state,
         &group_id,
         GroupCommand::SetBrightness(payload.brightness, payload.transition),
     )
-    .await
-    {
-        Ok(result) => Ok(Json(result)),
+    .await;
+
+    match result {
+        Ok(r) => Ok(Json(r)),
         Err(e) => {
             error!(group_id = %group_id, "Error setting group brightness: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1279,7 +1307,7 @@ async fn set_group_brightness(
 
 async fn set_group_color(
     State(state): State<SharedState>,
-    Path(group_id): Path<String>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
     Json(payload): Json<GroupColorRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
     match group::execute_group_command(
@@ -1304,7 +1332,7 @@ async fn set_group_color(
 
 async fn set_group_effect(
     State(state): State<SharedState>,
-    Path(group_id): Path<String>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
     Json(payload): Json<GroupEffectRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
     match group::execute_group_command(
@@ -1324,7 +1352,7 @@ async fn set_group_effect(
 
 async fn set_group_preset(
     State(state): State<SharedState>,
-    Path(group_id): Path<String>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
     Json(payload): Json<GroupPresetRequest>,
 ) -> Result<Json<GroupOperationResult>, StatusCode> {
     let received_at = std::time::SystemTime::now()

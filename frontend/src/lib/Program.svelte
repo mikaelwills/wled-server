@@ -387,7 +387,7 @@
 	function addMarker(time) {
 		console.log('📍 addMarker called with time:', time);
 		const currentCount = markers.length;
-		const labelText = `Cue ${currentCount + 1}`;
+		const labelText = 'No Preset'; // Default label for new markers with preset action
 
 		// Create region first to get ID
 		const markerRegion = regions.addRegion({
@@ -418,7 +418,7 @@
 		const newMarker = {
 			id: markerRegion.id,
 			time: time,
-			label: `Cue ${currentCount + 1}`,
+			label: 'No Preset', // Matches default action='preset' with preset=0
 			boards: initialBoards,
 			action: 'preset',
 			preset: 0,
@@ -442,6 +442,24 @@
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker[property] = value;
+
+			// Auto-update label when action changes
+			if (property === 'action') {
+				let newLabel = '';
+				if (value === 'on') {
+					newLabel = 'On';
+				} else if (value === 'off') {
+					newLabel = 'Off';
+				} else if (value === 'preset') {
+					// Find preset name by wled_slot
+					const preset = $presets.find(p => p.id === marker.preset);
+					newLabel = preset ? preset.name : 'No Preset';
+				}
+
+				marker.label = newLabel;
+				regenerateMarkerLabel(markerId, newLabel);
+			}
+
 			markers = [...markers];
 			syncMarkersToStore();
 		}

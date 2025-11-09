@@ -55,6 +55,33 @@ impl StoragePaths {
   pub struct BoardConfig {
       pub id: String,
       pub ip: String,
+      #[serde(default)]
+      pub e131_enabled: bool,
+      #[serde(default = "default_e131_universe")]
+      pub e131_universe: u16,
+  }
+
+  fn default_e131_universe() -> u16 {
+      1 // Default E1.31 universe
+  }
+
+  impl BoardConfig {
+      pub fn e131_config(&self) -> Option<E131Config> {
+          if self.e131_enabled {
+              Some(E131Config {
+                  enabled: true,
+                  universe: self.e131_universe,
+              })
+          } else {
+              None
+          }
+      }
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct E131Config {
+      pub enabled: bool,
+      pub universe: u16,
   }
 
   #[derive(Debug, Deserialize, Serialize, Clone)]

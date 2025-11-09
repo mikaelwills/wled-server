@@ -12,6 +12,8 @@ pub struct BoardState {
     pub intensity: u8,
     pub connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "ledCount")]
     pub led_count: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +39,7 @@ impl BoardState {
             speed: 128,
             intensity: 128,
             connected: false,
+            preset: None,
             led_count: None,
             max_leds: None,
             is_group: None,
