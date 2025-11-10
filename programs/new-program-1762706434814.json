@@ -15,11 +15,10 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
-      "time": 27.42849174540213,
+      "time": 27.45037444238021,
       "label": "Strobe White",
       "boards": [
         "GROUP"
@@ -28,8 +27,7 @@
       "preset": 26,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 34.29925059683191,
@@ -41,47 +39,43 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
-      "time": 27.759393485949097,
-      "label": "Cue 4",
+      "time": 27.745909182134685,
+      "label": "Off",
       "boards": [
         "GROUP"
       ],
       "action": "off",
-      "preset": 0,
+      "preset": 30,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 28.306048208775188,
-      "label": "Cue 5",
+      "label": "Strobe White",
       "boards": [
         "GROUP"
       ],
-      "action": "on",
-      "preset": 0,
+      "action": "preset",
+      "preset": 26,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 28.65270730129905,
-      "label": "Cue 6",
+      "label": "Off",
       "boards": [
         "GROUP"
       ],
       "action": "off",
-      "preset": 0,
+      "preset": 30,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 29.172695940084836,
@@ -93,8 +87,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 30.19934017563627,
@@ -106,8 +99,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 30.594072523859563,
@@ -119,8 +111,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 30.8625336612975,
@@ -132,8 +123,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 31.025486314169584,
@@ -145,8 +135,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 32.31962272294919,
@@ -158,8 +147,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 32.884713498326974,
@@ -171,8 +159,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 33.23927375623012,
@@ -184,8 +171,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 33.46593547057264,
@@ -197,8 +183,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 31.167029942449048,
@@ -210,8 +195,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 31.45453937490508,
@@ -223,8 +207,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 29.365284324820323,
@@ -236,8 +219,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 29.602316182956276,
@@ -249,8 +231,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 31.6582016194301,
@@ -262,8 +243,7 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
     },
     {
       "time": 32.02955882317708,
@@ -275,8 +255,19 @@
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
-      "brightness": 255,
-      "transition": 0
+      "brightness": 255
+    },
+    {
+      "time": 18.316636837457285,
+      "label": "Wipe Cyan",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 15,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
     }
   ],
   "created_at": "2025-11-09T16:40:45.185Z",

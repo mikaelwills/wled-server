@@ -10,6 +10,7 @@ pub struct BoardState {
     pub effect: u8,
     pub speed: u8,
     pub intensity: u8,
+    pub transition: u8,
     pub connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset: Option<u8>,
@@ -38,6 +39,7 @@ impl BoardState {
             effect: 0,
             speed: 128,
             intensity: 128,
+            transition: 0,
             connected: false,
             preset: None,
             led_count: None,
@@ -57,6 +59,7 @@ pub enum BoardCommand {
     SetIntensity(u8, u8), // intensity, transition
     SetPreset(u8, u8), // preset, transition
     SetLedCount(u16), // led_count
+    SetTransition(u8), // transition time
     ResetSegment, // reset segment to defaults
     GetState(tokio::sync::oneshot::Sender<BoardState>),
     Shutdown,

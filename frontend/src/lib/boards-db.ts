@@ -829,6 +829,36 @@ export async function resetBoardSegment(boardId: string): Promise<void> {
 }
 
 /**
+ * Set board transition time
+ */
+export async function setBoardTransition(boardId: string, transition: number): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/board/${boardId}/transition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transition }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to set transition');
+    }
+
+    // Update local state optimistically
+    boards.update((currentBoards) =>
+      currentBoards.map((b) =>
+        b.id === boardId ? { ...b, transition } : b
+      )
+    );
+  } catch (error) {
+    console.error('Failed to set transition:', error);
+    boardsError.set('Failed to set transition.');
+    throw error;
+  }
+}
+
+/**
  * Cleanup (reset stores and close SSE)
  */
 export function cleanupBoardsListener(): void {

@@ -10,6 +10,7 @@
 		setBoardIntensity,
 		setBoardPreset,
 		setBoardLedCount,
+		setBoardTransition,
 		resetBoardSegment,
 		addBoard,
 		updateBoard,
@@ -40,6 +41,7 @@
 	let editBoardIp = '';
 	let editingBoardId = ''; // Original ID being edited
 	let ledCountTimeout: number | null = null;
+	let transitionTimeout: number | null = null;
 	let editingBoard: string | null = null; // Board currently being edited inline
 	
 	// Group editing state
@@ -340,6 +342,18 @@
 		// Set new timeout - only send after 15ms of no changes
 		ledCountTimeout = setTimeout(() => {
 			setBoardLedCount(boardId, value);
+		}, 15) as unknown as number;
+	}
+
+	function handleTransitionChange(boardId: string, value: number) {
+		// Clear existing timeout
+		if (transitionTimeout !== null) {
+			clearTimeout(transitionTimeout);
+		}
+
+		// Set new timeout - only send after 15ms of no changes
+		transitionTimeout = setTimeout(() => {
+			setBoardTransition(boardId, value);
 		}, 15) as unknown as number;
 	}
 
@@ -820,6 +834,24 @@
 												disabled={!board.connected}
 												on:input={(e) => handleLedCountChange(board.id, parseInt(e.currentTarget.value))}
 												class="led-count-slider"
+											/>
+										</div>
+									{/if}
+
+									{#if !board.isGroup}
+										<div class="transition-wrapper">
+											<div class="transition-label">
+												<span>Transition</span>
+												<span class="transition-value">{board.transition * 100}ms</span>
+											</div>
+											<input
+												type="range"
+												min="0"
+												max="100"
+												value={board.transition}
+												disabled={!board.connected}
+												on:input={(e) => handleTransitionChange(board.id, parseInt(e.currentTarget.value))}
+												class="transition-slider"
 											/>
 										</div>
 									{/if}
@@ -1320,7 +1352,7 @@
 	}
 
 	.led-count-wrapper {
-		margin-bottom: 1.5rem;
+		margin-bottom: 0.5rem;
 	}
 
 	.led-count-label {
@@ -1368,6 +1400,60 @@
 		height: 20px;
 		border-radius: 50%;
 		background: #4caf50;
+		cursor: pointer;
+		border: none;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
+	.transition-wrapper {
+		margin-bottom: 1.5rem;
+	}
+
+	.transition-label {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.5rem;
+		font-size: 0.875rem;
+		color: #9ca3af;
+	}
+
+	.transition-value {
+		color: #e5e5e5;
+		font-weight: 500;
+	}
+
+	.transition-slider {
+		width: 100%;
+		height: 8px;
+		border-radius: 4px;
+		background: linear-gradient(to right, #444, #ff9800);
+		outline: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+
+	.transition-slider:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.transition-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #ff9800;
+		cursor: pointer;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+	}
+
+	.transition-slider::-moz-range-thumb {
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #ff9800;
 		cursor: pointer;
 		border: none;
 		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);

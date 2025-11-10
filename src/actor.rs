@@ -1,7 +1,5 @@
 use crate::board::{BoardCommand, BoardState};
-use crate::config::E131Config;
 use crate::sse::SseEvent;
-use crate::transport::E131Transport;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::error::Error;
@@ -16,7 +14,6 @@ pub struct BoardActor {
     pub ip: String,
     pub state: BoardState,
     broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
-    e131_transport: Option<E131Transport>,
 }
 
 impl BoardActor {
@@ -24,28 +21,30 @@ impl BoardActor {
         id: String,
         ip: String,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
-        e131_config: Option<E131Config>,
     ) -> Self {
-        // Initialize E1.31 transport if configured
-        let e131_transport = e131_config.and_then(|config| {
-            match E131Transport::new(vec![ip.clone()], config.universe) {
-                Ok(transport) => {
-                    info!(board_id = %id, universe = config.universe, "E1.31 transport enabled (per-board unicast)");
-                    Some(transport)
-                }
-                Err(e) => {
-                    error!(board_id = %id, error = %e, "Failed to initialize E1.31 transport, falling back to WebSocket-only");
-                    None
-                }
-            }
-        });
-
         Self {
             id: id.clone(),
             ip: ip.clone(),
             state: BoardState::new(id, ip),
             broadcast_tx,
-            e131_transport,
+        }
+    }
+
+    pub fn new_with_transition(
+        id: String,
+        ip: String,
+        transition: Option<u8>,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+    ) -> Self {
+        let mut state = BoardState::new(id.clone(), ip.clone());
+        if let Some(trans) = transition {
+            state.transition = trans;
+        }
+        Self {
+            id,
+            ip,
+            state,
+            broadcast_tx,
         }
     }
 
@@ -124,6 +123,11 @@ impl BoardActor {
                                     self.state.led_count = Some(led_count);
                                     self.broadcast_state();
                                 }
+                                Some(BoardCommand::SetTransition(transition)) => {
+                                    // Cache the transition change
+                                    self.state.transition = transition;
+                                    self.broadcast_state();
+                                }
                                 Some(BoardCommand::Shutdown) => {
                                     info!(board_id = %self.id, "Shutting down actor");
                                     return Ok(());
@@ -165,6 +169,17 @@ impl BoardActor {
             self.state.connected = true;
             self.broadcast_connection_status();
             self.broadcast_state();
+
+            // Immediately set transition to 0ms for instant E1.31 commands
+            // This ensures boards always start with 0ms transition regardless of WLED default
+            info!(board_id = %self.id, "Setting transition to 0ms on connection");
+            let init_msg = Message::Text(r#"{"tt":0,"transition":0}"#.to_string());
+            if let Err(e) = write.send(init_msg).await {
+                warn!(board_id = %self.id, "Failed to set initial transition: {}", e);
+            } else {
+                self.state.transition = 0;
+                self.broadcast_state();
+            }
 
             // Create ping interval for keepalive (5 seconds)
             let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -219,19 +234,6 @@ impl BoardActor {
                         match cmd {
                             Some(BoardCommand::SetPower(target_state, _transition)) => {
                                 self.state.on = target_state;
-
-                                // Route via E1.31 if available (faster, no buffer overflow)
-                                if let Some(ref mut e131) = self.e131_transport {
-                                    let preset = self.state.preset.unwrap_or(1);
-                                    if let Err(e) = e131.send_power(target_state, preset) {
-                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
-                                    } else {
-                                        self.broadcast_state();
-                                        continue; // Skip WebSocket send
-                                    }
-                                }
-
-                                // WebSocket fallback
                                 let msg = Message::Text(format!(r#"{{"on":{},"tt":0}}"#, target_state));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
@@ -240,19 +242,6 @@ impl BoardActor {
                             }
                             Some(BoardCommand::SetBrightness(bri, _transition)) => {
                                 self.state.brightness = bri;
-
-                                // Route via E1.31 if available (faster, no buffer overflow)
-                                if let Some(ref mut e131) = self.e131_transport {
-                                    let current_preset = self.state.preset.unwrap_or(0);
-                                    if let Err(e) = e131.send_brightness(bri, current_preset) {
-                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
-                                    } else {
-                                        self.broadcast_state();
-                                        continue; // Skip WebSocket send
-                                    }
-                                }
-
-                                // WebSocket fallback
                                 let msg = Message::Text(format!(r#"{{"bri":{},"tt":0}}"#, bri));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
@@ -296,46 +285,10 @@ impl BoardActor {
                             }
                             Some(BoardCommand::SetPreset(preset, _transition)) => {
                                 self.state.preset = Some(preset);
-
-                                // Route via E1.31 if available (faster, no buffer overflow)
-                                if let Some(ref mut e131) = self.e131_transport {
-                                    let before_e131_send = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_millis();
-                                    println!("📤 [{}ms] Sending via E1.31: board='{}' preset={}", before_e131_send, self.id, preset);
-
-                                    if let Err(e) = e131.send_preset(preset, self.state.brightness) {
-                                        warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
-                                    } else {
-                                        let after_e131_send = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_millis();
-                                        println!("✅ [{}ms] Sent via E1.31: board='{}' preset={}", after_e131_send, self.id, preset);
-                                        self.broadcast_state();
-                                        continue; // Skip WebSocket send
-                                    }
-                                }
-
-                                // WebSocket fallback
-                                let before_ws_send = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis();
-                                println!("📤 [{}ms] Sending via WS: board='{}' preset={}", before_ws_send, self.id, preset);
-
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":0}}"#, preset));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
-
-                                let after_ws_send = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis();
-                                println!("✅ [{}ms] Sent via WS: board='{}' preset={}", after_ws_send, self.id, preset);
-
                                 self.broadcast_state();
                             }
                             Some(BoardCommand::SetLedCount(led_count)) => {
@@ -349,6 +302,16 @@ impl BoardActor {
                             Some(BoardCommand::ResetSegment) => {
                                 // Reset segment to defaults: grp=1, spc=0, of=0
                                 let msg = Message::Text(r#"{"seg":[{"id":0,"grp":1,"spc":0,"of":0}]}"#.to_string());
+                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
+                                    .await
+                                    .map_err(|_| "Timeout")??;
+                                self.broadcast_state();
+                            }
+                            Some(BoardCommand::SetTransition(transition)) => {
+                                self.state.transition = transition;
+                                // Set both 'tt' (per-command) and 'transition' (global default)
+                                // This ensures both WebSocket API and E1.31 commands respect the setting
+                                let msg = Message::Text(format!(r#"{{"tt":{},"transition":{}}}"#, transition, transition));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
@@ -378,6 +341,11 @@ impl BoardActor {
         }
         if let Some(bri) = json["state"]["bri"].as_u64() {
             self.state.brightness = bri as u8;
+        }
+
+        // Read transition value from WLED to show actual board state
+        if let Some(transition) = json["state"]["transition"].as_u64() {
+            self.state.transition = transition as u8;
         }
 
         // Parse color and effect from segment data

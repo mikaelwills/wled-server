@@ -173,8 +173,7 @@
 						preset: cue.preset,
 						effect: cue.effect,
 						color: cue.color,
-						brightness: cue.brightness,
-						transition: cue.transition
+						brightness: cue.brightness
 					}];
 				});
 				window._pendingCues = null;
@@ -424,8 +423,7 @@
 			preset: 0,
 			effect: 0,
 			color: '#ff0000',
-			brightness: 255,
-			transition: 0
+			brightness: 255
 		};
 
 		markers = [...markers, newMarker];
@@ -735,8 +733,7 @@ function playFullProgram() {
 				preset: m.preset,
 				color: m.color,
 				effect: m.effect,
-				brightness: m.brightness,
-				transition: m.transition
+				brightness: m.brightness
 			})),
 			createdAt: existingProgram?.createdAt || new Date().toISOString(),
 			defaultTargetBoard: defaultTargetBoard
@@ -1029,23 +1026,6 @@ function playFullProgram() {
 										{/each}
 									</select>
 								{/if}
-
-								<div class="transition-input-wrapper">
-									<input
-										type="text"
-										inputmode="numeric"
-										pattern="[0-9]*"
-										min="0"
-										max="100"
-										value={marker.transition + ' ms'}
-										oninput={(e) => {
-											const val = e.target.value.replace(/\D/g, '');
-											updateMarkerProperty(marker.id, 'transition', parseInt(val) || 0);
-											e.target.value = val + ' ms';
-										}}
-										class="transition-input"
-									/>
-								</div>
 
 								<button class="btn-delete" onclick={() => deleteMarker(marker.id)}>
 									✕
@@ -1876,32 +1856,6 @@ function playFullProgram() {
 		background: #a855f7;
 		cursor: pointer;
 		border: 2px solid #1a1a1a;
-	}
-
-	.transition-input-wrapper {
-		display: inline-block;
-	}
-
-	.transition-input {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
-		padding: 0.375rem 0.5rem;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		width: 52px;
-		text-align: center;
-		transition: border-color 0.2s;
-	}
-
-	.transition-input:hover {
-		border-color: #a855f7;
-	}
-
-	.transition-input:focus {
-		outline: none;
-		border-color: #a855f7;
-		background-color: #2a2a2a;
 	}
 
 	.effect-select {

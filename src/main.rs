@@ -107,9 +107,16 @@ async fn main() {
                         },
                     );
                 }
-                let e131_config = board_config.e131_config();
-                let actor =
-                    BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone(), e131_config);
+                let actor = if let Some(transition) = board_config.transition {
+                    BoardActor::new_with_transition(
+                        board_config.id.clone(),
+                        board_config.ip.clone(),
+                        Some(transition),
+                        state.broadcast_tx.clone(),
+                    )
+                } else {
+                    BoardActor::new(board_config.id, board_config.ip, state.broadcast_tx.clone())
+                };
                 tokio::spawn(async move {
                     if let Err(e) = actor.run(rx).await {
                         error!("Actor error: {}", e);
@@ -150,6 +157,7 @@ async fn main() {
         .route("/board/:id/preset", post(set_preset))
         .route("/board/:id/presets", get(get_board_presets))
         .route("/board/:id/led-count", post(set_led_count))
+        .route("/board/:id/transition", post(set_transition))
         .route("/board/:id/reset-segment", post(reset_segment))
         .route("/board/:id/presets/sync", post(sync_presets_to_board))
         .route("/events", get(sse_handler))
@@ -336,12 +344,11 @@ async fn register_board(
         );
     }
 
-    // E1.31 defaults to disabled for dynamically registered boards
+    // Create actor for dynamically registered board
     let actor = BoardActor::new(
         payload.id.clone(),
         payload.ip.clone(),
         state.broadcast_tx.clone(),
-        None, // No E1.31 config for runtime-registered boards (configure in boards.toml)
     );
     let board_id_for_spawn = board_id.clone();
     tokio::spawn(async move {
@@ -358,8 +365,7 @@ async fn register_board(
     config.boards.push(config::BoardConfig {
         id: payload.id,
         ip: payload.ip,
-        e131_enabled: false,  // Default to disabled for runtime-registered boards
-        e131_universe: 1,     // Default universe
+        transition: None,
     });
 
     if let Err(e) = config.save() {
@@ -475,12 +481,10 @@ async fn update_board(
 
     // Start new actor with updated config
     let (tx, rx) = mpsc::channel::<BoardCommand>(32);
-    let e131_config = board_config.e131_config();
     let actor = BoardActor::new(
         board_config.id.clone(),
         board_config.ip.clone(),
         state.broadcast_tx.clone(),
-        e131_config,
     );
 
     tokio::spawn(async move {
@@ -501,6 +505,28 @@ async fn update_board(
 
     info!(old_id = %old_id, new_id = %new_id, "Updated board");
     Ok(StatusCode::OK)
+}
+
+async fn save_board_transition(board_id: &str, transition: u8) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config::load().unwrap_or(Config {
+        boards: vec![],
+        groups: vec![],
+    });
+    
+    // Find and update the board's transition
+    if let Some(board_config) = config.boards.iter_mut().find(|b| b.id == board_id) {
+        board_config.transition = Some(transition);
+    } else {
+        // Board not found in config, add it
+        config.boards.push(config::BoardConfig {
+            id: board_id.to_string(),
+            ip: String::new(), // We don't know the IP from this context
+            transition: Some(transition),
+        });
+    }
+    
+    config.save()?;
+    Ok(())
 }
 
 async fn sse_handler(
@@ -560,6 +586,7 @@ async fn list_boards(
                         effect: 0,
                         speed: 128,
                         intensity: 128,
+                        transition: 0,
                         connected: false,
                         preset: None,
                         led_count: None,
@@ -581,6 +608,7 @@ async fn list_boards(
                             effect: 0,
                             speed: 128,
                             intensity: 128,
+                            transition: 0,
                             connected: false,
                             preset: None,
                             led_count: None,
@@ -667,6 +695,7 @@ async fn list_boards(
                 effect: group_effect,
                 speed: group_speed,
                 intensity: group_intensity,
+                transition: 0, // Groups use 0 transition by default
                 connected: group_connected,
                 preset: None,
                 led_count: None,
@@ -947,6 +976,35 @@ async fn reset_segment(
         .send(BoardCommand::ResetSegment)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn set_transition(
+    State(state): State<SharedState>,
+    axum::extract::Path(board_id): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<StatusCode, StatusCode> {
+    let transition = payload["transition"].as_u64().unwrap_or(0) as u8;
+
+    let sender = {
+        let senders_lock = state.boards.read().await;
+
+        match senders_lock.get(&board_id) {
+            Some(entry) => entry.sender.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    sender
+        .send(BoardCommand::SetTransition(transition))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Save transition to config for persistence
+    if let Err(e) = save_board_transition(&board_id, transition).await {
+        error!(board_id = %board_id, "Failed to save transition: {}", e);
+    }
 
     Ok(StatusCode::OK)
 }

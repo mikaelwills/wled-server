@@ -11,7 +11,6 @@ export interface CueData {
   color: string;
   effect: number;
   brightness: number;
-  transition: number;
 }
 
 export class Cue implements CueData {
@@ -23,7 +22,6 @@ export class Cue implements CueData {
   color: string;
   effect: number;
   brightness: number;
-  transition: number;
 
   private constructor(data: CueData) {
     this.time = data.time;
@@ -34,7 +32,6 @@ export class Cue implements CueData {
     this.color = data.color;
     this.effect = data.effect;
     this.brightness = data.brightness;
-    this.transition = data.transition;
   }
 
   /**
@@ -55,7 +52,6 @@ export class Cue implements CueData {
       color: data.color || '#ff0000',
       effect: data.effect ?? 0,
       brightness: data.brightness ?? 255,
-      transition: data.transition ?? 0,
     });
   }
 
@@ -72,7 +68,6 @@ export class Cue implements CueData {
       color: this.color,
       effect: this.effect,
       brightness: this.brightness,
-      transition: this.transition,
     };
   }
 }

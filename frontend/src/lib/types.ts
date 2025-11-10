@@ -7,6 +7,7 @@ export interface BoardState {
   effect: number;
   speed: number;
   intensity: number;
+  transition: number;
   connected: boolean;
   ledCount?: number;
   maxLeds?: number;

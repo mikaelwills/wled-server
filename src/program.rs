@@ -28,7 +28,6 @@ pub struct Cue {
     pub color: String,
     pub effect: u8,
     pub brightness: u8,
-    pub transition: u8,
 }
 
 fn default_action() -> String {
