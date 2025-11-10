@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import WaveSurfer from 'wavesurfer.js';
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
@@ -16,6 +17,8 @@
 
 	// Internal state derived from prop
 	let programId = $state(program?.id || null);
+	// Sanitized version of programId for use in HTML IDs and CSS selectors (no spaces or special chars)
+	let sanitizedProgramId = $derived(programId ? programId.replace(/[^a-zA-Z0-9-_]/g, '-') : null);
 
 	let wavesurfer = $state(null);
 	let regions = $state(null);
@@ -41,6 +44,9 @@
 
 	// Zoom state
 	let zoomLevel = $state(50); // pixels per second
+
+	// Pending cues to restore after audio loads (component-scoped, not global)
+	let pendingCues = [];
 
 	onMount(async () => {
 		// Boards, groups, and presets are now loaded via stores in parent component
@@ -110,8 +116,8 @@
 		fileName = data.fileName || '';
 		defaultTargetBoard = data.defaultTargetBoard || null;
 		// Note: cues will need to be restored after audio file is loaded
-		// Store them temporarily
-		window._pendingCues = data.cues || [];
+		// Store them temporarily in component-scoped variable
+		pendingCues = data.cues || [];
 	}
 
 	/**
@@ -124,7 +130,7 @@
 
 		// Create WaveSurfer instance
 		wavesurfer = WaveSurfer.create({
-			container: `#waveform-${programId}`,
+			container: `#waveform-${sanitizedProgramId}`,
 			waveColor: 'rgb(147, 51, 234)',
 			progressColor: 'rgb(168, 85, 247)',
 			cursorColor: 'rgb(192, 132, 252)',
@@ -139,8 +145,8 @@
 			isLoaded = true;
 
 			// Restore pending cues if any
-			if (window._pendingCues && window._pendingCues.length > 0) {
-				window._pendingCues.forEach(cue => {
+			if (pendingCues && pendingCues.length > 0) {
+				pendingCues.forEach(cue => {
 					// Create region first to get ID
 					const markerRegion = regions.addRegion({
 						start: cue.time,
@@ -176,7 +182,7 @@
 						brightness: cue.brightness
 					}];
 				});
-				window._pendingCues = null;
+				pendingCues = [];
 			}
 		});
 
@@ -294,9 +300,9 @@
 		console.log('[Program.svelte] programId:', programId);
 
 		// Check if container exists
-		const container = document.querySelector(`#waveform-${programId}`);
+		const container = document.querySelector(`#waveform-${sanitizedProgramId}`);
 		if (!container) {
-			console.error('[Program.svelte] Waveform container not found:', `#waveform-${programId}`);
+			console.error('[Program.svelte] Waveform container not found:', `#waveform-${sanitizedProgramId}`);
 			return;
 		}
 		console.log('[Program.svelte] Container found:', container);
@@ -781,6 +787,79 @@ function playFullProgram() {
 		}
 	}
 
+	async function downloadProgram() {
+		if (!programId) {
+			alert('Cannot download program without saving first');
+			return;
+		}
+
+		// Get current program from store
+		const programsArray = get(programsStore);
+		const currentProgram = programsArray.find(p => p.id === programId);
+
+		if (!currentProgram) {
+			alert('Program not found');
+			return;
+		}
+
+		if (!currentProgram.audioId) {
+			alert('No audio file associated with this program');
+			console.error('Program has no audioId:', currentProgram);
+			return;
+		}
+
+		console.log('Downloading program with audioId:', currentProgram.audioId);
+
+		try {
+			// Fetch audio file from backend
+			const audioUrl = `${API_URL}/audio/${currentProgram.audioId}`;
+			console.log('Fetching audio from:', audioUrl);
+			const audioResponse = await fetch(audioUrl);
+			if (!audioResponse.ok) {
+				throw new Error(`Failed to fetch audio file: ${audioResponse.status} ${audioResponse.statusText}`);
+			}
+
+			const audioBlob = await audioResponse.blob();
+
+			// Convert to base64 data URL
+			const reader = new FileReader();
+			reader.readAsDataURL(audioBlob);
+
+			reader.onloadend = () => {
+				const base64data = reader.result;
+
+				// Create export JSON with embedded audio, remove audio_file reference
+				const exportData = {
+					...currentProgram.toJson(),
+					audio_data: base64data,
+					audio_file: undefined
+				};
+
+				// Remove undefined fields from JSON
+				const cleanExport = JSON.parse(JSON.stringify(exportData));
+
+				// Trigger download
+				const json = JSON.stringify(cleanExport, null, 2);
+				const blob = new Blob([json], { type: 'application/json' });
+				const url = URL.createObjectURL(blob);
+				const a = document.createElement('a');
+				a.href = url;
+				a.download = `${songName.trim() || 'program'}.json`;
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				URL.revokeObjectURL(url);
+			};
+
+			reader.onerror = () => {
+				alert('Failed to encode audio file');
+			};
+		} catch (error) {
+			console.error('Failed to download program:', error);
+			alert('Failed to download program. Please try again.');
+		}
+	}
+
 	function applyDefaultBoardToAll() {
 		if (!defaultTargetBoard) {
 			alert('Please select a default target board first');
@@ -844,6 +923,12 @@ function playFullProgram() {
 				</svg>
 			</button>
 			{#if programId}
+				<button class="btn-download-program" onclick={downloadProgram} title="Download program with audio">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<path d="M8 1v10M8 11l-3-3M8 11l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+						<path d="M2 11v2c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</button>
 				<button class="btn-delete-program" onclick={deleteProgram} title="Delete program">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
 						<path d="M2 4h12M5.5 4V2.5h5V4M6.5 7.5v4M9.5 7.5v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -856,7 +941,7 @@ function playFullProgram() {
 			{#if !isLoaded && (program?.audioId || program?.audioData)}
 				<div class="waveform-skeleton"></div>
 			{/if}
-			<div id="waveform-{programId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
+			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
 		<div class="waveform-footer" class:has-cues={isLoaded && markers.length > 0}>
 			{#if isLoaded && markers.length > 0}
@@ -1309,6 +1394,34 @@ function playFullProgram() {
 	}
 
 	.btn-clear:active {
+		transform: translateY(0);
+	}
+
+	.btn-download-program {
+		background-color: #1a1a1a;
+		color: #10b981;
+		border: 1px solid #2a2a2a;
+		padding: 0.5rem 1rem;
+		border-radius: 8px;
+		font-size: 0.875rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		height: 36px;
+		box-sizing: border-box;
+	}
+
+	.btn-download-program:hover {
+		background-color: #2a2a2a;
+		border-color: #10b981;
+		transform: translateY(-1px);
+	}
+
+	.btn-download-program:active {
 		transform: translateY(0);
 	}
 

@@ -1,7 +1,7 @@
 {
   "id": "new-program-1762706434814",
   "song_name": "Overwhelmed Ouija 04-11",
-  "loopy_pro_track": "",
+  "loopy_pro_track": "09",
   "file_name": "Overwhelmed Ouija 04-11.wav",
   "audio_file": "new-program-1762706434814.mp3",
   "cues": [
@@ -234,7 +234,7 @@
       "brightness": 255
     },
     {
-      "time": 31.6582016194301,
+      "time": 31.85490628284882,
       "label": "Off",
       "boards": [
         "GROUP"
@@ -265,6 +265,18 @@
       ],
       "action": "preset",
       "preset": 15,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    },
+    {
+      "time": 36.58461048190334,
+      "label": "Lightning Cyan",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 19,
       "color": "#ff0000",
       "effect": 0,
       "brightness": 255

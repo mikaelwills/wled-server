@@ -44,11 +44,38 @@ impl StoragePaths {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
   pub struct Config {
       pub boards: Vec<BoardConfig>,
       #[serde(default)]
       pub groups: Vec<GroupConfig>,
+      #[serde(default)]
+      pub loopy_pro: LoopyProConfig,
+  }
+
+  #[derive(Debug, Deserialize, Serialize, Clone)]
+  pub struct LoopyProConfig {
+      #[serde(default = "default_loopy_ip")]
+      pub ip: String,
+      #[serde(default = "default_loopy_port")]
+      pub port: u16,
+  }
+
+  impl Default for LoopyProConfig {
+      fn default() -> Self {
+          Self {
+              ip: default_loopy_ip(),
+              port: default_loopy_port(),
+          }
+      }
+  }
+
+  fn default_loopy_ip() -> String {
+      "192.168.1.242".to_string()
+  }
+
+  fn default_loopy_port() -> u16 {
+      9595
   }
 
   #[derive(Debug, Deserialize, Serialize, Clone)]

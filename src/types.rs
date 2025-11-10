@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock, Mutex};
 
 use crate::board::{BoardCommand, BoardState};
 use crate::sse::SseEvent;
@@ -22,6 +22,8 @@ pub struct UpdateBoardRequest {
 #[derive(Deserialize)]
 pub struct OscRequest {
     pub address: String,
+    pub ip: String,
+    pub port: u16,
 }
 
 #[derive(Deserialize)]
@@ -140,6 +142,7 @@ pub struct AppState {
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     pub storage_paths: Arc<crate::config::StoragePaths>,
     pub group_e131: Arc<RwLock<Option<crate::transport::E131RawTransport>>>,
+    pub config: Arc<Mutex<crate::config::Config>>,
 }
 
 pub type SharedState = Arc<AppState>;

@@ -121,7 +121,92 @@
 		}
 	}
 
+	/**
+	 * Convert base64 data URL to Blob
+	 */
+	function dataURLToBlob(dataURL) {
+		const parts = dataURL.split(',');
+		const mime = parts[0].match(/:(.*?);/)[1];
+		const bstr = atob(parts[1]);
+		let n = bstr.length;
+		const u8arr = new Uint8Array(n);
+		while (n--) {
+			u8arr[n] = bstr.charCodeAt(n);
+		}
+		return new Blob([u8arr], { type: mime });
+	}
+
+	/**
+	 * Import program from downloaded JSON file (with embedded audio)
+	 */
+	async function importProgramFromJSON(file) {
+		console.log('Importing program from JSON:', file.name);
+		isLoading = true;
+
+		try {
+			// Read JSON file
+			const text = await file.text();
+			const data = JSON.parse(text);
+
+			// Validate JSON has required fields
+			if (!data.id || !data.audio_data) {
+				throw new Error('Invalid program JSON: missing id or audio_data');
+			}
+
+			console.log('Parsed program:', data.song_name || data.id);
+
+			// Extract embedded audio
+			const audioBlob = dataURLToBlob(data.audio_data);
+			console.log('Extracted audio blob:', audioBlob.size, 'bytes');
+
+			// Upload audio to backend
+			const audioDataURL = await new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = (e) => resolve(e.target.result);
+				reader.onerror = reject;
+				reader.readAsDataURL(audioBlob);
+			});
+
+			const uploadResponse = await fetch(`${API_URL}/audio/${data.id}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ data_url: audioDataURL })
+			});
+
+			if (!uploadResponse.ok) {
+				throw new Error(`Failed to upload audio: ${uploadResponse.statusText}`);
+			}
+
+			const { audio_file } = await uploadResponse.json();
+			console.log('Audio uploaded:', audio_file);
+
+			// Create Program with audioId reference (remove embedded audio_data)
+			const programData = {
+				...data,
+				audioId: audio_file,
+				audio_data: undefined // Remove embedded audio
+			};
+
+			const program = ProgramModel.fromJson(programData);
+
+			if (program) {
+				await saveProgram(program);
+				console.log('Program imported successfully:', program.songName);
+			}
+		} catch (err) {
+			console.error('Failed to import program:', err);
+			alert(`Failed to import program: ${err.message}`);
+		} finally {
+			isLoading = false;
+		}
+	}
+
 	async function createNewProgram(file) {
+		// Detect file type and route appropriately
+		if (file.name.endsWith('.json')) {
+			return importProgramFromJSON(file);
+		}
+
 		console.log('Creating new program with file:', file.name);
 
 		isLoading = true; // Set to true immediately to show loading card
@@ -203,11 +288,11 @@
 		ondrop={handleDrop}
 		onclick={() => document.getElementById('file-input-thin').click()}
 	>
-		<p class="drop-text">Drop WAV file here or click to browse</p>
+		<p class="drop-text">Drop WAV file or JSON program here or click to browse</p>
 		<input
 			id="file-input-thin"
 			type="file"
-			accept="audio/*"
+			accept="audio/*,.json"
 			style="display: none;"
 			onchange={handleFileSelect}
 		/>

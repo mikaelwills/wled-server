@@ -36,8 +36,9 @@ restart.sh
 /data/boards.toml
 /data/boards.toml.tmp
 
- .claude/settings.local.json
+.claude/settings.local.json
 
-
-# Don't deploy local presets - they would overwrite user-created presets on remote
+# User data - don't commit personal files
+audio/
+programs/
 presets/

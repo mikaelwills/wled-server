@@ -248,11 +248,11 @@ impl BoardActor {
                                     .map_err(|_| "Timeout")??;
                                 self.broadcast_state();
                             }
-                            Some(BoardCommand::SetColor { r, g, b, transition: _ }) => {
+                            Some(BoardCommand::SetColor { r, g, b, transition }) => {
                                 self.state.color = [r, g, b];
                                 let msg = Message::Text(format!(
-                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":0}}"#,
-                                    r, g, b
+                                    r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":{}}}"#,
+                                    r, g, b, transition
                                 ));
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await

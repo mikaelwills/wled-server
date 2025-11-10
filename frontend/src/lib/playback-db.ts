@@ -3,6 +3,7 @@ import { browser } from '$app/environment';
 import { currentlyPlayingProgram, activeTimeouts } from './store';
 import { API_URL } from './api';
 import { setBoardBrightness, setBoardColor, setBoardEffect, setBoardPreset, setBoardPower } from './boards-db';
+import { sendOSC } from './osc';
 import type { Program } from './models/Program';
 
 /**
@@ -41,16 +42,15 @@ export function playProgram(program: Program, startTime: number = 0, audioStartT
   currentlyPlayingProgram.set(program);
 
   // FIRE-AND-FORGET: Send OSC command in background (non-blocking)
+  console.log('🎵 Program loopyProTrack:', program.loopyProTrack);
   if (program.loopyProTrack) {
-    fetch(`${API_URL}/osc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        address: `/PlayStop/${program.loopyProTrack.padStart(2, '0')}`
-      })
-    }).catch(err => {
+    const oscAddress = `/PlayStop/0:${program.loopyProTrack}`;
+    console.log('📤 Sending OSC:', oscAddress);
+    sendOSC(oscAddress).catch(err => {
       console.error('Failed to send OSC:', err);
     });
+  } else {
+    console.log('⚠️ No loopyProTrack set for this program');
   }
 
   // FAST: Sort and filter cues
@@ -146,6 +146,15 @@ export async function stopPlayback(): Promise<void> {
 
   // FAST: Clear playback state synchronously
   clearPlayback();
+
+  // FIRE-AND-FORGET: Send OSC stop command to Loopy Pro
+  if (program && program.loopyProTrack) {
+    const oscAddress = `/PlayStop/0:${program.loopyProTrack}`;
+    console.log('⏹️ Sending OSC stop:', oscAddress);
+    sendOSC(oscAddress).catch(err => {
+      console.error('Failed to send OSC stop:', err);
+    });
+  }
 
   // Dim all boards to 0 (fade to black)
   if (program) {

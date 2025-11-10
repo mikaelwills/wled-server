@@ -9,7 +9,7 @@ use futures::Stream;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock, Mutex};
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -84,11 +84,19 @@ async fn main() {
         warn!("Group E1.31 transport disabled - groups will use WebSocket only");
     }
 
+    // Load config before creating AppState
+    let loaded_config = Config::load().unwrap_or(Config {
+        boards: vec![],
+        groups: vec![],
+        loopy_pro: config::LoopyProConfig::default(),
+    });
+
     let state: SharedState = Arc::new(AppState {
         boards: Arc::new(RwLock::new(HashMap::new())),
         broadcast_tx: Arc::new(broadcast_tx),
         storage_paths: Arc::new(storage_paths),
         group_e131: Arc::new(RwLock::new(group_e131)),
+        config: Arc::new(Mutex::new(loaded_config.clone())),
     });
 
     // Load boards from config if available
@@ -173,6 +181,7 @@ async fn main() {
             post(upload_audio).get(get_audio).delete(delete_audio),
         )
         .route("/osc", post(send_osc))
+        .route("/settings/loopy-pro", get(get_loopy_pro_settings).put(update_loopy_pro_settings))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit
         .with_state(state.clone());
 
@@ -359,6 +368,7 @@ async fn register_board(
 
     // Persist to boards.toml
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -392,6 +402,7 @@ async fn delete_board(
 
     // Update and save config FIRST (before touching memory)
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -442,6 +453,7 @@ async fn update_board(
 
     // Load config
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -509,6 +521,7 @@ async fn update_board(
 
 async fn save_board_transition(board_id: &str, transition: u8) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -1162,6 +1175,9 @@ async fn sync_presets_to_board(
 }
 
 async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusCode> {
+    // Add 25ms delay before sending OSC (helps with timing sync)
+    tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
         eprintln!("Failed to create OSC socket: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -1176,12 +1192,33 @@ async fn send_osc(Json(payload): Json<OscRequest>) -> Result<StatusCode, StatusC
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let target = "192.168.1.242:9595";
-    socket.send_to(&packet, target).map_err(|e| {
+    let target = format!("{}:{}", payload.ip, payload.port);
+    socket.send_to(&packet, &target).map_err(|e| {
         eprintln!("Failed to send OSC message to {}: {}", target, e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    Ok(StatusCode::OK)
+}
+
+async fn get_loopy_pro_settings(
+    State(state): State<SharedState>,
+) -> Result<Json<config::LoopyProConfig>, StatusCode> {
+    let config = state.config.lock().await;
+    Ok(Json(config.loopy_pro.clone()))
+}
+
+async fn update_loopy_pro_settings(
+    State(state): State<SharedState>,
+    Json(payload): Json<config::LoopyProConfig>,
+) -> Result<StatusCode, StatusCode> {
+    let mut config = state.config.lock().await;
+    config.loopy_pro = payload;
+    config.save().map_err(|e| {
+        error!("Failed to save Loopy Pro settings: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    info!("Loopy Pro settings updated: {}:{}", config.loopy_pro.ip, config.loopy_pro.port);
     Ok(StatusCode::OK)
 }
 
@@ -1205,6 +1242,7 @@ async fn create_group(
 
     // Load config and check for duplicate group ID
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -1244,6 +1282,7 @@ async fn delete_group(
 ) -> Result<StatusCode, StatusCode> {
     // Load config
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });
@@ -1285,6 +1324,7 @@ async fn update_group(
 
     // Load config
     let mut config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
         boards: vec![],
         groups: vec![],
     });

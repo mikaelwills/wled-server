@@ -1,0 +1,47 @@
+{
+  "id": "pale moonlight inst-1762799483851",
+  "song_name": "pale moonlight inst",
+  "loopy_pro_track": "",
+  "file_name": "pale moonlight inst.wav",
+  "audio_file": "pale moonlight inst-1762799483851.mp3",
+  "cues": [
+    {
+      "time": 4.009984022701476,
+      "label": "No Preset",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    },
+    {
+      "time": 1.0638733121452897,
+      "label": "No Preset",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    },
+    {
+      "time": 32.81639985925085,
+      "label": "No Preset",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    }
+  ],
+  "created_at": "2025-11-10T18:31:25.742Z",
+  "default_target_board": "GROUP"
+}
