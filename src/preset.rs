@@ -36,6 +36,7 @@ impl WledPreset {
         serde_json::json!({
             "on": self.state.on,
             "bri": self.state.brightness,
+            "transition": self.state.transition.unwrap_or(0),  // Transition time (0 = instant)
             "seg": [{
                 "col": [[
                     self.state.color[0],

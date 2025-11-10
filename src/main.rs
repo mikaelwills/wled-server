@@ -64,15 +64,22 @@ async fn main() {
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
     // Initialize shared E1.31 transport for groups (universe 1)
-    let group_e131 = transport::E131Transport::new("255.255.255.255", 1)
+    // GROUP members: One, Two, Three (ignore board One if offline)
+    // Using raw E1.31 implementation (sacn library incompatible with WLED)
+    let group_board_ips = vec![
+        "192.168.8.148".to_string(),  // One
+        "192.168.8.118".to_string(),  // Two
+        "192.168.8.210".to_string(),  // Three
+    ];
+    let group_e131 = transport::E131RawTransport::new(group_board_ips, 1)
         .map_err(|e| {
-            warn!("Failed to initialize group E1.31 transport: {}", e);
+            warn!("Failed to initialize group E1.31 raw transport: {}", e);
             e
         })
         .ok();
 
     if group_e131.is_some() {
-        info!("Group E1.31 transport initialized (universe 1)");
+        info!("Group E1.31 raw transport initialized (universe 1, unicast mode)");
     } else {
         warn!("Group E1.31 transport disabled - groups will use WebSocket only");
     }
@@ -1612,6 +1619,7 @@ async fn save_preset(
         effect: 0,
         speed: 128,
         intensity: 128,
+        transition: Some(0),  // Default to instant transitions
     });
 
     // Create new preset

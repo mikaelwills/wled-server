@@ -123,6 +123,8 @@ pub struct PresetState {
     pub effect: u8,
     pub speed: u8,
     pub intensity: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition: Option<u8>,
 }
 
 // Application state structs
@@ -137,7 +139,7 @@ pub struct AppState {
     pub boards: Arc<RwLock<HashMap<String, BoardEntry>>>,
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     pub storage_paths: Arc<crate::config::StoragePaths>,
-    pub group_e131: Arc<RwLock<Option<crate::transport::E131Transport>>>,
+    pub group_e131: Arc<RwLock<Option<crate::transport::E131RawTransport>>>,
 }
 
 pub type SharedState = Arc<AppState>;

@@ -5,30 +5,45 @@ use tracing::{info, error};
 
 /// E1.31 (sACN) transport for sending WLED commands via UDP
 ///
-/// Uses WLED's E1.31 Preset Mode (2 channels):
-/// - Channel 1: Master Brightness (0-255)
-/// - Channel 2: Preset ID (0-250)
+/// Uses WLED's E1.31 Preset Mode (mode 10):
+/// - Channel 1: Preset ID (0-250)
 ///
-/// Sends to multicast group (standard E1.31 behavior)
+/// Sends unicast packets to each board IP (multicast doesn't work on all networks)
 pub struct E131Transport {
     source: SacnSource,
     universe: u16,
+    board_ips: Vec<SocketAddr>,
 }
 
 impl E131Transport {
-    /// Create a new E1.31 transport for multicast group
+    /// Create a new E1.31 transport for unicast to specific board IPs
     ///
     /// # Arguments
-    /// * `_ip` - Unused (kept for API compatibility, multicast doesn't need specific IP)
+    /// * `board_ips` - Vector of board IP addresses (e.g., ["192.168.8.148:5568"])
     /// * `universe` - E1.31 universe number (1-63999)
     ///
     /// # Returns
     /// Result<Self, Box<dyn Error>> - Transport instance or error
-    pub fn new(_ip: &str, universe: u16) -> Result<Self, Box<dyn Error>> {
-        // Bind to any local address on port 5568
+    pub fn new(board_ips: Vec<String>, universe: u16) -> Result<Self, Box<dyn Error>> {
+        // Parse board IP addresses
+        let parsed_ips: Result<Vec<SocketAddr>, _> = board_ips
+            .iter()
+            .map(|ip_str| {
+                // Add port 5568 if not specified
+                if ip_str.contains(':') {
+                    ip_str.parse()
+                } else {
+                    format!("{}:5568", ip_str).parse()
+                }
+            })
+            .collect();
+
+        let parsed_ips = parsed_ips?;
+
+        // Bind to any local address on an ephemeral port (not 5568 to avoid conflicts)
         let local_addr = SocketAddr::new(
             IpAddr::V4("0.0.0.0".parse().unwrap()),
-            5568
+            0  // OS assigns an available port
         );
 
         // Create sACN source with descriptive name and bind to local address
@@ -42,36 +57,38 @@ impl E131Transport {
 
         info!(
             universe = universe,
-            "E1.31 transport initialized (multicast)"
+            board_count = parsed_ips.len(),
+            "E1.31 transport initialized (unicast to {} boards)", parsed_ips.len()
         );
 
         Ok(Self {
             source,
             universe,
+            board_ips: parsed_ips,
         })
     }
 
-    /// Send preset command via E1.31 Preset Mode
+    /// Send preset command via E1.31 Preset Mode (mode 10 - 1 channel)
     ///
     /// # Arguments
     /// * `preset` - WLED preset ID (0-250)
-    /// * `brightness` - Master brightness (0-255)
-    pub fn send_preset(&mut self, preset: u8, brightness: u8) -> Result<(), Box<dyn Error>> {
-        self.send_dmx_data(brightness, preset)
+    /// * `_brightness` - Ignored (mode 10 uses preset's own brightness)
+    pub fn send_preset(&mut self, preset: u8, _brightness: u8) -> Result<(), Box<dyn Error>> {
+        self.send_preset_only(preset)
     }
 
-    /// Send power on/off command via E1.31
+    /// Send power on/off command via E1.31 (Preset mode - 1 channel)
     ///
     /// # Arguments
     /// * `on` - True for on, false for off
-    /// * `brightness` - Brightness to use when turning on (ignored when off)
-    pub fn send_power(&mut self, on: bool, brightness: u8) -> Result<(), Box<dyn Error>> {
+    /// * `preset` - Preset ID to activate when turning on (ignored when off, uses preset 0 for blackout)
+    pub fn send_power(&mut self, on: bool, preset: u8) -> Result<(), Box<dyn Error>> {
         if on {
-            // Turn on: Set brightness to desired level, preset 0 (current state)
-            self.send_dmx_data(brightness, 0)
+            // Turn on: Activate the specified preset
+            self.send_preset_only(preset)
         } else {
-            // Turn off: Set brightness to 0
-            self.send_dmx_data(0, 0)
+            // Turn off: Use preset 0 (blackout preset)
+            self.send_preset_only(0)
         }
     }
 
@@ -82,6 +99,57 @@ impl E131Transport {
     /// * `current_preset` - Current preset ID to maintain
     pub fn send_brightness(&mut self, brightness: u8, current_preset: u8) -> Result<(), Box<dyn Error>> {
         self.send_dmx_data(brightness, current_preset)
+    }
+
+    /// Internal: Send single channel preset ID (for mode 10 - Preset mode)
+    ///
+    /// # Arguments
+    /// * `preset` - Preset ID (0-250)
+    fn send_preset_only(&mut self, preset: u8) -> Result<(), Box<dyn Error>> {
+        // Create 512-byte DMX buffer (sACN standard)
+        let mut dmx_data = [0u8; 512];
+
+        // Set WLED Preset Mode channel (1-indexed in DMX, 0-indexed in array)
+        dmx_data[0] = preset;  // Channel 1: Preset ID
+
+        info!(
+            universe = self.universe,
+            preset = preset,
+            board_count = self.board_ips.len(),
+            "Sending E1.31 preset-only data (mode 10) to {} boards", self.board_ips.len()
+        );
+
+        // Send unicast to each board IP
+        // Note: Send to ALL boards even if one fails, log errors but don't abort
+        let mut success_count = 0;
+        for board_ip in &self.board_ips {
+            match self.source.send(
+                &[self.universe],      // Array of universes
+                &dmx_data,             // Data buffer
+                Some(100),             // Priority (1-200)
+                Some(*board_ip),       // Unicast to specific board IP
+                None                   // No synchronization address
+            ) {
+                Ok(_) => {
+                    info!(board_ip = %board_ip, preset = preset, "Sent E1.31 unicast packet");
+                    success_count += 1;
+                }
+                Err(e) => {
+                    error!(board_ip = %board_ip, preset = preset, error = %e, "Failed to send E1.31 unicast packet (board may be offline)");
+                }
+            }
+        }
+
+        // Success if at least one board received the packet
+        if success_count > 0 {
+            info!(success_count = success_count, total = self.board_ips.len(), "E1.31 unicast completed ({}/{} boards)", success_count, self.board_ips.len());
+            Ok(())
+        } else {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to send to any boards"
+            )))
+        }
     }
 
     /// Internal: Send DMX data packet to WLED board
@@ -97,16 +165,45 @@ impl E131Transport {
         dmx_data[0] = channel1;  // Channel 1: Master Brightness
         dmx_data[1] = channel2;  // Channel 2: Preset ID
 
-        // Send to universe with priority 100 (default DMX priority)
-        self.source.send(
-            &[self.universe],      // Array of universes
-            &dmx_data,             // Data buffer
-            Some(100),             // Priority (1-200)
-            None,                  // Use multicast (standard E1.31 behavior)
-            None                   // No synchronization address
-        )?;
+        info!(
+            universe = self.universe,
+            ch1_brightness = channel1,
+            ch2_preset = channel2,
+            board_count = self.board_ips.len(),
+            "Sending E1.31 DMX data to {} boards", self.board_ips.len()
+        );
 
-        Ok(())
+        // Send unicast to each board IP
+        // Note: Send to ALL boards even if one fails, log errors but don't abort
+        let mut success_count = 0;
+        for board_ip in &self.board_ips {
+            match self.source.send(
+                &[self.universe],      // Array of universes
+                &dmx_data,             // Data buffer
+                Some(100),             // Priority (1-200)
+                Some(*board_ip),       // Unicast to specific board IP
+                None                   // No synchronization address
+            ) {
+                Ok(_) => {
+                    info!(board_ip = %board_ip, ch1_brightness = channel1, ch2_preset = channel2, "Sent E1.31 unicast packet");
+                    success_count += 1;
+                }
+                Err(e) => {
+                    error!(board_ip = %board_ip, ch1_brightness = channel1, ch2_preset = channel2, error = %e, "Failed to send E1.31 unicast packet (board may be offline)");
+                }
+            }
+        }
+
+        // Success if at least one board received the packet
+        if success_count > 0 {
+            info!(success_count = success_count, total = self.board_ips.len(), "E1.31 unicast completed ({}/{} boards)", success_count, self.board_ips.len());
+            Ok(())
+        } else {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to send to any boards"
+            )))
+        }
     }
 }
 

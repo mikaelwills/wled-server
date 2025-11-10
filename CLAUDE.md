@@ -2,6 +2,23 @@
 
 A Rust-based intermediary server for controlling WLED devices with light sequencing for Loopy Pro integration.
 
+## NEXT STEPS - Code Cleanup Required
+
+**E1.31 Implementation Cleanup:**
+1. ✅ E1.31 raw implementation working (`src/transport/e131_raw.rs`)
+2. ❌ **Remove legacy E1.31 sacn library code** (`src/transport/e131.rs`) - no longer used, incompatible with WLED
+3. ❌ **Remove sacn dependency** from `Cargo.toml` - not needed, using raw implementation
+4. ❌ **Clean up per-board E1.31** in `src/actor.rs` - currently only groups use E1.31, per-board code is unused
+5. ❌ **Remove E1.31 config** from `src/config.rs` - `E131Config` struct and board-level fields not used
+6. ❌ **Update `boards.toml`** - Remove `e131_enabled` and `e131_universe` fields (not used)
+7. ❌ **Remove WebSocket fallback** from `src/group.rs` - already removed, verify no references remain
+8. ❌ **Test group commands** after cleanup to ensure nothing breaks
+
+**Other Cleanup:**
+- Review and remove any dead code warnings from compiler
+- Update documentation to reflect E1.31-only group control
+- Consider making group board IPs configurable instead of hardcoded in main.rs
+
 ## Development Workflow
 
 **STRICT BUILD POLICY:**

@@ -28,9 +28,9 @@ impl BoardActor {
     ) -> Self {
         // Initialize E1.31 transport if configured
         let e131_transport = e131_config.and_then(|config| {
-            match E131Transport::new(&ip, config.universe) {
+            match E131Transport::new(vec![ip.clone()], config.universe) {
                 Ok(transport) => {
-                    info!(board_id = %id, universe = config.universe, "E1.31 transport enabled");
+                    info!(board_id = %id, universe = config.universe, "E1.31 transport enabled (per-board unicast)");
                     Some(transport)
                 }
                 Err(e) => {
@@ -222,7 +222,8 @@ impl BoardActor {
 
                                 // Route via E1.31 if available (faster, no buffer overflow)
                                 if let Some(ref mut e131) = self.e131_transport {
-                                    if let Err(e) = e131.send_power(target_state, self.state.brightness) {
+                                    let preset = self.state.preset.unwrap_or(1);
+                                    if let Err(e) = e131.send_power(target_state, preset) {
                                         warn!(board_id = %self.id, error = %e, "E1.31 send failed, falling back to WebSocket");
                                     } else {
                                         self.broadcast_state();

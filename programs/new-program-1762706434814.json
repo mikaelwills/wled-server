@@ -110,12 +110,12 @@
       "transition": 0
     },
     {
-      "time": 30.58599839422058,
-      "label": "Cue 9",
+      "time": 30.594072523859563,
+      "label": "On",
       "boards": [
         "GROUP"
       ],
-      "action": "off",
+      "action": "on",
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
@@ -201,7 +201,7 @@
       "transition": 0
     },
     {
-      "time": 31.192029810471123,
+      "time": 31.167029942449048,
       "label": "Cue 16",
       "boards": [
         "GROUP"
@@ -216,6 +216,58 @@
     {
       "time": 31.45453937490508,
       "label": "Cue 17",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "on",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 29.365284324820323,
+      "label": "Off",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "off",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 29.602316182956276,
+      "label": "On",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "on",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 31.6582016194301,
+      "label": "Off",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "off",
+      "preset": 0,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255,
+      "transition": 0
+    },
+    {
+      "time": 32.02955882317708,
+      "label": "On",
       "boards": [
         "GROUP"
       ],
