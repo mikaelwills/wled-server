@@ -1,64 +1,43 @@
-# GL.iNet Beryl Router Deployment Guide (Native)
+# Deployment Guide
 
-This guide explains how to deploy the WLED Rust Server **natively** on your GL.iNet Beryl router **without Docker**.
+This guide covers deployment options for the WLED Server.
 
-> **Note:** For Synology NAS Docker deployment, see [README-DOCKER.md](README-DOCKER.md)
+## Deployment Options
 
-## Why Native Deployment for Beryl?
+### Option 1: Native Deployment (Recommended for Embedded Devices)
 
-The Beryl router has limited resources (RAM, storage). Native deployment:
-- **No Docker overhead** - saves ~100MB RAM
-- **Lightweight web server** - lighttpd uses ~1MB vs Python's ~50MB
-- **Faster startup** - no container initialization
-- **Better for power cycling** - survives power loss (no graceful shutdown needed)
+For resource-constrained devices like routers or embedded systems, native deployment provides the smallest footprint and fastest performance.
 
-## Prerequisites
+**Benefits:**
+- No container overhead (saves ~100MB RAM)
+- Lightweight web server options
+- Faster startup times
+- Better for systems with frequent power cycling
 
-1. **GL.iNet Beryl Router** with SSH access enabled
-2. **Admin access** to router settings
-3. **Development machine** for cross-compilation (Mac/Linux)
-4. **Internet connection** on router for package installation
+**Prerequisites:**
+- Target device with SSH access
+- Admin/root privileges
+- Development machine for cross-compilation
+- Internet connection for package installation
 
-## Architecture
+#### Cross-Compilation
 
-**Backend:** Rust server (port 3010) - ARM64 binary with MUSL static linking
-**Frontend:** lighttpd web server (port 3011) - serves static Svelte build
-**Service Management:** OpenWrt procd - auto-start and restart management
-**Logging:** Structured logs via tracing, captured by syslog/logread
-
-## Automated Deployment
-
-Use the deployment script from your development machine:
+Build for your target architecture:
 
 ```bash
-./deploy-to-beryl.sh
-```
-
-This script will:
-1. Cross-compile Rust backend for ARM64 (aarch64-unknown-linux-musl)
-2. Build frontend with Bun (static files)
-3. Deploy via rsync to router
-4. Install and configure lighttpd
-5. Set up procd service for auto-start
-6. Start the service
-
-## Manual Deployment Steps
-
-If you need to deploy manually:
-
-### Step 1: Cross-Compile Backend
-
-On your development machine:
-
-```bash
-# Install ARM64 MUSL target
+# Install target (example for ARM64)
 rustup target add aarch64-unknown-linux-musl
 
-# Build for ARM64
+# Build for target
 cargo build --release --target aarch64-unknown-linux-musl
 ```
 
-### Step 2: Build Frontend
+Common targets:
+- ARM64: `aarch64-unknown-linux-musl`
+- ARM32: `armv7-unknown-linux-musleabihf`
+- x86_64: `x86_64-unknown-linux-musl`
+
+#### Frontend Build
 
 ```bash
 cd frontend
@@ -66,116 +45,137 @@ bun install
 bun run build
 ```
 
-### Step 3: SSH to Router
+#### Deployment Steps
 
+1. **Create directories on target device:**
 ```bash
-ssh root@192.168.8.1
+mkdir -p /opt/wled-server/frontend/build
+mkdir -p /opt/wled-server/data
+mkdir -p /opt/wled-server/audio
+mkdir -p /opt/wled-server/programs
 ```
 
-### Step 4: Install lighttpd
-
-```bash
-opkg update
-opkg install lighttpd lighttpd-mod-rewrite
-```
-
-### Step 5: Create Directories
-
-```bash
-mkdir -p /etc/wled-server/frontend/build
-mkdir -p /etc/wled-server/programs
-mkdir -p /var/log
-```
-
-### Step 6: Copy Files
-
-From your development machine:
-
+2. **Copy files to target:**
 ```bash
 # Copy backend binary
-scp target/aarch64-unknown-linux-musl/release/rust-wled-server \
-    root@192.168.8.1:/etc/wled-server/
+scp target/[TARGET]/release/rust-wled-server user@device:/opt/wled-server/
 
-# Copy frontend build
-scp -r frontend/build/* \
-    root@192.168.8.1:/etc/wled-server/frontend/build/
+# Copy frontend
+scp -r frontend/build/* user@device:/opt/wled-server/frontend/build/
 
-# Copy init script
-scp wled-server.init \
-    root@192.168.8.1:/etc/init.d/wled-server
-
-# Copy lighttpd config
-scp lighttpd.conf \
-    root@192.168.8.1:/etc/lighttpd/lighttpd.conf
-
-# Copy wrapper script
-scp wled-server-wrapper.sh \
-    root@192.168.8.1:/etc/wled-server/
+# Copy configuration examples
+scp data/boards.toml.example user@device:/opt/wled-server/data/
 ```
 
-### Step 7: Set Permissions
+3. **Set permissions:**
+```bash
+chmod +x /opt/wled-server/rust-wled-server
+```
 
-On router:
+4. **Configure boards:**
+Edit `/opt/wled-server/data/boards.toml`:
+```toml
+[[boards]]
+id = "board-1"
+ip = "192.168.1.100"
+
+[[groups]]
+id = "all-boards"
+members = ["board-1"]
+```
+
+#### Service Setup
+
+Create a systemd service file `/etc/systemd/system/wled-server.service`:
+
+```ini
+[Unit]
+Description=WLED Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wled-server
+ExecStart=/opt/wled-server/rust-wled-server
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+systemctl daemon-reload
+systemctl enable wled-server
+systemctl start wled-server
+```
+
+#### Web Server Setup
+
+Serve the frontend using your preferred web server. Example with lighttpd:
 
 ```bash
-chmod +x /etc/wled-server/rust-wled-server
-chmod +x /etc/wled-server/wled-server-wrapper.sh
-chmod +x /etc/init.d/wled-server
+# Install lighttpd
+apt-get install lighttpd  # Debian/Ubuntu
+# or
+opkg install lighttpd     # OpenWrt
+
+# Configure lighttpd to serve /opt/wled-server/frontend/build
+# Edit /etc/lighttpd/lighttpd.conf as needed
+
+# Start lighttpd
+/etc/init.d/lighttpd start
 ```
 
-### Step 8: Enable and Start Service
+### Option 2: Docker Deployment
 
-```bash
-/etc/init.d/wled-server enable
-/etc/init.d/wled-server start
-```
+For standard Linux servers or NAS devices with Docker support.
+
+See [README-DOCKER.md](README-DOCKER.md) for Docker deployment instructions.
 
 ## Configuration
 
-### Boards Configuration
+### Environment Variables
 
-Edit `/etc/wled-server/boards.toml`:
+- `RUST_LOG`: Set logging level (info, warn, error, debug, trace)
+- `API_URL`: Backend API URL (default: http://localhost:3010)
 
-```toml
-[[boards]]
-id = "desk-lights"
-ip = "192.168.1.100"
+### Ports
 
-[[boards]]
-id = "shelf-lights"
-ip = "192.168.1.101"
+- Backend API: 3010
+- Frontend: 3011 (or configured web server port)
 
-[[groups]]
-id = "all-lights"
-members = ["desk-lights", "shelf-lights"]
-```
+### Storage Directories
 
-After editing, restart the service:
-```bash
-/etc/init.d/wled-server restart
-```
-
-### Log Configuration
-
-Logs are captured by OpenWrt syslog. View with:
-
-```bash
-# View all logs
-logread | grep wled
-
-# View real-time logs
-logread -f | grep wled
-
-# View last 50 lines
-logread | grep wled | tail -50
-```
-
-Set log level via environment variable in wrapper script:
-```bash
-export RUST_LOG=info  # info, warn, error, debug, trace
-```
+- `data/`: Configuration files (boards.toml)
+- `audio/`: Uploaded audio files for programs
+- `programs/`: Light program definitions
+- `presets/`: Saved preset configurations
 
 ## Service Management
+
+### Systemd (Linux)
+
+```bash
+# Start service
+systemctl start wled-server
+
+# Stop service
+systemctl stop wled-server
+
+# Restart service
+systemctl restart wled-server
+
+# Check status
+systemctl status wled-server
+
+# View logs
+journalctl -u wled-server -f
+```
+
+### OpenWrt (Embedded)
 
 ```bash
 # Start service
@@ -187,22 +187,16 @@ export RUST_LOG=info  # info, warn, error, debug, trace
 # Restart service
 /etc/init.d/wled-server restart
 
-# Check status
-/etc/init.d/wled-server status
-
-# Enable auto-start on boot
+# Enable auto-start
 /etc/init.d/wled-server enable
-
-# Disable auto-start
-/etc/init.d/wled-server disable
 ```
 
 ## Accessing the Server
 
 Once deployed:
-- **Frontend**: http://192.168.8.1:3011
-- **API**: http://192.168.8.1:3010/api
-- **Health Check**: http://192.168.8.1:3010/api/health
+- Frontend: `http://[device-ip]:[frontend-port]`
+- API: `http://[device-ip]:3010/api`
+- Health Check: `http://[device-ip]:3010/api/health`
 
 ## Troubleshooting
 
@@ -210,145 +204,72 @@ Once deployed:
 
 ```bash
 # Check if process is running
-ps | grep wled-server
-
-# Check init script status
-/etc/init.d/wled-server status
-
-# View logs
-logread | grep wled | tail -20
+ps aux | grep wled-server
 
 # Try manual start to see errors
-/etc/wled-server/rust-wled-server
-```
+/opt/wled-server/rust-wled-server
 
-### lighttpd Errors
-
-```bash
-# Check lighttpd status
-/etc/init.d/lighttpd status
-
-# Restart lighttpd
-/etc/init.d/lighttpd restart
-
-# Check lighttpd config
-lighttpd -t -f /etc/lighttpd/lighttpd.conf
-
-# View lighttpd logs
-logread | grep lighttpd
+# Check logs (systemd)
+journalctl -u wled-server -n 50
 ```
 
 ### Can't Connect to WLED Devices
 
 ```bash
-# Check network connectivity
-ping <wled-device-ip>
+# Verify network connectivity
+ping [wled-device-ip]
 
-# Check if boards.toml exists
-cat /etc/wled-server/boards.toml
+# Check configuration
+cat /opt/wled-server/data/boards.toml
 
 # Check server logs for connection errors
-logread | grep -i "connection\|wled" | tail -20
 ```
 
-### Out of Space
+### Permission Errors
 
 ```bash
-# Check disk space
-df -h
+# Ensure binary is executable
+chmod +x /opt/wled-server/rust-wled-server
 
-# Check overlay space
-df -h | grep overlay
-
-# Clean up old files
-rm -rf /tmp/*
-opkg clean
+# Check directory permissions
+ls -la /opt/wled-server/
 ```
 
-### Auto-Restart Issues
-
-The service is configured to auto-restart on failure (max 10 restarts in 6 hours).
-
-Check restart count:
-```bash
-logread | grep wled-server | grep respawn
-```
-
-If service stopped after too many restarts:
-```bash
-# Reset by restarting manually
-/etc/init.d/wled-server restart
-```
-
-## Performance Monitoring
-
-```bash
-# Check memory usage
-free -h
-
-# Check CPU usage
-top -n 1 | grep wled
-
-# Monitor network connections
-netstat -tn | grep -E ':(3010|3011)'
-```
-
-## Updating the Server
+## Updating
 
 To update to a new version:
 
-```bash
-# From your development machine
-./deploy-to-beryl.sh
-```
-
-This will:
 1. Build new version
-2. Stop old service
-3. Deploy new files
+2. Stop service
+3. Replace binary and frontend files
 4. Restart service
 
-**Note:** Power cycling the router is safe - the service will auto-start on boot.
+```bash
+systemctl stop wled-server
+# Copy new files
+systemctl start wled-server
+```
 
 ## Security Considerations
 
-1. **Change default router password**
-2. **Use SSH keys** instead of passwords
-3. **Update router firmware** regularly
-4. **Restrict access** via firewall if needed
-5. **Monitor logs** for unusual activity
+1. Use SSH keys instead of passwords
+2. Keep system packages updated
+3. Restrict network access via firewall if needed
+4. Change default passwords
+5. Monitor logs for unusual activity
 
-## Resource Usage
+## Performance
 
-Typical resource footprint on Beryl:
-
-- **Backend RAM**: ~10-20MB
-- **lighttpd RAM**: ~1MB
-- **Total disk space**: ~15MB (binary + frontend)
-- **CPU**: <5% idle, 10-20% during operations
-
-## Known Limitations
-
-1. **Programs stored in RAM** - Lost on power cycle (use NAS or USB storage for persistence)
-2. **No graceful shutdown** - Safe because state is cached and synced on reconnect
-3. **Limited concurrent connections** - Router CPU/RAM constrained
-
-## Future Enhancements
-
-When USB storage is added:
-- Move programs to persistent storage
-- Add resource limits (CPU/memory)
-- Enable log rotation to USB
-- Store more data persistently
+Typical resource usage:
+- Backend RAM: 10-30MB
+- Frontend: Static files, minimal server overhead
+- CPU: <5% idle, 10-30% during active operations
+- Disk: ~15-20MB base install
 
 ## Support
 
-If you encounter issues:
-
-1. Check logs: `logread | grep wled`
-2. Verify service status: `/etc/init.d/wled-server status`
-3. Test manually: `/etc/wled-server/rust-wled-server`
-4. Check network: `ping <wled-device-ip>`
-5. Verify disk space: `df -h`
-
-For more help, create an issue in the repository.
+For issues or questions:
+1. Check service status and logs
+2. Verify network connectivity to WLED devices
+3. Review configuration files
+4. Create an issue in the repository

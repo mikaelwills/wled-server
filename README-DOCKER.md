@@ -1,108 +1,87 @@
 # WLED Server - Docker Deployment Guide
 
-This guide covers deploying the WLED Server in Docker on a Synology NAS or remote machine.
+This guide covers deploying the WLED Server using Docker.
 
 ## Architecture
 
 - **Single Container** running both services:
   - Rust backend on port 3010
-  - SvelteKit frontend on port 3011
-- **Volume Mount**: `boards.toml` persists across container restarts
+  - lighttpd serving static frontend on port 3011
+- **Volume Mounts**: Configuration and data persist across container restarts
 - **Auto-restart**: Container automatically restarts on crashes or reboots
+- **Pre-built Binaries**: Container uses cross-compiled backend and pre-built frontend (no build tools in image)
 
 ## Prerequisites
 
-### On Synology NAS (192.168.1.161)
-- Docker package installed (via Package Center)
-- SSH access enabled
-- User: `mikael`
-- Deploy path: `/volume1/docker/wled-server`
+### On Target Host
+- Docker and Docker Compose installed
+- SSH access (for remote deployment)
+- Sufficient storage for application and data
 
-### On Development Laptop
-- SSH access to NAS configured
-- rsync installed (comes with macOS/Linux)
+### On Development Machine
+- Docker (for local testing)
+- SSH access to target host configured (for remote deployment)
+- rsync installed (for deployment scripts)
 
-## Deployment to Synology NAS
+## Quick Start
 
-### Initial Setup (First Time)
+### Local Development
 
-**1. Deploy to NAS:**
+1. **Start the services:**
 ```bash
-./deploy-to-nas.sh
+docker-compose up -d --build
 ```
 
-This will:
-- Create `/volume1/docker/wled-server` on the NAS
-- Sync all project files via rsync
-- Build Docker images
-- Start containers
-
-**2. Create/Edit boards.toml on NAS:**
+2. **Create/Edit boards.toml:**
 ```bash
-ssh mikael@192.168.1.161
-cd /volume1/docker/wled-server
-nano boards.toml
+cp data/boards.toml.example data/boards.toml
+nano data/boards.toml
 ```
 
 Add your WLED boards:
 ```toml
 [[boards]]
-id = "bedroom"
-ip = "192.168.1.172"
+id = "board-1"
+ip = "192.168.1.100"
+
+[[groups]]
+id = "all-boards"
+members = ["board-1"]
 ```
 
-**3. Restart if needed:**
+3. **Access the application:**
+- Frontend: `http://localhost:3011`
+- Backend API: `http://localhost:3010`
+
+### Remote Deployment
+
+For remote deployment, you'll need to create a deployment script that:
+1. Syncs project files to the target host
+2. Builds Docker images on the target
+3. Starts the containers
+
+Example workflow:
 ```bash
-docker-compose restart
+# Sync files to remote host
+rsync -avz --exclude 'target' --exclude 'node_modules' \
+  ./ user@remote-host:/path/to/wled-server/
+
+# SSH to host and deploy
+ssh user@remote-host "cd /path/to/wled-server && docker-compose up -d --build"
 ```
 
-## Development Workflow
-
-### On Laptop (Development)
-
-1. **Make changes** to code
-2. **Test locally**:
-   ```bash
-   ./restart.sh
-   ```
-3. **Commit to git** (optional, for version control):
-   ```bash
-   git add .
-   git commit -m "Your commit message"
-   git push
-   ```
-4. **Deploy to NAS**:
-   ```bash
-   ./deploy-to-nas.sh
-   ```
-
-The deploy script automatically:
-- Syncs all code changes to NAS via rsync
-- Stops existing containers
-- Rebuilds Docker images
-- Starts new containers
-- Shows status
-
-**That's it!** One command deployment.
-
-## Common Commands (on NAS)
-
-SSH to NAS first:
-```bash
-ssh mikael@192.168.1.161
-cd /volume1/docker/wled-server
-```
+## Docker Commands
 
 ### View Logs
 ```bash
 # All logs
 docker-compose logs -f
 
-# Just backend
-docker logs wled-server | grep backend
+# Backend only
+docker-compose logs -f backend
 
-# Just frontend
-docker logs wled-server | grep frontend
+# Frontend only
+docker-compose logs -f frontend
 ```
 
 ### Check Status
@@ -110,12 +89,12 @@ docker logs wled-server | grep frontend
 docker-compose ps
 ```
 
-### Restart Container
+### Restart Services
 ```bash
 docker-compose restart
 ```
 
-### Stop Container
+### Stop Services
 ```bash
 docker-compose down
 ```
@@ -131,51 +110,56 @@ docker-compose up -d --build
 docker exec -it wled-server bash
 ```
 
-### Edit boards.toml
+### Edit Configuration
 ```bash
-nano boards.toml
+nano data/boards.toml
 docker-compose restart
 ```
-
-## Accessing the Application
-
-Once deployed, access the application at:
-
-- **Frontend**: `http://192.168.1.161:3011`
-- **Backend API**: `http://192.168.1.161:3010`
-
-The frontend automatically connects to the backend using the browser's hostname, so no configuration is needed!
 
 ## Configuration
 
-### Editing boards.toml
+### Volume Mounts
 
-Since `boards.toml` is mounted as a volume, you can edit it directly on the host:
-
-```bash
-# On remote machine
-cd rust-wled-server
-nano boards.toml
-
-# Restart to apply changes
-docker-compose restart
-```
+The following directories are mounted as volumes:
+- `./data`: Configuration files (boards.toml)
+- `./audio`: Uploaded audio files for programs
+- `./programs`: Light program definitions
+- `./presets`: Saved preset configurations
 
 ### Environment Variables
 
-Edit `docker-compose.yml` to add environment variables:
+Edit `docker-compose.yml` to configure environment variables:
 
 ```yaml
 environment:
-  - RUST_LOG=debug  # Change log level
-  - YOUR_VAR=value
+  - RUST_LOG=info  # Log level: debug, info, warn, error
+  - API_URL=http://localhost:3010  # Backend API URL
 ```
+
+### Ports
+
+Default ports can be changed in `docker-compose.yml`:
+
+```yaml
+ports:
+  - "3010:3010"  # Backend API
+  - "3011:3011"  # Frontend
+```
+
+## Network Access
+
+The application will be accessible from:
+- **Same machine**: `http://localhost:3011`
+- **Local network**: `http://[host-ip]:3011`
+- **Mobile devices**: Access via the host's IP address
+
+The frontend automatically connects to the backend using the browser's hostname.
 
 ## Troubleshooting
 
 ### Container Won't Start
 
-Check logs:
+Check logs for errors:
 ```bash
 docker-compose logs
 ```
@@ -184,8 +168,13 @@ docker-compose logs
 
 Check what's using the port:
 ```bash
+# Linux/macOS
 sudo lsof -i :3010
 sudo lsof -i :3011
+
+# Windows
+netstat -ano | findstr :3010
+netstat -ano | findstr :3011
 ```
 
 Kill the process or change ports in `docker-compose.yml`.
@@ -199,38 +188,81 @@ docker system prune -a
 docker-compose up -d --build
 ```
 
-### boards.toml Not Found
+### Configuration Not Loading
 
-Ensure `boards.toml` exists in the project root on the host machine. The container needs it mounted.
+Ensure configuration files exist:
+```bash
+ls -la data/boards.toml
+```
+
+If missing, copy from example:
+```bash
+cp data/boards.toml.example data/boards.toml
+```
+
+Restart after editing:
+```bash
+docker-compose restart
+```
+
+### Connection to WLED Boards Failing
+
+1. **Verify network connectivity** from container:
+```bash
+docker exec -it wled-server ping [wled-board-ip]
+```
+
+2. **Check board configuration**:
+```bash
+cat data/boards.toml
+```
+
+3. **Check container logs** for connection errors:
+```bash
+docker-compose logs -f backend
+```
 
 ## Updating
 
-To update to the latest code:
+To update to a new version:
 
+1. **Pull latest code** (if using git):
 ```bash
-# On laptop
-git push
-
-# On remote machine
-./deploy.sh
+git pull
 ```
 
-That's it! The deploy script handles everything else.
+2. **Rebuild and restart**:
+```bash
+docker-compose down
+docker-compose up -d --build
+```
 
-## Network Access
+For remote deployments, run your deployment script to sync and rebuild.
 
-The application will be accessible from:
-- **Local network**: `http://192.168.1.161:3011`
-- **Same machine**: `http://localhost:3011`
-- **Mobile devices**: Access via the IP address
+## Performance
 
-All CORS is pre-configured to work from any origin.
+Typical resource usage:
+- **RAM**: 15-35MB total (Rust backend ~10-30MB, lighttpd ~5MB)
+- **CPU**: <5% idle, 10-30% during active operations
+- **Disk**: ~50MB base install + user data
 
-## Security Notes
+## Security Considerations
 
-- This setup is designed for local network use
-- For public internet access, add:
-  - Reverse proxy (nginx/traefik)
-  - HTTPS/SSL certificates
-  - Authentication layer
-- Current CORS policy allows all origins (suitable for local network)
+This setup is designed for local network use. For public internet access, consider:
+
+1. **Reverse Proxy**: Use nginx or traefik for SSL termination
+2. **HTTPS**: Add SSL/TLS certificates
+3. **Authentication**: Implement an auth layer
+4. **Firewall**: Restrict access to trusted networks
+5. **Updates**: Keep Docker and system packages updated
+
+Current CORS policy allows all origins (suitable for local network only).
+
+## Support
+
+For issues:
+1. Check container logs: `docker-compose logs -f`
+2. Verify network connectivity to WLED devices
+3. Review configuration files in `data/` directory
+4. Check Docker daemon status
+5. Create an issue in the repository
