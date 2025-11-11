@@ -461,39 +461,42 @@
 <main>
 	{#if showAddForm}
 		<div class="add-board-fullscreen">
-			<h2>Add New {isCreatingGroup ? 'Group' : 'Board'}</h2>
-
-			<!-- Group checkbox -->
-			<div class="form-group" style="margin-bottom: 1.5rem;">
-				<label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-					<input type="checkbox" bind:checked={isCreatingGroup} />
-					<span>This is a group</span>
-				</label>
-			</div>
-
 			<div class="form-group">
-				<label for="board-id">{isCreatingGroup ? 'Group' : 'Board'} ID:</label>
-				<input
-					id="board-id"
-					type="text"
-					bind:value={newBoardId}
-					placeholder={isCreatingGroup ? 'e.g., all-lights' : 'e.g., bedroom-lights'}
-					class="form-input"
-				/>
+				<div style="display: flex; gap: 0.75rem;">
+					<div style="flex: 1;">
+						<label for="board-id" style="display: block; margin-bottom: 0.5rem;">{isCreatingGroup ? 'Group Name' : 'Board Name'}:</label>
+						<input
+							id="board-id"
+							type="text"
+							bind:value={newBoardId}
+							placeholder={isCreatingGroup ? 'e.g., all-lights' : 'e.g., bedroom-lights'}
+							class="form-input"
+						/>
+					</div>
+					<div>
+						<label style="display: block; margin-bottom: 0.5rem; color: #e0e0e0; font-weight: 500;">Group</label>
+						<button
+							type="button"
+							class="group-toggle-btn"
+							class:active={isCreatingGroup}
+							on:click={() => isCreatingGroup = !isCreatingGroup}
+						>
+							{#if isCreatingGroup}
+								<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+									<polyline points="20 6 9 17 4 12"></polyline>
+								</svg>
+							{/if}
+						</button>
+					</div>
+				</div>
 			</div>
 
 			{#if isCreatingGroup}
 				<!-- Member selection for groups -->
 				<div class="form-group">
-					<label>Select Boards:</label>
-					<div
-						style="max-height: 200px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 0.5rem;"
-					>
+					<div class="board-selection-grid">
 						{#each $boards.filter((b) => !b.isGroup) as board}
-							<label
-								style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer; border-radius: 4px;"
-								class:selected={selectedMemberIds.includes(board.id)}
-							>
+							<label class="board-selection-item">
 								<input
 									type="checkbox"
 									value={board.id}
@@ -506,7 +509,8 @@
 										}
 									}}
 								/>
-								<span>{board.id} ({board.ip})</span>
+								<span class="board-selection-name">{board.id}</span>
+								<span class="board-selection-ip">{board.ip}</span>
 							</label>
 						{/each}
 					</div>
@@ -1006,6 +1010,32 @@
 		border-color: #4caf50;
 	}
 
+	.group-toggle-btn {
+		width: 60px;
+		height: 44px;
+		padding: 0;
+		background: #333;
+		color: #e0e0e0;
+		border: 1px solid #444;
+		border-radius: 6px;
+		cursor: pointer;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.group-toggle-btn:hover {
+		background: #3a3a3a;
+		border-color: #555;
+	}
+
+	.group-toggle-btn.active {
+		background: #2d3a2d;
+		border-color: #4caf50;
+		color: #4caf50;
+	}
+
 	.form-input::placeholder {
 		color: #666;
 	}
@@ -1020,30 +1050,79 @@
 	.cancel-btn {
 		flex: 1;
 		padding: 0.75rem;
-		border: none;
+		border: 1px solid #333;
 		border-radius: 6px;
 		font-size: 1rem;
-		font-weight: 600;
+		font-weight: 500;
 		cursor: pointer;
-		transition: all 0.2s;
+		transition: all 0.15s;
 	}
 
 	.submit-btn {
-		background: #4caf50;
-		color: white;
+		background: #252525;
+		color: #4caf50;
 	}
 
 	.submit-btn:hover {
-		background: #45a049;
+		background: #1e2d20;
+		border-color: #4caf50;
 	}
 
 	.cancel-btn {
-		background: #444;
-		color: white;
+		background: #252525;
+		color: #e57373;
 	}
 
 	.cancel-btn:hover {
-		background: #555;
+		background: #2d2020;
+		border-color: #e57373;
+	}
+
+	.board-selection-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+	}
+
+	.board-selection-item {
+		display: flex !important;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.75rem;
+		cursor: pointer;
+		transition: background 0.2s;
+		border-radius: 4px;
+	}
+
+	.board-selection-item:hover {
+		background: #2a2a2a;
+	}
+
+	.board-selection-item input[type="checkbox"] {
+		width: 18px;
+		height: 18px;
+		cursor: pointer;
+		flex-shrink: 0;
+		margin: 0;
+		padding: 0;
+	}
+
+	.board-selection-item input[type="checkbox"]:checked + .board-selection-name {
+		color: #4caf50;
+	}
+
+	.board-selection-name {
+		font-weight: 500;
+		color: #e0e0e0;
+		display: inline;
+	}
+
+	.board-selection-ip {
+		font-size: 0.9rem;
+		color: #999;
+		margin-left: auto;
+		display: inline;
 	}
 
 	.action-buttons-column {
@@ -1183,6 +1262,26 @@
 		display: inline-block;
 		width: 50px;
 		height: 26px;
+	}
+
+	.toggle-switch-large {
+		width: 70px;
+		height: 44px;
+	}
+
+	.toggle-switch-large .toggle-slider {
+		border-radius: 44px;
+	}
+
+	.toggle-switch-large .toggle-slider:before {
+		height: 38px;
+		width: 38px;
+		left: 3px;
+		bottom: 3px;
+	}
+
+	.toggle-switch-large input:checked + .toggle-slider:before {
+		transform: translateX(26px);
 	}
 
 	.toggle-switch input {
