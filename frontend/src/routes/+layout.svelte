@@ -38,7 +38,7 @@
 <div class="app">
 	<nav class="nav">
 		<a href="/" class:active={$page.url.pathname === '/'}>Boards</a>
-		<a href="/sequencer" class:active={$page.url.pathname === '/sequencer'}>Sequencer</a>
+		<a href="/sequencer" class:active={$page.url.pathname === '/sequencer'}>Programming</a>
 		<a href="/performance" class:active={$page.url.pathname === '/performance'}>Performance</a>
 		<a href="/settings" class:active={$page.url.pathname === '/settings'}>Settings</a>
 	</nav>

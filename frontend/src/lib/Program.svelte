@@ -949,6 +949,10 @@ function playFullProgram() {
 				{@const regularBoards = $boards.filter(b => !b.isGroup)}
 
 				<div class="zoom-btn-group">
+					<svg class="zoom-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/>
+						<path d="M11 11L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
 					<button class="zoom-btn zoom-btn-left" onclick={zoomOut} title="Zoom Out">−</button>
 					<button class="zoom-btn zoom-btn-right" onclick={zoomIn} title="Zoom In">+</button>
 				</div>
@@ -1515,12 +1519,23 @@ function playFullProgram() {
 
 	.zoom-btn-group {
 		display: flex;
+		align-items: center;
 		border: 1px solid #3a3a3a;
 		border-radius: 4px;
 		overflow: hidden;
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 		height: 28px;
 		box-sizing: border-box;
+		background: #2a2a2a;
+	}
+
+	.zoom-icon {
+		color: #ffffff;
+		opacity: 0.7;
+		flex-shrink: 0;
+		padding: 0 6px;
+		display: flex;
+		align-items: center;
 	}
 
 	.zoom-btn {

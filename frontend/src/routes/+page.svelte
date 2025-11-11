@@ -530,8 +530,6 @@
 			</div>
 		</div>
 	{:else}
-		<h1>WLED Control Panel</h1>
-
 		{#if $boardsLoading}
 			<p>Loading boards...</p>
 		{:else if $boardsError}
