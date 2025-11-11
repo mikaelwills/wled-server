@@ -30,7 +30,13 @@ Thumbs.db
 
 # Personal deployment scripts and config
 deploy-to-nas.sh
+deploy-to-beryl.sh
+deploy.sh
 restart.sh
+
+# Test scripts
+test-osc.sh
+test_udp.py
 
 # Data directory (contains user-specific boards.toml)
 /data/boards.toml
@@ -43,3 +49,5 @@ audio/
 programs/
 presets/
 presets-backup/
+presets_backup/
+plans/
