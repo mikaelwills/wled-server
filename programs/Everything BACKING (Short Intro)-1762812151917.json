@@ -7,11 +7,11 @@
   "cues": [
     {
       "time": 6.7193054581939995,
-      "label": "No Preset",
+      "label": "Off",
       "boards": [
         "GROUP"
       ],
-      "action": "preset",
+      "action": "off",
       "preset": 0,
       "color": "#ff0000",
       "effect": 0,
@@ -67,12 +67,36 @@
     },
     {
       "time": 8.90990889889925,
-      "label": "Strobe Cyan",
+      "label": "Lightning Cyan",
       "boards": [
         "GROUP"
       ],
       "action": "preset",
-      "preset": 27,
+      "preset": 19,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    },
+    {
+      "time": 0.10222144248247209,
+      "label": "Sparkle Cyan",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 6,
+      "color": "#ff0000",
+      "effect": 0,
+      "brightness": 255
+    },
+    {
+      "time": 13.34656485977668,
+      "label": "Puddles Cyan",
+      "boards": [
+        "GROUP"
+      ],
+      "action": "preset",
+      "preset": 17,
       "color": "#ff0000",
       "effect": 0,
       "brightness": 255
