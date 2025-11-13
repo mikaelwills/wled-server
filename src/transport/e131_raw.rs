@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::net::{SocketAddr, UdpSocket};
-use tracing::{info, error};
+use tracing::{info, debug};
 
 /// Raw E1.31 (sACN) transport using hand-crafted packets
 /// This bypasses the sacn library which appears incompatible with WLED
@@ -87,33 +87,22 @@ impl E131RawTransport {
     fn send_dmx_packet(&mut self, dmx_data: &[u8]) -> Result<(), Box<dyn Error>> {
         let packet = self.create_e131_packet(dmx_data)?;
 
-        info!(
-            universe = self.universe,
-            dmx_ch0 = dmx_data[0],
-            dmx_ch1 = dmx_data[1],
-            board_count = self.board_ips.len(),
-            "Sending raw E1.31 packet to {} boards (ch0=brightness, ch1=preset)", self.board_ips.len()
-        );
-
         let mut success_count = 0;
+        let mut unreachable_ips = Vec::new();
+
         for board_ip in &self.board_ips {
             match self.socket.send_to(&packet, board_ip) {
-                Ok(bytes_sent) => {
-                    info!(
-                        board_ip = %board_ip,
-                        bytes = bytes_sent,
-                        dmx_ch0 = dmx_data[0],
-                        dmx_ch1 = dmx_data[1],
-                        "Sent raw E1.31 packet"
-                    );
+                Ok(_) => {
                     success_count += 1;
                 }
                 Err(e) => {
-                    error!(
+                    // Only log individual failures at debug level
+                    debug!(
                         board_ip = %board_ip,
                         error = %e,
-                        "Failed to send raw E1.31 packet"
+                        "Board unreachable"
                     );
+                    unreachable_ips.push(board_ip.to_string());
                 }
             }
         }
@@ -122,16 +111,25 @@ impl E131RawTransport {
         self.sequence = self.sequence.wrapping_add(1);
 
         if success_count > 0 {
-            info!(
-                success_count = success_count,
-                total = self.board_ips.len(),
-                "Raw E1.31 unicast completed ({}/{} boards)", success_count, self.board_ips.len()
-            );
+            if unreachable_ips.is_empty() {
+                debug!(
+                    universe = self.universe,
+                    board_count = self.board_ips.len(),
+                    "E1.31 sent to all {} boards", self.board_ips.len()
+                );
+            } else {
+                info!(
+                    universe = self.universe,
+                    success = success_count,
+                    failed = unreachable_ips.len(),
+                    "E1.31 sent to {}/{} boards (some unreachable)", success_count, self.board_ips.len()
+                );
+            }
             Ok(())
         } else {
             Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "Failed to send to any boards"
+                format!("All {} boards unreachable", self.board_ips.len())
             )))
         }
     }

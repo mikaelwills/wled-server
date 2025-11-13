@@ -1382,8 +1382,8 @@ async fn set_group_power(
 
     match result {
         Ok(r) => Ok(Json(r)),
-        Err(e) => {
-            error!(group_id = %group_id, "Error setting group power: {}", e);
+        Err(_e) => {
+            // Error already logged at lower level
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1403,8 +1403,8 @@ async fn set_group_brightness(
 
     match result {
         Ok(r) => Ok(Json(r)),
-        Err(e) => {
-            error!(group_id = %group_id, "Error setting group brightness: {}", e);
+        Err(_e) => {
+            // Error already logged at lower level
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1428,8 +1428,8 @@ async fn set_group_color(
     .await
     {
         Ok(result) => Ok(Json(result)),
-        Err(e) => {
-            error!(group_id = %group_id, "Error setting group color: {}", e);
+        Err(_e) => {
+            // Error already logged at lower level
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1448,8 +1448,8 @@ async fn set_group_effect(
     .await
     {
         Ok(result) => Ok(Json(result)),
-        Err(e) => {
-            error!(group_id = %group_id, "Error setting group effect: {}", e);
+        Err(_e) => {
+            // Error already logged at lower level
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1487,8 +1487,8 @@ async fn set_group_preset(
             );
             Ok(Json(result))
         }
-        Err(e) => {
-            error!(group_id = %group_id, "Error setting group preset: {}", e);
+        Err(_e) => {
+            // Error already logged at lower level
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

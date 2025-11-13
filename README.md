@@ -41,6 +41,51 @@ This server provides a centralized control system for managing multiple WLED boa
 - CORS-enabled for cross-origin access
 
 
-## Getting Started
+## Quick Start with Docker
 
-See `DEPLOYMENT.md` for installation and deployment instructions.
+The easiest way to run WLED Server is using Docker:
+
+```bash
+docker run -d \
+  --name wled-server \
+  -p 3010:3010 \
+  -p 3011:3011 \
+  -v ./wled-data:/app/data \
+  -v ./wled-programs:/app/programs \
+  -v ./wled-audio:/app/audio \
+  -v ./wled-presets:/app/presets \
+  --restart unless-stopped \
+  YOUR_DOCKER_USERNAME/wled-server:latest
+```
+
+Then open your browser to `http://localhost:3011` and click "Add Board" to configure your WLED devices.
+
+### Using Docker Compose
+
+Create a `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+services:
+  wled-server:
+    image: YOUR_DOCKER_USERNAME/wled-server:latest
+    container_name: wled-server
+    ports:
+      - "3010:3010"
+      - "3011:3011"
+    volumes:
+      - ./wled-data:/app/data
+      - ./wled-programs:/app/programs
+      - ./wled-audio:/app/audio
+      - ./wled-presets:/app/presets
+    restart: unless-stopped
+```
+
+Run with:
+```bash
+docker-compose up -d
+```
+
+## Other Installation Methods
+
+See `DEPLOYMENT.md` for native installation and deployment to embedded devices.

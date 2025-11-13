@@ -943,8 +943,8 @@ function playFullProgram() {
 			{/if}
 			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
-		<div class="waveform-footer" class:has-cues={isLoaded && markers.length > 0}>
-			{#if isLoaded && markers.length > 0}
+		<div class="waveform-footer" class:has-cues={isLoaded}>
+			{#if isLoaded}
 				{@const groups = $boards.filter(b => b.isGroup)}
 				{@const regularBoards = $boards.filter(b => !b.isGroup)}
 
@@ -1012,10 +1012,16 @@ function playFullProgram() {
 					Apply to All Cues
 				</button>
 
-				<button class="cue-count-badge-wrapper" onclick={clearCues}>
-					<span class="cue-count-badge">{markers.length}</span>
-					<span class="clear-cues-text">Clear Cues</span>
-				</button>
+				{#if markers.length > 0}
+					<button class="cue-count-badge-wrapper" onclick={clearCues}>
+						<span class="cue-count-badge">{markers.length}</span>
+						<span class="clear-cues-text">Clear Cues</span>
+					</button>
+				{:else}
+					<div class="cue-count-badge-wrapper-static">
+						<span class="cue-count-badge">0</span>
+					</div>
+				{/if}
 			{/if}
 		</div>
 		{#if !isLoaded && !program?.audioId && !program?.audioData}
@@ -1025,12 +1031,11 @@ function playFullProgram() {
 			</div>
 		{/if}
 
-		{#if markers.length > 0}
+		{#if markers.length > 0 && currentlySelectedMarker}
+			{@const marker = markers.find(m => m.id === currentlySelectedMarker)}
+			{#if marker}
 			<div class="markers-section">
 				<div class="markers-list">
-					{#if currentlySelectedMarker}
-						{@const marker = markers.find(m => m.id === currentlySelectedMarker)}
-						{#if marker}
 						<div class="marker-item">
 							<div class="marker-info">
 								<span class="marker-time">{formatTime(marker.time)}</span>
@@ -1121,10 +1126,9 @@ function playFullProgram() {
 								</button>
 							</div>
 						</div>
-						{/if}
-					{/if}
 				</div>
 			</div>
+			{/if}
 		{/if}
 	</div>
 </div>
@@ -1155,6 +1159,7 @@ function playFullProgram() {
 		border-radius: 12px;
 		border: 1px solid #2a2a2a;
 		overflow: visible;
+		min-height: 252px;
 	}
 
 	.waveform-header {
@@ -1338,6 +1343,18 @@ function playFullProgram() {
 		margin-left: 0.5rem;
 	}
 
+	.cue-count-badge-wrapper-static {
+		background-color: #2a2a2a;
+		color: #e5e5e5;
+		border: 1px solid #3a3a3a;
+		border-radius: 16px;
+		padding: 0;
+		display: flex;
+		align-items: center;
+		height: 28px;
+		min-width: 28px;
+	}
+
 
 	.file-name {
 		font-size: 0.9rem;
@@ -1502,7 +1519,7 @@ function playFullProgram() {
 	}
 
 	.waveform-footer {
-		padding: 0.5rem 1rem 0 1rem;
+		padding: 0.5rem 1rem 0.75rem 1rem;
 		background-color: #1a1a1a;
 		display: flex;
 		justify-content: flex-end;

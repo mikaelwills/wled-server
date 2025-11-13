@@ -371,8 +371,8 @@ export async function setBoardPower(boardId: string, power: boolean): Promise<vo
           })
         );
       } catch (groupError) {
-        console.error(`Failed to set power for group ${boardId}:`, groupError);
-        boardsError.set(`Failed to set group power: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+        // Log to console but don't show global error - boards already show as disconnected
+        console.warn(`Group ${boardId} power command failed (boards may be unreachable):`, groupError);
       }
     } else {
       // This is an INDIVIDUAL BOARD - use individual board endpoint
@@ -444,8 +444,8 @@ export async function setBoardColor(
           })
         );
       } catch (groupError) {
-        console.error(`Failed to set color for group ${boardId}:`, groupError);
-        boardsError.set(`Failed to set group color: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+        // Log to console but don't show global error - boards already show as disconnected
+        console.warn(`Group ${boardId} color command failed (boards may be unreachable):`, groupError);
       }
     } else {
       // Regular board - SSE will update the state
@@ -507,8 +507,8 @@ export async function setBoardBrightness(boardId: string, brightness: number): P
           })
         );
       } catch (groupError) {
-        console.error(`Failed to set brightness for group ${boardId}:`, groupError);
-        boardsError.set(`Failed to set group brightness: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+        // Log to console but don't show global error - boards already show as disconnected
+        console.warn(`Group ${boardId} brightness command failed (boards may be unreachable):`, groupError);
       }
     } else {
       // Regular board - SSE will update the state
@@ -570,8 +570,8 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
           })
         );
       } catch (groupError) {
-        console.error(`Failed to set effect for group ${boardId}:`, groupError);
-        boardsError.set(`Failed to set group effect: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+        // Log to console but don't show global error - boards already show as disconnected
+        console.warn(`Group ${boardId} effect command failed (boards may be unreachable):`, groupError);
       }
     } else {
       // Regular board - SSE will update the state
@@ -667,8 +667,8 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
         // Note: We don't update group state optimistically for presets since they can have complex effects
         // SSE will update individual member states, which will then trigger group recalculation
       } catch (groupError) {
-        console.error(`Failed to set preset for group ${boardId}:`, groupError);
-        boardsError.set(`Failed to set group preset: ${groupError instanceof Error ? groupError.message : 'Unknown error'}`);
+        // Log to console but don't show global error - boards already show as disconnected
+        console.warn(`Group ${boardId} preset command failed (boards may be unreachable):`, groupError);
       }
     } else {
       // Regular board - SSE will update the state

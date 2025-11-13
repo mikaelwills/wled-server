@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  wled-server:
+    image: YOUR_DOCKER_USERNAME/wled-server:latest
+    container_name: wled-server
+    ports:
+      - "3010:3010"  # Backend API
+      - "3011:3011"  # Frontend UI
+    volumes:
+      # Configuration (boards.toml created by UI)
+      - ./wled-data:/app/data
+      # Light programs with cues
+      - ./wled-programs:/app/programs
+      # Audio files
+      - ./wled-audio:/app/audio
+      # Saved presets
+      - ./wled-presets:/app/presets
+    environment:
+      # Optional: Set log level (debug, info, warn, error)
+      - RUST_LOG=info
+    restart: unless-stopped
+    network_mode: bridge
+
+# Usage:
+# 1. Replace YOUR_DOCKER_USERNAME with your Docker Hub username
+# 2. Run: docker-compose -f docker-compose-published.yml up -d
+# 3. Open browser to http://localhost:3011
+# 4. Click "Add Board" to configure your WLED devices

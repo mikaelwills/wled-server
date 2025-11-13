@@ -316,20 +316,16 @@
 		<div class="programs-container">
 			<!-- Loading Card at Top (new programs appear here) -->
 			{#if isLoading}
-				<div class="program-wrapper">
-					<div class="compression-loading-card">
-						<div class="spinner"></div>
-						<p>Saving program...</p>
-						<p class="compression-hint">Processing audio file</p>
-					</div>
+				<div class="compression-loading-card">
+					<div class="spinner"></div>
+					<p>Saving program...</p>
+					<p class="compression-hint">Processing audio file</p>
 				</div>
 			{/if}
 
 			<!-- Programs (newest first) -->
 			{#each $programs as program (program.id)}
-				<div class="program-wrapper">
-					<Program program={program} />
-				</div>
+				<Program program={program} />
 			{/each}
 		</div>
 	{/if}
@@ -355,10 +351,6 @@
 		flex-direction: column;
 		gap: 2rem;
 		margin-top: 2rem;
-	}
-
-	.program-wrapper {
-		/* No extra border or padding - Program component has its own styling */
 	}
 
 	.thin-drop-zone {

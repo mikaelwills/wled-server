@@ -39,6 +39,10 @@ docker-compose.yml
 # Scripts (except docker-start.sh which is needed)
 restart.sh
 deploy.sh
+deploy-to-nas.sh
+deploy-to-beryl.sh
+test-osc.sh
+test_udp.py
 
 # Documentation
 *.md
@@ -47,3 +51,13 @@ deploy.sh
 # Claude
 .claude/
 CLAUDE.md
+
+# User data (volume-mounted at runtime, should not be in image)
+audio/
+programs/
+presets/
+presets-backup/
+presets_backup/
+data/boards.toml
+data/boards.toml.tmp
+plans/

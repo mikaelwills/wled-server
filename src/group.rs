@@ -2,7 +2,7 @@ use crate::board::{BoardCommand, GroupCommand};
 use crate::config::Config;
 use crate::types::{GroupOperationResult, SharedState};
 use std::sync::atomic::{AtomicU8, Ordering};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 // Cache last preset sent via E1.31 (default: 1)
 static CACHED_PRESET: AtomicU8 = AtomicU8::new(1);
@@ -50,7 +50,7 @@ pub async fn execute_group_command(
                 };
 
                 if let Err(e) = result {
-                    error!(group_id = %group_id, error = %e, "E1.31 send failed - NO FALLBACK");
+                    warn!(group_id = %group_id, "Group command failed: {}", e);
                     return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error + Send + Sync>);
                 }
             } else {
@@ -62,7 +62,6 @@ pub async fn execute_group_command(
         }; // guard dropped here
 
         // E1.31 succeeded - boards already updated
-        info!(group_id = %group_id, members = ?group.members, "E1.31 unicast successful, no WebSocket needed");
         return Ok(GroupOperationResult {
             group_id: group_id.to_string(),
             successful_members: group.members.clone(),

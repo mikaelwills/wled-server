@@ -7,6 +7,12 @@
 	// Track which program is playing locally (for audio sync)
 	let audioElements = {};
 
+	// Track playback progress for each program (0-100)
+	let playbackProgress = $state({});
+
+	// Track animation frame ID for smooth progress updates
+	let animationFrameId = null;
+
 	// Subscribe to currently playing program to sync state
 	let currentPlayingId = $derived($currentlyPlayingProgram?.id || null);
 
@@ -19,6 +25,9 @@
 					audio.src = '';
 				}
 			});
+			if (animationFrameId) {
+				cancelAnimationFrame(animationFrameId);
+			}
 		};
 	});
 
@@ -73,6 +82,11 @@
 		// Set up audio ended event
 		audio.onended = () => {
 			currentPlayingId = null;
+			playbackProgress[program.id] = 0;
+			if (animationFrameId) {
+				cancelAnimationFrame(animationFrameId);
+				animationFrameId = null;
+			}
 			stopPlaybackService();
 		};
 
@@ -85,6 +99,16 @@
 
 		// Update state
 		currentPlayingId = program.id;
+		playbackProgress[program.id] = 0;
+
+		// Start smooth progress animation using requestAnimationFrame
+		const updateProgress = () => {
+			if (audio && audio.duration && currentPlayingId === program.id) {
+				playbackProgress[program.id] = (audio.currentTime / audio.duration) * 100;
+				animationFrameId = requestAnimationFrame(updateProgress);
+			}
+		};
+		animationFrameId = requestAnimationFrame(updateProgress);
 
 		// Schedule LED cues with audio start timestamp
 		playProgramService(program, 0, audioStartTime);
@@ -99,6 +123,15 @@
 			audio.pause();
 			audio.currentTime = 0;
 		}
+
+		// Stop animation frame
+		if (animationFrameId) {
+			cancelAnimationFrame(animationFrameId);
+			animationFrameId = null;
+		}
+
+		// Reset progress
+		playbackProgress[program.id] = 0;
 
 		// Stop global playback
 		stopPlaybackService();
@@ -118,10 +151,10 @@
 <svg style="position: absolute; width: 0; height: 0;">
 	<defs>
 		<filter id="turbulent-displace" x="-50%" y="-50%" width="200%" height="200%">
-			<feTurbulence type="fractalNoise" baseFrequency="0.05 0.05" numOctaves="4" result="turbulence" seed="1">
-				<animate attributeName="seed" from="1" to="300" dur="2s" repeatCount="indefinite" />
+			<feTurbulence type="fractalNoise" baseFrequency="0.02 0.02" numOctaves="3" result="turbulence" seed="1">
+				<animate attributeName="seed" from="1" to="300" dur="6s" repeatCount="indefinite" />
 			</feTurbulence>
-			<feDisplacementMap in="SourceGraphic" in2="turbulence" scale="15" xChannelSelector="R" yChannelSelector="G" />
+			<feDisplacementMap in="SourceGraphic" in2="turbulence" scale="4" xChannelSelector="R" yChannelSelector="G" />
 		</filter>
 	</defs>
 </svg>
@@ -148,17 +181,16 @@
 					class:playing={currentPlayingId === program.id}
 					onclick={() => toggleProgram(program)}
 				>
+					<!-- Progress bar (background) -->
+					{#if currentPlayingId === program.id}
+						<div class="progress-bar" style="width: {playbackProgress[program.id] || 0}%"></div>
+					{/if}
+
+					<!-- Program info (foreground) -->
 					<div class="program-content">
 						<div class="song-name">{program.songName || 'Untitled'}</div>
 						{#if program.loopyProTrack}
-							<div class="track-number">Track {program.loopyProTrack}</div>
-						{/if}
-						{#if currentPlayingId === program.id}
-							<div class="playing-indicator">
-								<div class="wave-bar"></div>
-								<div class="wave-bar"></div>
-								<div class="wave-bar"></div>
-							</div>
+							<div class="track-number">Loopy {program.loopyProTrack}</div>
 						{/if}
 					</div>
 				</button>
@@ -208,9 +240,9 @@
 		gap: 1rem;
 		width: 100%;
 		height: 100%;
+		padding: 10px;
 		box-sizing: border-box;
 		overflow: visible;
-		padding: 10px;
 	}
 
 	/* Smart grid layout based on number of programs */
@@ -279,7 +311,7 @@
 	.program-button {
 		background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
 		border: 2px solid #2a2a2a;
-		border-radius: 24px;
+		border-radius: 12px;
 		cursor: pointer;
 		transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 		padding: 0;
@@ -316,6 +348,21 @@
 		transform: scale(1.01);
 	}
 
+	/* Progress bar (fills from left to right) */
+	.progress-bar {
+		position: absolute;
+		top: 0;
+		left: 0;
+		bottom: 0;
+		background: linear-gradient(90deg,
+			rgba(168, 85, 247, 0.15) 0%,
+			rgba(168, 85, 247, 0.25) 100%
+		);
+		border-radius: 12px 0 0 12px;
+		z-index: 1;
+		pointer-events: none;
+	}
+
 	.program-button.playing {
 		background: rgba(0, 0, 0, 0.6);
 		border: none;
@@ -324,29 +371,29 @@
 		box-shadow: none;
 	}
 
-	/* White hot core of electric border */
+	/* Purple inner border */
 	.program-button.playing::before {
 		content: '';
 		position: absolute;
 		inset: -2px;
-		border-radius: 26px;
-		border: 1px solid rgba(255, 255, 255, 1);
-		filter: url(#turbulent-displace) drop-shadow(0 0 6px rgba(255, 255, 255, 0.9));
+		border-radius: 14px;
+		border: 1px solid rgba(168, 85, 247, 0.5);
+		filter: url(#turbulent-displace) drop-shadow(0 0 3px rgba(168, 85, 247, 0.3));
 		pointer-events: none;
 		z-index: 3;
 		opacity: 1 !important;
 		background: none !important;
 	}
 
-	/* Orange outer glow */
+	/* Purple outer glow */
 	.program-button.playing::after {
 		content: '';
 		position: absolute;
 		inset: -5px;
-		border-radius: 29px;
-		border: 6px solid #ff9f40;
-		filter: url(#turbulent-displace) drop-shadow(0 0 15px rgba(255, 159, 64, 0.8));
-		opacity: 1;
+		border-radius: 17px;
+		border: 3px solid #a855f7;
+		filter: url(#turbulent-displace) drop-shadow(0 0 6px rgba(168, 85, 247, 0.3));
+		opacity: 0.7;
 		pointer-events: none;
 		z-index: 2;
 	}
@@ -361,6 +408,8 @@
 		width: 100%;
 		height: 100%;
 		text-align: center;
+		position: relative;
+		z-index: 10;
 	}
 
 	.song-name {
