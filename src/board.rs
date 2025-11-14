@@ -26,6 +26,8 @@ pub struct BoardState {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "memberIds")]
     pub member_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub universe: Option<u16>,
 }
 
 impl BoardState {
@@ -46,6 +48,7 @@ impl BoardState {
             max_leds: None,
             is_group: None,
             member_ids: None,
+            universe: None,
         }
     }
 }
@@ -63,6 +66,10 @@ pub enum BoardCommand {
     ResetSegment, // reset segment to defaults
     GetState(tokio::sync::oneshot::Sender<BoardState>),
     Shutdown,
+    // State sync commands - update actor cache without sending WebSocket
+    SyncPowerState(bool), // Sync power state (for E1.31 sync)
+    SyncBrightnessState(u8), // Sync brightness state (for E1.31 sync)
+    SyncPresetState(u8), // Sync preset state (for E1.31 sync)
 }
 
 #[derive(Debug, Clone)]

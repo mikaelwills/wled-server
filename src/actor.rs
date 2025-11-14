@@ -132,6 +132,19 @@ impl BoardActor {
                                     info!(board_id = %self.id, "Shutting down actor");
                                     return Ok(());
                                 }
+                                // Sync commands - update state without sending WebSocket
+                                Some(BoardCommand::SyncPowerState(on)) => {
+                                    self.state.on = on;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SyncBrightnessState(brightness)) => {
+                                    self.state.brightness = brightness;
+                                    self.broadcast_state();
+                                }
+                                Some(BoardCommand::SyncPresetState(preset)) => {
+                                    self.state.preset = Some(preset);
+                                    self.broadcast_state();
+                                }
                                 None => return Ok(()),
                                 _ => {} // Ignore preset and segment reset commands while disconnected
                             }
@@ -305,6 +318,19 @@ impl BoardActor {
                                 timeout(tokio::time::Duration::from_secs(2), write.send(msg))
                                     .await
                                     .map_err(|_| "Timeout")??;
+                                self.broadcast_state();
+                            }
+                            // Sync commands - update state without sending WebSocket (for E1.31 sync)
+                            Some(BoardCommand::SyncPowerState(on)) => {
+                                self.state.on = on;
+                                self.broadcast_state();
+                            }
+                            Some(BoardCommand::SyncBrightnessState(brightness)) => {
+                                self.state.brightness = brightness;
+                                self.broadcast_state();
+                            }
+                            Some(BoardCommand::SyncPresetState(preset)) => {
+                                self.state.preset = Some(preset);
                                 self.broadcast_state();
                             }
                             Some(BoardCommand::SetTransition(transition)) => {

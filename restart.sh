@@ -15,8 +15,8 @@ pkill -f "vite dev"
 sleep 1
 
 # Start backend and frontend in parallel
-echo "🚀 Starting Rust backend..."
-cargo run 2>&1 &
+echo "🚀 Starting Rust backend (release build)..."
+cargo run --release 2>&1 &
 BACKEND_PID=$!
 echo "   Backend started (PID: $BACKEND_PID)"
 

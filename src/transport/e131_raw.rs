@@ -189,4 +189,14 @@ impl E131RawTransport {
 
         Ok(packet)
     }
+
+    /// Get the universe this transport is sending to
+    pub fn universe(&self) -> u16 {
+        self.universe
+    }
+
+    /// Get the board IPs this transport targets
+    pub fn board_ips(&self) -> &[SocketAddr] {
+        &self.board_ips
+    }
 }

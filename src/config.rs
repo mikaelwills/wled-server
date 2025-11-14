@@ -90,6 +90,8 @@ impl StoragePaths {
   pub struct GroupConfig {
       pub id: String,
       pub members: Vec<String>,
+      #[serde(default)]
+      pub universe: Option<u16>,
   }
 
   fn default_transition() -> Option<u8> {

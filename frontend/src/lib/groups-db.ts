@@ -5,14 +5,14 @@ import { API_URL } from './api';
 /**
  * Add a new group
  */
-export async function addGroup(id: string, memberIds: string[]): Promise<void> {
+export async function addGroup(id: string, memberIds: string[], universe?: number): Promise<void> {
   if (!browser) return;
 
   try {
     const res = await fetch(`${API_URL}/groups`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, members: memberIds }),
+      body: JSON.stringify({ id, members: memberIds, universe }),
     });
 
     if (!res.ok) {
@@ -32,14 +32,14 @@ export async function addGroup(id: string, memberIds: string[]): Promise<void> {
 /**
  * Update an existing group
  */
-export async function updateGroup(groupId: string, newId: string, memberIds: string[]): Promise<void> {
+export async function updateGroup(groupId: string, newId: string, memberIds: string[], universe?: number): Promise<void> {
   if (!browser) return;
 
   try {
     const res = await fetch(`${API_URL}/groups/${groupId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: newId, members: memberIds }),
+      body: JSON.stringify({ id: newId, members: memberIds, universe }),
     });
 
     if (!res.ok) {

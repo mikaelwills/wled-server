@@ -41,6 +41,160 @@ use tower_http::cors::CorsLayer;
 
 use std::net::UdpSocket;
 
+/// Reconfigure a group's universe by updating all member boards and E1.31 transport
+async fn reconfigure_group_universe(
+    state: SharedState,
+    group_id: String,
+    member_ids: Vec<String>,
+    old_universe: Option<u16>,
+    new_universe: Option<u16>,
+) {
+    if old_universe == new_universe {
+        return;
+    }
+
+    let config = Config::load().unwrap_or(Config {
+        loopy_pro: config::LoopyProConfig::default(),
+        boards: vec![],
+        groups: vec![],
+    });
+    let group_index = config.groups.iter().position(|g| g.id == group_id).unwrap_or(0);
+    let universe = new_universe.unwrap_or((group_index + 1) as u16);
+
+    info!(
+        group_id = %group_id,
+        old_universe = ?old_universe,
+        new_universe = %universe,
+        "Universe changed, reconfiguring member boards and E1.31 transport"
+    );
+
+    // Get board IPs for all members
+    let mut board_ips = Vec::new();
+    for member_id in &member_ids {
+        if let Some(board) = config.boards.iter().find(|b| &b.id == member_id) {
+            board_ips.push((member_id.clone(), board.ip.clone()));
+        }
+    }
+
+    // Reconfigure all member boards in parallel
+    let mut tasks = Vec::new();
+    for (board_id, board_ip) in &board_ips {
+        let board_id = board_id.clone();
+        let board_ip = board_ip.clone();
+        let uni = universe; // Clone for move into spawn
+
+        tasks.push(tokio::spawn(async move {
+            info!(board_id = %board_id, universe = %uni, "Reconfiguring board universe");
+            match configure_board_universe(&board_ip, uni).await {
+                Ok(_) => {
+                    info!(board_id = %board_id, universe = %uni, "Successfully reconfigured universe");
+                }
+                Err(e) => {
+                    warn!(
+                        board_id = %board_id,
+                        universe = %uni,
+                        "Failed to reconfigure universe: {}. Board may need manual configuration.",
+                        e
+                    );
+                }
+            }
+        }));
+    }
+
+    // Wait for all board reconfigurations to complete
+    for task in tasks {
+        let _ = task.await;
+    }
+
+    // Update E1.31 transport for this group
+    let group_board_ips: Vec<String> = board_ips.iter().map(|(_, ip)| ip.clone()).collect();
+
+    if !group_board_ips.is_empty() {
+        // Extract transport or error message before any await
+        let transport_opt = match transport::E131RawTransport::new(group_board_ips.clone(), universe) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                error!(
+                    group_id = %group_id,
+                    universe = %universe,
+                    "Failed to create new E1.31 transport: {}",
+                    e.to_string()
+                );
+                None
+            }
+        };
+
+        // Now we can await without holding the non-Send error type
+        if let Some(new_transport) = transport_opt {
+            let mut transports = state.group_e131_transports.write().await;
+            transports.insert(group_id.clone(), new_transport);
+            info!(
+                group_id = %group_id,
+                universe = %universe,
+                board_count = %group_board_ips.len(),
+                "E1.31 transport updated for new universe"
+            );
+        }
+    }
+}
+
+/// Configure a WLED board's E1.31 universe via JSON API
+async fn configure_board_universe(
+    board_ip: &str,
+    universe: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    // Step 1: Configure E1.31 settings via /json/cfg
+    // Use the correct JSON path: if.live.dmx
+    // uni = Universe number
+    // mode = 10 (preset mode - allows controlling board via E1.31 preset selection)
+    // addr = 1 (DMX start address)
+    let cfg_url = format!("http://{}/json/cfg", board_ip);
+    let cfg_payload = serde_json::json!({
+        "if": {
+            "live": {
+                "dmx": {
+                    "uni": universe,
+                    "mode": 10,
+                    "addr": 1
+                }
+            }
+        }
+    });
+
+    let response = client
+        .post(&cfg_url)
+        .json(&cfg_payload)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(format!("Config update failed: HTTP {}", response.status()).into());
+    }
+
+    // Step 2: Wait for settings to be persisted to flash
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Step 3: Reboot board to apply E1.31 settings
+    let reboot_url = format!("http://{}/json/state", board_ip);
+    let reboot_payload = serde_json::json!({"rb": true});
+
+    let reboot_response = client
+        .post(&reboot_url)
+        .json(&reboot_payload)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await?;
+
+    if reboot_response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Reboot failed: HTTP {}", reboot_response.status()).into())
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize tracing subscriber with environment-based configuration
@@ -63,39 +217,110 @@ async fn main() {
     // Create global broadcast channel for SSE events
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
-    // Initialize shared E1.31 transport for groups (universe 1)
-    // GROUP members: One, Two, Three (ignore board One if offline)
-    // Using raw E1.31 implementation (sacn library incompatible with WLED)
-    let group_board_ips = vec![
-        "192.168.8.148".to_string(),  // One
-        "192.168.8.118".to_string(),  // Two
-        "192.168.8.210".to_string(),  // Three
-    ];
-    let group_e131 = transport::E131RawTransport::new(group_board_ips, 1)
-        .map_err(|e| {
-            warn!("Failed to initialize group E1.31 raw transport: {}", e);
-            e
-        })
-        .ok();
-
-    if group_e131.is_some() {
-        info!("Group E1.31 raw transport initialized (universe 1, unicast mode)");
-    } else {
-        warn!("Group E1.31 transport disabled - groups will use WebSocket only");
-    }
-
-    // Load config before creating AppState
+    // Load config before initializing E1.31 transport
     let loaded_config = Config::load().unwrap_or(Config {
         boards: vec![],
         groups: vec![],
         loopy_pro: config::LoopyProConfig::default(),
     });
 
+    // Initialize per-group E1.31 transports - each group gets its own universe
+    // Using raw E1.31 implementation (sacn library incompatible with WLED)
+    let mut group_e131_transports = HashMap::new();
+
+    for (universe_index, group) in loaded_config.groups.iter().enumerate() {
+        // Collect board IPs for this group
+        let mut group_board_ips: Vec<String> = Vec::new();
+        for member_id in &group.members {
+            if let Some(board) = loaded_config.boards.iter().find(|b| &b.id == member_id) {
+                if !group_board_ips.contains(&board.ip) {
+                    group_board_ips.push(board.ip.clone());
+                }
+            }
+        }
+
+        if !group_board_ips.is_empty() {
+            // Use user-specified universe or auto-assign (index + 1)
+            let universe = group.universe.unwrap_or((universe_index + 1) as u16);
+
+            info!(
+                group_id = %group.id,
+                universe = universe,
+                board_count = group_board_ips.len(),
+                "Initializing E1.31 transport for group: {:?}",
+                group_board_ips
+            );
+
+            match transport::E131RawTransport::new(group_board_ips, universe) {
+                Ok(transport) => {
+                    group_e131_transports.insert(group.id.clone(), transport);
+                    info!(group_id = %group.id, universe = universe, "E1.31 transport initialized");
+                }
+                Err(e) => {
+                    warn!(group_id = %group.id, "Failed to initialize E1.31 transport: {}", e);
+                }
+            }
+        } else {
+            warn!(group_id = %group.id, "No boards found for group - will use WebSocket only");
+        }
+    }
+
+    info!("Initialized {} E1.31 group transport(s)", group_e131_transports.len());
+
+    // Auto-configure each board's E1.31 universe to match its group (parallel)
+    info!("Configuring board E1.31 universes in parallel...");
+    let mut config_tasks = Vec::new();
+
+    for (universe_index, group) in loaded_config.groups.iter().enumerate() {
+        // Use user-specified universe or auto-assign (index + 1)
+        let universe = group.universe.unwrap_or((universe_index + 1) as u16);
+
+        for member_id in &group.members {
+            if let Some(board) = loaded_config.boards.iter().find(|b| &b.id == member_id) {
+                let board_id = member_id.clone();
+                let board_ip = board.ip.clone();
+                let group_id = group.id.clone();
+
+                // Spawn parallel task for each board
+                let task = tokio::spawn(async move {
+                    info!(
+                        board_id = %board_id,
+                        group_id = %group_id,
+                        universe = universe,
+                        "Configuring board universe"
+                    );
+
+                    match configure_board_universe(&board_ip, universe).await {
+                        Ok(()) => {
+                            info!(board_id = %board_id, universe = universe, "Successfully configured universe");
+                        }
+                        Err(e) => {
+                            warn!(
+                                board_id = %board_id,
+                                universe = universe,
+                                "Failed to configure universe: {}. Board may need manual configuration.", e
+                            );
+                        }
+                    }
+                });
+
+                config_tasks.push(task);
+            }
+        }
+    }
+
+    // Wait for all configuration tasks (with timeout for entire operation)
+    let config_timeout = tokio::time::Duration::from_secs(10);
+    match tokio::time::timeout(config_timeout, futures::future::join_all(config_tasks)).await {
+        Ok(_) => info!("Universe configuration complete"),
+        Err(_) => warn!("Universe configuration timed out after 10s - some boards may not be configured"),
+    }
+
     let state: SharedState = Arc::new(AppState {
         boards: Arc::new(RwLock::new(HashMap::new())),
         broadcast_tx: Arc::new(broadcast_tx),
         storage_paths: Arc::new(storage_paths),
-        group_e131: Arc::new(RwLock::new(group_e131)),
+        group_e131_transports: Arc::new(RwLock::new(group_e131_transports)),
         config: Arc::new(Mutex::new(loaded_config.clone())),
     });
 
@@ -606,6 +831,7 @@ async fn list_boards(
                         max_leds: None,
                         is_group: None,
                         member_ids: None,
+                        universe: None,
                     };
                 }
                 match tokio::time::timeout(tokio::time::Duration::from_millis(100), rx).await {
@@ -628,6 +854,7 @@ async fn list_boards(
                             max_leds: None,
                             is_group: None,
                             member_ids: None,
+                            universe: None,
                         }
                     }
                 }
@@ -715,6 +942,7 @@ async fn list_boards(
                 max_leds: None,
                 is_group: Some(true),
                 member_ids: Some(group.members),
+                universe: group.universe,
             });
         }
     }
@@ -1264,6 +1492,7 @@ async fn create_group(
     config.groups.push(config::GroupConfig {
         id: payload.id.clone(),
         members: payload.members.clone(),
+        universe: payload.universe,
     });
 
     // Save config
@@ -1353,8 +1582,15 @@ async fn update_group(
         .find(|g| g.id == group_id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    let old_universe = group.universe;
+    let old_members = group.members.clone();
+    let new_id = req.id.clone();
+    let new_members = req.members.clone();
+    let new_universe = req.universe;
+
     group.id = req.id;
     group.members = req.members;
+    group.universe = req.universe;
 
     // Save config
     if let Err(e) = config.save() {
@@ -1362,7 +1598,25 @@ async fn update_group(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    info!(group_id = %group_id, "Updated group");
+    // Reconfigure boards if universe OR members changed
+    // This ensures newly added boards get configured to the group's universe
+    let members_changed = old_members != new_members;
+    let universe_changed = old_universe != new_universe;
+
+    if members_changed || universe_changed {
+        // Use current universe (might be unchanged but members changed)
+        let current_universe = new_universe.or(old_universe);
+
+        tokio::spawn(reconfigure_group_universe(
+            state,
+            new_id.clone(),
+            new_members,
+            None, // Force reconfiguration regardless of old universe
+            current_universe,
+        ));
+    }
+
+    info!(group_id = %new_id, "Updated group");
     Ok(StatusCode::OK)
 }
 

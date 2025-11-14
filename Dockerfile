@@ -22,8 +22,8 @@ COPY frontend/.npmrc /app/frontend/
 COPY docker-start.sh /app/
 COPY lighttpd-docker.conf /etc/lighttpd/lighttpd.conf
 
-# Copy presets directory
-COPY presets /app/presets
+# Presets are mounted as a volume (see docker-compose.yml)
+# No need to COPY them during build
 
 RUN chmod +x /app/docker-start.sh /app/backend
 

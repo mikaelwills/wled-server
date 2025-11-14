@@ -19,31 +19,44 @@ pub async fn execute_group_command(
         .find(|g| g.id == group_id)
         .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> { Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Group '{}' not found", group_id))) })?;
 
-    // OPTIMIZATION: Use shared E1.31 for preset/power/brightness commands
-    // All group boards assumed to be on universe 1
+    // OPTIMIZATION: Use E1.31 for preset/power/brightness commands
+    // Each group has its own E1.31 transport with unique universe
     let use_e131 = matches!(command, GroupCommand::SetPreset(_, _) | GroupCommand::SetPower(_, _) | GroupCommand::SetBrightness(_, _));
 
     if use_e131 {
         // Try E1.31 send in separate scope to ensure guard is dropped
         {
-            let mut group_e131_lock = state.group_e131.write().await;
-            if let Some(ref mut e131) = *group_e131_lock {
-                // Send single E1.31 packet to universe 1 (all boards receive)
+            let mut transports_lock = state.group_e131_transports.write().await;
+            if let Some(e131) = transports_lock.get_mut(group_id) {
+                // Log universe and target board information
+                let universe = e131.universe();
+                let target_ips: Vec<String> = e131.board_ips().iter().map(|addr| addr.to_string()).collect();
+                info!(
+                    group_id = %group_id,
+                    universe = universe,
+                    targets = ?target_ips,
+                    member_count = target_ips.len(),
+                    "E1.31 group command - sending to universe {} with {} member board(s)",
+                    universe,
+                    target_ips.len()
+                );
+
+                // Send E1.31 packet to this group's universe
                 let result = match &command {
                     GroupCommand::SetPreset(preset, _transition) => {
                         // Cache the preset for future power/brightness commands
                         CACHED_PRESET.store(*preset, Ordering::Relaxed);
-                        info!(group_id = %group_id, preset = preset, "Sending group preset via E1.31 (1 packet to universe 1)");
+                        info!(group_id = %group_id, preset = preset, universe = universe, "Sending preset command");
                         e131.send_preset(*preset, 255)  // Full brightness
                     }
                     GroupCommand::SetPower(on, _transition) => {
                         let preset = CACHED_PRESET.load(Ordering::Relaxed);
-                        info!(group_id = %group_id, on = on, preset = if *on { preset } else { 0 }, "Sending group power via E1.31 (1 packet to universe 1)");
+                        info!(group_id = %group_id, on = on, preset = if *on { preset } else { 0 }, universe = universe, "Sending power command");
                         e131.send_power(*on, preset)  // Use cached preset or blackout (preset 0)
                     }
                     GroupCommand::SetBrightness(brightness, _transition) => {
                         let preset = CACHED_PRESET.load(Ordering::Relaxed);
-                        info!(group_id = %group_id, brightness = brightness, preset = preset, "Sending group brightness via E1.31 (1 packet to universe 1)");
+                        info!(group_id = %group_id, brightness = brightness, preset = preset, universe = universe, "Sending brightness command");
                         e131.send_brightness(*brightness, preset)  // Use cached preset
                     }
                     _ => unreachable!(),
@@ -60,6 +73,37 @@ pub async fn execute_group_command(
                 )));
             }
         }; // guard dropped here
+
+        // E1.31 succeeded - now synchronize actor state for all member boards
+        // This prevents WebSocket reconnection logic from restoring old cached state
+        info!(group_id = %group_id, "Synchronizing actor state after E1.31 command");
+
+        let boards_lock = state.boards.read().await;
+        for board_id in &group.members {
+            if let Some(board_entry) = boards_lock.get(board_id) {
+                // Convert GroupCommand to state sync commands (no WebSocket send)
+                match &command {
+                    GroupCommand::SetPreset(preset, _transition) => {
+                        // Preset command affects multiple state fields
+                        if let Err(e) = board_entry.sender.send(BoardCommand::SyncPresetState(*preset)).await {
+                            warn!(board_id = %board_id, "Failed to sync preset state: {}", e);
+                        }
+                    }
+                    GroupCommand::SetPower(on, _transition) => {
+                        if let Err(e) = board_entry.sender.send(BoardCommand::SyncPowerState(*on)).await {
+                            warn!(board_id = %board_id, "Failed to sync power state: {}", e);
+                        }
+                    }
+                    GroupCommand::SetBrightness(brightness, _transition) => {
+                        if let Err(e) = board_entry.sender.send(BoardCommand::SyncBrightnessState(*brightness)).await {
+                            warn!(board_id = %board_id, "Failed to sync brightness state: {}", e);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        drop(boards_lock);
 
         // E1.31 succeeded - boards already updated
         return Ok(GroupOperationResult {

@@ -13,6 +13,7 @@ export interface BoardState {
   maxLeds?: number;
   isGroup?: boolean;
   memberIds?: string[];
+  universe?: number; // E1.31 universe number (for groups)
 }
 
 export interface PresetState {

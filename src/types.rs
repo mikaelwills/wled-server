@@ -30,12 +30,16 @@ pub struct OscRequest {
 pub struct CreateGroupRequest {
     pub id: String,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub universe: Option<u16>,
 }
 
 #[derive(Deserialize)]
 pub struct UpdateGroupRequest {
     pub id: String,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub universe: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -141,7 +145,8 @@ pub struct AppState {
     pub boards: Arc<RwLock<HashMap<String, BoardEntry>>>,
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     pub storage_paths: Arc<crate::config::StoragePaths>,
-    pub group_e131: Arc<RwLock<Option<crate::transport::E131RawTransport>>>,
+    // Per-group E1.31 transports - each group gets its own universe
+    pub group_e131_transports: Arc<RwLock<HashMap<String, crate::transport::E131RawTransport>>>,
     pub config: Arc<Mutex<crate::config::Config>>,
 }
 

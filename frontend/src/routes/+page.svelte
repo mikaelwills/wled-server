@@ -37,6 +37,7 @@
 	let newBoardIp = '';
 	let isCreatingGroup = false;
 	let selectedMemberIds: string[] = [];
+	let newGroupUniverse: string = ''; // User-specified universe (empty = auto-assign)
 	let editBoardId = '';
 	let editBoardIp = '';
 	let editingBoardId = ''; // Original ID being edited
@@ -48,6 +49,7 @@
 	let editingGroupId = '';
 	let editGroupName = '';
 	let editGroupMembers: string[] = [];
+	let editGroupUniverse: string = ''; // User-specified universe for editing
 	let editingGroup: string | null = null; // Group currently being edited
 
 	// Save preset state
@@ -182,11 +184,15 @@
 					return;
 				}
 
-				await addGroup(newBoardId, selectedMemberIds);
+				const universe = newGroupUniverse && newGroupUniverse.toString().trim()
+					? parseInt(newGroupUniverse.toString())
+					: undefined;
+				await addGroup(newBoardId, selectedMemberIds, universe);
 				await refreshGroups(); // Refresh groups to show the new group
 
 				newBoardId = '';
 				selectedMemberIds = [];
+				newGroupUniverse = '';
 				isCreatingGroup = false;
 				showAddForm = false;
 			} else {
@@ -226,6 +232,7 @@
 		editingGroupId = group.id;
 		editGroupName = group.id;
 		editGroupMembers = group.memberIds || [];
+		editGroupUniverse = group.universe?.toString() || ''; // Populate universe for editing
 		editingGroup = group.id; // Set group edit mode
 	}
 
@@ -395,12 +402,17 @@
 		}
 
 		try {
-			await updateGroup(editingGroupId, editGroupName, editGroupMembers);
+			const universe = editGroupUniverse && editGroupUniverse.toString().trim()
+				? parseInt(editGroupUniverse.toString())
+				: undefined;
+			await updateGroup(editingGroupId, editGroupName, editGroupMembers, universe);
+			await refreshGroups(); // Refresh groups to show updated universe
 
 			// Clear group edit mode
 			editingGroup = null;
 			editGroupName = '';
 			editGroupMembers = [];
+			editGroupUniverse = '';
 			editingGroupId = '';
 		} catch (e) {
 			alert(e instanceof Error ? e.message : 'Failed to update group');
@@ -514,6 +526,20 @@
 							</label>
 						{/each}
 					</div>
+				</div>
+				<!-- Universe field for groups -->
+				<div class="form-group">
+					<label for="group-universe">E1.31 Universe (optional):</label>
+					<input
+						id="group-universe"
+						type="number"
+						bind:value={newGroupUniverse}
+						placeholder="Auto-assign if empty"
+						min="1"
+						max="63999"
+						class="form-input"
+					/>
+					<small style="color: #888; font-size: 0.85rem;">Leave empty to auto-assign universe number</small>
 				</div>
 			{:else}
 				<!-- IP field for regular boards -->
@@ -642,6 +668,19 @@
 													{/if}
 												{/each}
 											</div>
+										</div>
+										<div class="form-group">
+											<label for="edit-group-universe-{board.id}">E1.31 Universe (optional)</label>
+											<input
+												id="edit-group-universe-{board.id}"
+												type="number"
+												bind:value={editGroupUniverse}
+												placeholder="Auto-assign if empty"
+												min="1"
+												max="63999"
+												class="form-input"
+											/>
+											<small style="color: #888; font-size: 0.85rem;">Leave empty to auto-assign universe number</small>
 										</div>
 										<div class="form-actions">
 											<button class="submit-btn" on:click={handleUpdateGroup}>Update</button>
@@ -1725,9 +1764,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
-		max-height: 180px;
-		overflow-y: auto;
-		overflow-x: hidden;
 	}
 
 	.member-label {
