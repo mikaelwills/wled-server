@@ -320,12 +320,6 @@
 					onclick={() => toggleProgram(program)}
 					oncontextmenu={(e) => showContextMenu(e, program.id)}
 				>
-					<!-- Chain indicator -->
-					{#if program.nextProgramId}
-						<div class="chain-indicator" title="Chains to: {$programs.find(p => p.id === program.nextProgramId)?.songName || 'Unknown'}">
-							→
-						</div>
-					{/if}
 
 					<!-- Progress bar (background) -->
 					{#if currentPlayingId === program.id}
@@ -736,26 +730,6 @@
 		50% {
 			height: 24px;
 		}
-	}
-
-	/* Chain Indicator */
-	.chain-indicator {
-		position: absolute;
-		top: 0.5rem;
-		right: 0.5rem;
-		width: 2rem;
-		height: 2rem;
-		background: rgba(168, 85, 247, 0.3);
-		border: 2px solid #a855f7;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 1.25rem;
-		color: #e9d5ff;
-		z-index: 15;
-		pointer-events: none;
-		box-shadow: 0 0 8px rgba(168, 85, 247, 0.5);
 	}
 
 	/* Context Menu */
