@@ -636,9 +636,9 @@
 	.program-button.playing::after {
 		content: '';
 		position: absolute;
-		inset: -5px;
-		border-radius: 17px;
-		border: 3px solid #a855f7;
+		inset: -2px;
+		border-radius: 14px;
+		border: 1px solid #a855f7;
 		filter: url(#turbulent-displace) drop-shadow(0 0 6px rgba(168, 85, 247, 0.3));
 		opacity: 0.7;
 		pointer-events: none;
