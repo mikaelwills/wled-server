@@ -123,6 +123,39 @@ export async function saveProgram(program: Program, audioDataUrl: string | null 
 
 
 /**
+ * Update an existing program (without audio upload)
+ */
+export async function updateProgram(program: Program): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/programs/${program.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(program.toJson())
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to update program: ${response.statusText}`);
+    }
+
+    // Update local store
+    programs.update(currentPrograms => {
+      const existingIndex = currentPrograms.findIndex(p => p.id === program.id);
+      if (existingIndex >= 0) {
+        currentPrograms[existingIndex] = program;
+        return [...currentPrograms];
+      }
+      return currentPrograms;
+    });
+  } catch (error) {
+    console.error('Failed to update program:', error);
+    programsError.set('Failed to update program on server.');
+    throw error;
+  }
+}
+
+/**
  * Delete a program by ID
  */
 export async function deleteProgram(programId: string): Promise<void> {

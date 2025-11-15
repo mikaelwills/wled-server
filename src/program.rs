@@ -15,6 +15,17 @@ pub struct Program {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_target_board: Option<String>,  // Default board/group for new cues
+    // Auto-play chain fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_program_id: Option<String>,  // ID of program to auto-play next
+    #[serde(default = "default_transition_type")]
+    pub transition_type: String,  // "immediate", "blackout", or "hold"
+    #[serde(default)]
+    pub transition_duration: u32,  // Duration in milliseconds
+}
+
+fn default_transition_type() -> String {
+    "immediate".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

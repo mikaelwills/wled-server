@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { programs, programsLoading, programsError, currentlyPlayingProgram } from '$lib/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, dimProgramBoards } from '$lib/playback-db';
+	import { updateProgram } from '$lib/programs-db';
+	import { setBoardBrightness } from '$lib/boards-db';
 	import { API_URL } from '$lib/api';
 
 	// Track which program is playing locally (for audio sync)
@@ -13,8 +15,23 @@
 	// Track animation frame ID for smooth progress updates
 	let animationFrameId = null;
 
+	// Flag to indicate manual stop (breaks chain)
+	let manualStop = false;
+
 	// Subscribe to currently playing program to sync state
 	let currentPlayingId = $derived($currentlyPlayingProgram?.id || null);
+
+	// Context menu state
+	let contextMenu = $state({
+		visible: false,
+		x: 0,
+		y: 0,
+		programId: null,
+		showChainSubmenu: false,
+		showTransitionSubmenu: false,
+		submenuX: 0,
+		submenuY: 0
+	});
 
 	onMount(() => {
 		// Cleanup audio elements on unmount
@@ -80,7 +97,10 @@
 		}
 
 		// Set up audio ended event
-		audio.onended = () => {
+		audio.onended = async () => {
+			console.log('🏁 Program ended:', program.songName);
+
+			// Cleanup current program
 			currentPlayingId = null;
 			playbackProgress[program.id] = 0;
 			if (animationFrameId) {
@@ -88,6 +108,29 @@
 				animationFrameId = null;
 			}
 			stopPlaybackService();
+
+			// Check for manual stop (breaks chain)
+			if (manualStop) {
+				console.log('⛔ Manual stop - chain broken');
+				manualStop = false;
+				return;
+			}
+
+			// Auto-play chain logic
+			if (program.nextProgramId) {
+				console.log(`⛓️  Chain detected - next program: ${program.nextProgramId}`);
+				const nextProgram = $programs.find(p => p.id === program.nextProgramId);
+
+				if (nextProgram) {
+					// Apply transition before playing next program
+					await applyTransition(program);
+
+					// Play next program in chain
+					await playProgram(nextProgram);
+				} else {
+					console.warn(`⚠️  Next program "${program.nextProgramId}" not found`);
+				}
+			}
 		};
 
 		// Capture the EXACT moment audio starts
@@ -116,6 +159,9 @@
 
 	async function stopProgram(program) {
 		console.log('⏹ Stopping program:', program.songName);
+
+		// Set manual stop flag to break chain
+		manualStop = true;
 
 		// Stop audio
 		const audio = audioElements[program.id];
@@ -146,6 +192,98 @@
 		// Clear playing state
 		currentPlayingId = null;
 	}
+
+	// Transition implementations
+	async function applyTransition(program) {
+		console.log(`🔄 Applying ${program.transitionType} transition (${program.transitionDuration}ms)`);
+
+		if (program.transitionType === 'blackout') {
+			// Blackout: set all program boards to 0 brightness
+			const boardIds = [...new Set(program.cues.flatMap(c => c.boards))];
+			await Promise.all(boardIds.map(boardId => setBoardBrightness(boardId, 0)));
+
+			// Wait for transition duration
+			if (program.transitionDuration > 0) {
+				await new Promise(resolve => setTimeout(resolve, program.transitionDuration));
+			}
+		} else if (program.transitionType === 'hold') {
+			// Hold: keep current lighting state, just wait
+			if (program.transitionDuration > 0) {
+				await new Promise(resolve => setTimeout(resolve, program.transitionDuration));
+			}
+		}
+		// Immediate: no delay, do nothing
+	}
+
+	// Context menu functions
+	function showContextMenu(event, programId) {
+		event.preventDefault();
+		event.stopPropagation();
+
+		contextMenu.visible = true;
+		contextMenu.x = event.clientX;
+		contextMenu.y = event.clientY;
+		contextMenu.programId = programId;
+		contextMenu.showChainSubmenu = false;
+		contextMenu.showTransitionSubmenu = false;
+	}
+
+	// Get submenu position
+	function getSubmenuPosition(parentElement) {
+		if (!parentElement) return { left: 0, top: 0 };
+		const rect = parentElement.getBoundingClientRect();
+		return {
+			left: rect.right - 8,
+			top: rect.top - 8
+		};
+	}
+
+	function hideContextMenu() {
+		contextMenu.visible = false;
+		contextMenu.showChainSubmenu = false;
+		contextMenu.showTransitionSubmenu = false;
+	}
+
+	async function setNextProgram(targetProgramId) {
+		const program = $programs.find(p => p.id === contextMenu.programId);
+		if (!program) return;
+
+		program.nextProgramId = targetProgramId;
+		await updateProgram(program);
+		hideContextMenu();
+	}
+
+	async function setTransitionType(type) {
+		const program = $programs.find(p => p.id === contextMenu.programId);
+		if (!program) return;
+
+		program.transitionType = type;
+		await updateProgram(program);
+	}
+
+	async function setTransitionDuration(duration) {
+		const program = $programs.find(p => p.id === contextMenu.programId);
+		if (!program) return;
+
+		program.transitionDuration = duration;
+		await updateProgram(program);
+	}
+
+	async function clearChain() {
+		const program = $programs.find(p => p.id === contextMenu.programId);
+		if (!program) return;
+
+		program.nextProgramId = undefined;
+		await updateProgram(program);
+		hideContextMenu();
+	}
+
+	// Close context menu on click outside
+	function handleClickOutside(event) {
+		if (contextMenu.visible) {
+			hideContextMenu();
+		}
+	}
 </script>
 
 <svg style="position: absolute; width: 0; height: 0;">
@@ -159,7 +297,7 @@
 	</defs>
 </svg>
 
-<div class="performance-page">
+<div class="performance-page" onclick={handleClickOutside}>
 	{#if $programsLoading}
 		<div class="empty-state">
 			<p class="empty-text">Loading programs...</p>
@@ -180,7 +318,15 @@
 					class="program-button"
 					class:playing={currentPlayingId === program.id}
 					onclick={() => toggleProgram(program)}
+					oncontextmenu={(e) => showContextMenu(e, program.id)}
 				>
+					<!-- Chain indicator -->
+					{#if program.nextProgramId}
+						<div class="chain-indicator" title="Chains to: {$programs.find(p => p.id === program.nextProgramId)?.songName || 'Unknown'}">
+							→
+						</div>
+					{/if}
+
 					<!-- Progress bar (background) -->
 					{#if currentPlayingId === program.id}
 						<div class="progress-bar" style="width: {playbackProgress[program.id] || 0}%"></div>
@@ -197,6 +343,113 @@
 			{/each}
 		</div>
 	{/if}
+
+	<!-- Context Menu -->
+	{#if contextMenu.visible}
+		{@const currentProgram = $programs.find(p => p.id === contextMenu.programId)}
+		<div
+			class="context-menu"
+			style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<!-- Chain to Program -->
+			<div
+				class="menu-item menu-item-parent"
+				onmouseenter={(e) => {
+					contextMenu.showChainSubmenu = true;
+					const rect = e.currentTarget.getBoundingClientRect();
+					contextMenu.submenuX = rect.right - 8;
+					contextMenu.submenuY = rect.top - 8;
+				}}
+				onmouseleave={() => contextMenu.showChainSubmenu = false}
+			>
+				<span>Chain to Program</span>
+			</div>
+
+			<!-- Transition Settings -->
+			<div
+				class="menu-item menu-item-parent"
+				onmouseenter={(e) => {
+					contextMenu.showTransitionSubmenu = true;
+					const rect = e.currentTarget.getBoundingClientRect();
+					contextMenu.submenuX = rect.right - 8;
+					contextMenu.submenuY = rect.top - 8;
+				}}
+				onmouseleave={() => contextMenu.showTransitionSubmenu = false}
+			>
+				<span>Transition</span>
+			</div>
+
+			<!-- Clear Chain -->
+			{#if currentProgram?.nextProgramId}
+				<div class="menu-divider"></div>
+				<div class="menu-item" onclick={clearChain}>
+					<span>Clear Chain</span>
+				</div>
+			{/if}
+
+			<div class="menu-divider"></div>
+
+			<!-- Cancel -->
+			<div class="menu-item menu-item-cancel" onclick={hideContextMenu}>
+				<span>Cancel</span>
+			</div>
+		</div>
+
+		<!-- Chain Submenu (fixed position) -->
+		{#if contextMenu.showChainSubmenu}
+			<div
+				class="submenu"
+				style="left: {contextMenu.submenuX}px; top: {contextMenu.submenuY}px;"
+				onmouseenter={() => contextMenu.showChainSubmenu = true}
+				onmouseleave={() => contextMenu.showChainSubmenu = false}
+			>
+				<div class="menu-item" onclick={() => setNextProgram(undefined)}>
+					<span>○ None</span>
+				</div>
+				{#each $programs.filter(p => p.id !== contextMenu.programId) as prog}
+					<div class="menu-item" onclick={() => setNextProgram(prog.id)}>
+						<span>{currentProgram?.nextProgramId === prog.id ? '●' : '○'} {prog.songName}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- Transition Submenu (fixed position) -->
+		{#if contextMenu.showTransitionSubmenu}
+			<div
+				class="submenu"
+				style="left: {contextMenu.submenuX}px; top: {contextMenu.submenuY}px;"
+				onmouseenter={() => contextMenu.showTransitionSubmenu = true}
+				onmouseleave={() => contextMenu.showTransitionSubmenu = false}
+			>
+				<div class="menu-item" onclick={() => setTransitionType('immediate')}>
+					<span>{currentProgram?.transitionType === 'immediate' ? '●' : '○'} Immediate</span>
+				</div>
+				<div class="menu-item" onclick={() => setTransitionType('blackout')}>
+					<span>{currentProgram?.transitionType === 'blackout' ? '●' : '○'} Blackout</span>
+				</div>
+				<div class="menu-item" onclick={() => setTransitionType('hold')}>
+					<span>{currentProgram?.transitionType === 'hold' ? '●' : '○'} Hold</span>
+				</div>
+				<div class="menu-item">
+					<label style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
+						<span style="flex-shrink: 0;">Duration:</span>
+						<input
+							type="range"
+							min="0"
+							max="5000"
+							step="100"
+							value={currentProgram?.transitionDuration || 0}
+							oninput={(e) => setTransitionDuration(parseInt(e.target.value))}
+							style="flex: 1;"
+						/>
+						<span style="flex-shrink: 0; min-width: 3rem;">{currentProgram?.transitionDuration || 0}ms</span>
+					</label>
+				</div>
+			</div>
+		{/if}
+	{/if}
 </div>
 
 <style>
@@ -211,7 +464,7 @@
 		height: 100vh;
 		padding: 1rem;
 		box-sizing: border-box;
-		overflow: hidden;
+		overflow: visible;
 	}
 
 	.empty-state {
@@ -483,5 +736,124 @@
 		50% {
 			height: 24px;
 		}
+	}
+
+	/* Chain Indicator */
+	.chain-indicator {
+		position: absolute;
+		top: 0.5rem;
+		right: 0.5rem;
+		width: 2rem;
+		height: 2rem;
+		background: rgba(168, 85, 247, 0.3);
+		border: 2px solid #a855f7;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.25rem;
+		color: #e9d5ff;
+		z-index: 15;
+		pointer-events: none;
+		box-shadow: 0 0 8px rgba(168, 85, 247, 0.5);
+	}
+
+	/* Context Menu */
+	.context-menu {
+		position: fixed;
+		background: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+		min-width: 200px;
+		z-index: 1000;
+		padding: 0.25rem 0;
+		overflow: hidden;
+	}
+
+	.menu-item {
+		padding: 0.5rem 1rem;
+		cursor: pointer;
+		transition: background 0.2s;
+		color: #e5e5e5;
+		position: relative;
+		user-select: none;
+	}
+
+	.menu-item:hover {
+		background: #2a2a2a;
+	}
+
+	.menu-divider {
+		height: 1px;
+		background: #2a2a2a;
+		margin: 0.25rem 0;
+	}
+
+	/* Cancel button - no extra padding */
+	.menu-item-cancel {
+		margin-bottom: 0;
+	}
+
+	/* Submenu */
+	.submenu {
+		position: fixed;
+		background: #1a1a1a;
+		border: 1px solid #2a2a2a;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+		min-width: 200px;
+		max-height: 80vh;
+		overflow-y: auto;
+		padding: 0.5rem 0;
+		z-index: 1001;
+	}
+
+	/* Parent menu item with submenu - extend clickable area */
+	.menu-item-parent {
+		position: relative;
+	}
+
+	.menu-item-parent::after {
+		content: '';
+		position: absolute;
+		right: -0.5rem;
+		top: 0;
+		bottom: 0;
+		width: 0.5rem;
+	}
+
+	.submenu .menu-item {
+		padding: 0.5rem 1rem;
+		font-size: 0.9rem;
+	}
+
+	/* Slider in menu */
+	.menu-item input[type="range"] {
+		height: 4px;
+		border-radius: 2px;
+		background: #2a2a2a;
+		outline: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+
+	.menu-item input[type="range"]::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #a855f7;
+		cursor: pointer;
+	}
+
+	.menu-item input[type="range"]::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #a855f7;
+		cursor: pointer;
+		border: none;
 	}
 </style>

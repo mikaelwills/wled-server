@@ -1,6 +1,8 @@
 // frontend/src/lib/models/Program.ts
 import { Cue, type CueData } from './Cue';
 
+export type TransitionType = 'immediate' | 'blackout' | 'hold';
+
 export interface ProgramData {
   id: string;
   songName: string;
@@ -11,6 +13,10 @@ export interface ProgramData {
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
+  // Auto-play chain fields
+  nextProgramId?: string;
+  transitionType: TransitionType;
+  transitionDuration: number; // milliseconds
 }
 
 export class Program implements ProgramData {
@@ -23,6 +29,10 @@ export class Program implements ProgramData {
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
+  // Auto-play chain fields
+  nextProgramId?: string;
+  transitionType: TransitionType;
+  transitionDuration: number;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -34,6 +44,9 @@ export class Program implements ProgramData {
     this.cues = data.cues;
     this.createdAt = data.createdAt;
     this.defaultTargetBoard = data.defaultTargetBoard;
+    this.nextProgramId = data.nextProgramId;
+    this.transitionType = data.transitionType || 'immediate';
+    this.transitionDuration = data.transitionDuration || 0;
   }
 
   /**
@@ -75,6 +88,9 @@ export class Program implements ProgramData {
       cues,
       createdAt: data.createdAt || data.created_at || new Date().toISOString(),
       defaultTargetBoard: data.defaultTargetBoard || data.default_target_board,
+      nextProgramId: data.nextProgramId || data.next_program_id,
+      transitionType: (data.transitionType || data.transition_type || 'immediate') as TransitionType,
+      transitionDuration: data.transitionDuration || data.transition_duration || 0,
     });
   }
 
@@ -92,6 +108,9 @@ export class Program implements ProgramData {
       cues: this.cues.map(c => c.toJson()),
       created_at: this.createdAt,
       default_target_board: this.defaultTargetBoard,
+      next_program_id: this.nextProgramId,
+      transition_type: this.transitionType,
+      transition_duration: this.transitionDuration,
     };
   }
 }
