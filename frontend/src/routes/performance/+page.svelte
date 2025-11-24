@@ -1,8 +1,9 @@
 <script>
 	import { onMount } from 'svelte';
+	import { flip } from 'svelte/animate';
 	import { programs, programsLoading, programsError, currentlyPlayingProgram } from '$lib/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, dimProgramBoards } from '$lib/playback-db';
-	import { updateProgram } from '$lib/programs-db';
+	import { updateProgram, reorderPrograms } from '$lib/programs-db';
 	import { setBoardBrightness } from '$lib/boards-db';
 	import { API_URL } from '$lib/api';
 
@@ -31,6 +32,21 @@
 		showTransitionSubmenu: false,
 		submenuX: 0,
 		submenuY: 0
+	});
+
+	// Drag-and-drop state
+	let dragState = $state({
+		isDragging: false,
+		draggedIndex: null,
+		dragOverIndex: null,
+		longPressTimer: null,
+		longPressActive: false,
+		initialX: 0,
+		initialY: 0,
+		currentX: 0,
+		currentY: 0,
+		programIdForLongPress: null,
+		draggedElement: null
 	});
 
 	onMount(() => {
@@ -67,6 +83,18 @@
 
 	async function playProgram(program) {
 		console.log('▶️ Playing program:', program.songName);
+
+		// Fetch Loopy Pro settings to check mute status
+		let muteAudio = false;
+		try {
+			const settingsResponse = await fetch(`${API_URL}/settings/loopy-pro`);
+			if (settingsResponse.ok) {
+				const settings = await settingsResponse.json();
+				muteAudio = settings.mute_audio || false;
+			}
+		} catch (err) {
+			console.error('Failed to fetch settings:', err);
+		}
 
 		// Create or get audio element for this program
 		let audio = audioElements[program.id];
@@ -136,9 +164,14 @@
 		// Capture the EXACT moment audio starts
 		const audioStartTime = performance.now();
 
-		// Play audio from the beginning
+		// Play audio from the beginning (only if not muted)
 		audio.currentTime = 0;
-		await audio.play();
+		if (!muteAudio) {
+			await audio.play();
+			console.log('🔊 Audio playing');
+		} else {
+			console.log('🔇 Audio muted - using Loopy Pro audio');
+		}
 
 		// Update state
 		currentPlayingId = program.id;
@@ -153,7 +186,7 @@
 		};
 		animationFrameId = requestAnimationFrame(updateProgress);
 
-		// Schedule LED cues with audio start timestamp
+		// Schedule LED cues with audio start timestamp (always send OSC and LED cues)
 		playProgramService(program, 0, audioStartTime);
 	}
 
@@ -191,6 +224,99 @@
 
 		// Clear playing state
 		currentPlayingId = null;
+	}
+
+	// Drag-and-drop functions (desktop only - using pointer + HTML5 drag API)
+	function handlePointerDown(event, programId, index) {
+		// Don't allow dragging if a program is currently playing
+		if (currentPlayingId !== null) return;
+
+		const clientX = event.clientX;
+		const clientY = event.clientY;
+
+		// Store initial position
+		dragState.initialX = clientX;
+		dragState.initialY = clientY;
+		dragState.programIdForLongPress = programId;
+
+		// Start long-press timer (500ms) for drag activation
+		dragState.longPressTimer = setTimeout(() => {
+			dragState.longPressActive = true;
+		}, 500);
+	}
+
+	function handlePointerMove(event) {
+		// Cancel long-press if pointer moves too much (more than 10px)
+		if (dragState.longPressTimer && !dragState.isDragging) {
+			const clientX = event.clientX;
+			const clientY = event.clientY;
+			const deltaX = Math.abs(clientX - dragState.initialX);
+			const deltaY = Math.abs(clientY - dragState.initialY);
+
+			if (deltaX > 10 || deltaY > 10) {
+				clearTimeout(dragState.longPressTimer);
+				dragState.longPressTimer = null;
+				dragState.longPressActive = false;
+			}
+		}
+	}
+
+	function handlePointerUp() {
+		// Clear long-press timer if still pending
+		if (dragState.longPressTimer) {
+			clearTimeout(dragState.longPressTimer);
+			dragState.longPressTimer = null;
+		}
+		dragState.longPressActive = false;
+	}
+
+	function handleDragStart(event, index) {
+		// Only allow drag if long-press was activated and no program is playing
+		if (!dragState.longPressActive || currentPlayingId !== null) {
+			event.preventDefault();
+			return;
+		}
+
+		dragState.isDragging = true;
+		dragState.draggedIndex = index;
+		event.dataTransfer.effectAllowed = 'move';
+		event.dataTransfer.setData('text/plain', index.toString());
+	}
+
+	function handleDragOver(event, index) {
+		if (!dragState.isDragging) return;
+		event.preventDefault();
+		dragState.dragOverIndex = index;
+	}
+
+	function handleDragEnd() {
+		dragState.isDragging = false;
+		dragState.draggedIndex = null;
+		dragState.dragOverIndex = null;
+		dragState.longPressActive = false;
+	}
+
+	async function handleDrop(event, dropIndex) {
+		event.preventDefault();
+
+		if (dragState.draggedIndex === null || dragState.draggedIndex === dropIndex) {
+			handleDragEnd();
+			return;
+		}
+
+		// Reorder the programs array
+		const reordered = [...$programs];
+		const [movedItem] = reordered.splice(dragState.draggedIndex, 1);
+		reordered.splice(dropIndex, 0, movedItem);
+
+		// Persist the new order
+		try {
+			await reorderPrograms(reordered);
+		} catch (error) {
+			console.error('Failed to reorder programs:', error);
+		}
+
+		handleDragEnd();
 	}
 
 	// Transition implementations
@@ -313,12 +439,25 @@
 		</div>
 	{:else}
 		<div class="programs-grid">
-			{#each $programs as program (program.id)}
+			{#each $programs as program, index (program.id)}
 				<button
 					class="program-button"
 					class:playing={currentPlayingId === program.id}
-					onclick={() => toggleProgram(program)}
+					class:long-press-active={dragState.longPressActive && dragState.programIdForLongPress === program.id}
+					class:dragging={dragState.isDragging && dragState.draggedIndex === index}
+					class:drag-over={dragState.dragOverIndex === index && dragState.draggedIndex !== index}
+					class:drag-disabled={currentPlayingId !== null}
+					draggable={currentPlayingId === null}
+					onclick={() => !dragState.isDragging && toggleProgram(program)}
 					oncontextmenu={(e) => showContextMenu(e, program.id)}
+					onpointerdown={(e) => handlePointerDown(e, program.id, index)}
+					onpointermove={handlePointerMove}
+					onpointerup={handlePointerUp}
+					ondragstart={(e) => handleDragStart(e, index)}
+					ondragover={(e) => handleDragOver(e, index)}
+					ondragend={handleDragEnd}
+					ondrop={(e) => handleDrop(e, index)}
+					animate:flip={{ duration: 300 }}
 				>
 
 					<!-- Progress bar (background) -->
@@ -329,9 +468,6 @@
 					<!-- Program info (foreground) -->
 					<div class="program-content">
 						<div class="song-name">{program.songName || 'Untitled'}</div>
-						{#if program.loopyProTrack}
-							<div class="track-number">Loopy {program.loopyProTrack}</div>
-						{/if}
 					</div>
 				</button>
 			{/each}
@@ -559,7 +695,7 @@
 		background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
 		border: 2px solid #2a2a2a;
 		border-radius: 12px;
-		cursor: pointer;
+		cursor: grab;
 		transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 		padding: 0;
 		position: relative;
@@ -570,6 +706,9 @@
 		width: 100%;
 		height: 100%;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
 	}
 
 	.program-button::before {
@@ -593,6 +732,41 @@
 
 	.program-button:active {
 		transform: scale(1.01);
+	}
+
+	/* Drag-and-drop states */
+	.program-button.drag-disabled {
+		cursor: not-allowed;
+		opacity: 0.7;
+	}
+
+	.program-button.long-press-active {
+		animation: long-press-pulse 0.3s ease-out;
+		cursor: grabbing;
+	}
+
+	@keyframes long-press-pulse {
+		0% {
+			transform: scale(1);
+		}
+		50% {
+			transform: scale(1.05);
+		}
+		100% {
+			transform: scale(1);
+		}
+	}
+
+	.program-button.dragging {
+		opacity: 0.5;
+		cursor: grabbing;
+		transform: scale(1.05);
+		z-index: 1000;
+	}
+
+	.program-button.drag-over {
+		border: 2px dashed #a855f7;
+		background: rgba(168, 85, 247, 0.1);
 	}
 
 	/* Progress bar (fills from left to right) */
@@ -660,7 +834,7 @@
 	}
 
 	.song-name {
-		font-size: 1.5rem;
+		font-size: 1.75rem;
 		font-weight: 700;
 		color: #e5e5e5;
 		word-break: break-word;

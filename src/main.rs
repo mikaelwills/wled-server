@@ -41,7 +41,6 @@ use tower_http::cors::CorsLayer;
 
 use std::net::UdpSocket;
 
-/// Reconfigure a group's universe by updating all member boards and E1.31 transport
 async fn reconfigure_group_universe(
     state: SharedState,
     group_id: String,

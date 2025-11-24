@@ -13,6 +13,8 @@ pub struct Program {
     pub audio_file: Option<String>,  // New: filename reference
     pub cues: Vec<Cue>,
     pub created_at: String,
+    #[serde(default)]
+    pub display_order: i32,  // Order for performance page display
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_target_board: Option<String>,  // Default board/group for new cues
     // Auto-play chain fields
@@ -77,6 +79,10 @@ impl Program {
                 }
             }
         }
+
+        // Sort by display_order (ascending)
+        programs.sort_by_key(|p| p.display_order);
+
         Ok(programs)
     }
 

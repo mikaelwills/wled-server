@@ -59,6 +59,8 @@ impl StoragePaths {
       pub ip: String,
       #[serde(default = "default_loopy_port")]
       pub port: u16,
+      #[serde(default)]
+      pub mute_audio: bool,
   }
 
   impl Default for LoopyProConfig {
@@ -66,6 +68,7 @@ impl StoragePaths {
           Self {
               ip: default_loopy_ip(),
               port: default_loopy_port(),
+              mute_audio: false,
           }
       }
   }

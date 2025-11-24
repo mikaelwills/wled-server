@@ -632,6 +632,7 @@ function playFullProgram() {
 
 		// Play from current position (or from start if at beginning)
 		if (wavesurfer) {
+			wavesurfer.setTime(currentTime);  // Sync audio to cursor position
 			wavesurfer.play();
 		}
 

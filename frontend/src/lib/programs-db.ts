@@ -31,12 +31,8 @@ export async function initPrograms(): Promise<void> {
       ? data.map((p: any) => Program.fromJson(p)).filter((p): p is Program => p !== null)
       : [];
 
-    // Sort by createdAt descending (newest first)
-    loadedPrograms.sort((a, b) => {
-      const dateA = new Date(a.createdAt || 0).getTime();
-      const dateB = new Date(b.createdAt || 0).getTime();
-      return dateB - dateA;
-    });
+    // Sort by displayOrder ascending (for drag-and-drop reordering)
+    loadedPrograms.sort((a, b) => a.displayOrder - b.displayOrder);
 
     console.log('[programs-db] Loaded programs:', loadedPrograms.map(p => ({
       id: p.id,
@@ -192,6 +188,41 @@ export async function deleteProgram(programId: string): Promise<void> {
   } catch (error) {
     console.error('Failed to delete program:', error);
     programsError.set('Failed to delete program from server.');
+    throw error;
+  }
+}
+
+/**
+ * Reorder programs and persist to backend
+ */
+export async function reorderPrograms(reorderedPrograms: Program[]): Promise<void> {
+  if (!browser) return;
+
+  try {
+    // Update displayOrder for each program
+    const updatedPrograms = reorderedPrograms.map((program, index) => {
+      program.displayOrder = index;
+      return program;
+    });
+
+    // Update local store immediately for responsive UI
+    programs.set(updatedPrograms);
+
+    // Persist to backend (batch update)
+    await Promise.all(
+      updatedPrograms.map(program =>
+        fetch(`${API_URL}/programs/${program.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(program.toJson())
+        })
+      )
+    );
+
+    console.log('[programs-db] Programs reordered successfully');
+  } catch (error) {
+    console.error('Failed to reorder programs:', error);
+    programsError.set('Failed to save new program order.');
     throw error;
   }
 }

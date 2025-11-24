@@ -17,6 +17,8 @@ export interface ProgramData {
   nextProgramId?: string;
   transitionType: TransitionType;
   transitionDuration: number; // milliseconds
+  // Display order for performance page
+  displayOrder: number;
 }
 
 export class Program implements ProgramData {
@@ -33,6 +35,8 @@ export class Program implements ProgramData {
   nextProgramId?: string;
   transitionType: TransitionType;
   transitionDuration: number;
+  // Display order for performance page
+  displayOrder: number;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -47,6 +51,7 @@ export class Program implements ProgramData {
     this.nextProgramId = data.nextProgramId;
     this.transitionType = data.transitionType || 'immediate';
     this.transitionDuration = data.transitionDuration || 0;
+    this.displayOrder = data.displayOrder ?? 0;
   }
 
   /**
@@ -91,6 +96,7 @@ export class Program implements ProgramData {
       nextProgramId: data.nextProgramId || data.next_program_id,
       transitionType: (data.transitionType || data.transition_type || 'immediate') as TransitionType,
       transitionDuration: data.transitionDuration || data.transition_duration || 0,
+      displayOrder: data.displayOrder ?? data.display_order ?? 0,
     });
   }
 
@@ -111,6 +117,7 @@ export class Program implements ProgramData {
       next_program_id: this.nextProgramId,
       transition_type: this.transitionType,
       transition_duration: this.transitionDuration,
+      display_order: this.displayOrder,
     };
   }
 }

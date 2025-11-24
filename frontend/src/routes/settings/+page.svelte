@@ -4,6 +4,7 @@
 
 	let ip = $state('192.168.1.242');
 	let port = $state(9595);
+	let muteAudio = $state(false);
 	let saved = $state(false);
 	let loading = $state(true);
 
@@ -15,6 +16,7 @@
 				const settings = await response.json();
 				ip = settings.ip;
 				port = settings.port;
+				muteAudio = settings.mute_audio || false;
 			}
 		} catch (err) {
 			console.error('Failed to load settings:', err);
@@ -28,7 +30,7 @@
 			const response = await fetch(`${API_URL}/settings/loopy-pro`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ip, port })
+				body: JSON.stringify({ ip, port, mute_audio: muteAudio })
 			});
 
 			if (response.ok) {
@@ -63,6 +65,20 @@
 				placeholder="9595"
 				class="text-input port-input"
 			/>
+		</div>
+
+		<div class="toggle-row">
+			<label for="mute-toggle" class="toggle-label">
+				Mute App Audio
+			</label>
+			<label class="toggle-switch">
+				<input
+					id="mute-toggle"
+					type="checkbox"
+					bind:checked={muteAudio}
+				/>
+				<span class="toggle-slider"></span>
+			</label>
 		</div>
 
 		<button onclick={saveSettings} class="save-button">
@@ -174,5 +190,63 @@
 	.save-button:active {
 		background-color: #7e22ce;
 		transform: scale(0.98);
+	}
+
+	.toggle-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.toggle-label {
+		font-size: 0.875rem;
+		color: #e5e5e5;
+		cursor: pointer;
+	}
+
+	.toggle-switch {
+		position: relative;
+		display: inline-block;
+		width: 48px;
+		height: 28px;
+	}
+
+	.toggle-switch input {
+		opacity: 0;
+		width: 0;
+		height: 0;
+	}
+
+	.toggle-slider {
+		position: absolute;
+		cursor: pointer;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: #2a2a2a;
+		transition: 0.3s;
+		border-radius: 28px;
+	}
+
+	.toggle-slider:before {
+		position: absolute;
+		content: '';
+		height: 20px;
+		width: 20px;
+		left: 4px;
+		bottom: 4px;
+		background-color: #6b7280;
+		transition: 0.3s;
+		border-radius: 50%;
+	}
+
+	input:checked + .toggle-slider {
+		background-color: #a855f7;
+	}
+
+	input:checked + .toggle-slider:before {
+		background-color: white;
+		transform: translateX(20px);
 	}
 </style>
