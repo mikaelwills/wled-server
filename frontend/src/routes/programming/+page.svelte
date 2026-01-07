@@ -332,12 +332,6 @@
 </div>
 
 <style>
-	:global(body) {
-		background-color: #0f0f0f;
-		color: #e5e5e5;
-		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-	}
-
 	.sequencer-page {
 		max-width: 1400px;
 		margin: 0 auto;
@@ -345,7 +339,6 @@
 		min-height: 100vh;
 	}
 
-	/* Programs Container Styles */
 	.programs-container {
 		display: flex;
 		flex-direction: column;
@@ -354,29 +347,29 @@
 	}
 
 	.thin-drop-zone {
-		border: 2px dashed #4b5563;
+		border: 1px dashed rgba(56, 89, 138, 0.3);
 		border-radius: 12px;
 		padding: 1.5rem;
 		text-align: center;
-		transition: all 0.3s ease;
-		background-color: #1a1a1a;
+		transition: all 0.2s;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
 		cursor: pointer;
 	}
 
 	.thin-drop-zone.dragging {
-		border-color: #a855f7;
-		background-color: #2a1a3a;
-		transform: scale(1.01);
+		border-color: rgba(56, 89, 138, 0.5);
+		background: linear-gradient(145deg, #0f1419 0%, #0c0e12 50%, #0a0c10 100%);
+		border-style: solid;
 	}
 
 	.thin-drop-zone:hover {
-		border-color: #a855f7;
-		background-color: #1f1f1f;
+		border-color: rgba(56, 89, 138, 0.4);
+		background: linear-gradient(145deg, #0f1419 0%, #0c0e12 50%, #0a0c10 100%);
 	}
 
 	.drop-text {
 		font-size: 1rem;
-		color: #9ca3af;
+		color: #555;
 		margin: 0;
 		pointer-events: none;
 	}
@@ -388,28 +381,28 @@
 
 	.empty-text {
 		font-size: 1.5rem;
-		color: #6b7280;
+		color: #444;
 		margin: 0 0 0.5rem 0;
 	}
 
 	.empty-hint {
 		font-size: 1rem;
-		color: #4b5563;
+		color: #333;
 		margin: 0;
 	}
 
 	.compression-loading-card {
-		background-color: #1a1a1a;
+		background-color: #0f0f0f;
 		border-radius: 12px;
-		border: 1px solid #2a2a2a;
+		border: 1px solid #1a1a1a;
 		text-align: center;
 		padding: 3rem 2rem;
-		color: #e5e5e5;
+		color: #888;
 	}
 
 	.spinner {
-		border: 4px solid #2a2a2a;
-		border-top: 4px solid #a855f7;
+		border: 4px solid #1a1a1a;
+		border-top: 4px solid #888;
 		border-radius: 50%;
 		width: 50px;
 		height: 50px;
@@ -425,11 +418,11 @@
 	.compression-loading-card p {
 		margin: 0.5rem 0;
 		font-size: 1rem;
-		color: #e5e5e5;
+		color: #888;
 	}
 
 	.compression-hint {
 		font-size: 0.875rem !important;
-		color: #9ca3af !important;
+		color: #555 !important;
 	}
 </style>

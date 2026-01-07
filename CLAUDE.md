@@ -1,23 +1,80 @@
 # WLED Rust Server
 
+## TODO
+- Make per-board random patterns for effects (currently all boards show identical patterns):
+  - Lightning: Each board should have independent random flash positions/timing
+  - Sparkle: Each board should spawn sparks at different random positions
+  - Puddles: Each board should have independent puddle spawning
+  - Bursts: Each board should have independent burst positions
+
+## ⚠️ IMPORTANT: DO NOT RESTART THE SERVER ⚠️
+**Run `cargo build` to check compilation, but NEVER restart/kill the server process. The user will deploy with their deploy script.**
+
 A Rust-based intermediary server for controlling WLED devices with light sequencing for Loopy Pro integration.
 
-## NEXT STEPS - Code Cleanup Required
+## Documentation
+When the user refers to "documentation in SpaceNotes", use the spacenotes-mcp to access: `Development/WLED Server/WLED-rust-server documentation`
 
-**E1.31 Implementation Cleanup:**
-1. ✅ E1.31 raw implementation working (`src/transport/e131_raw.rs`)
-2. ❌ **Remove legacy E1.31 sacn library code** (`src/transport/e131.rs`) - no longer used, incompatible with WLED
-3. ❌ **Remove sacn dependency** from `Cargo.toml` - not needed, using raw implementation
-4. ❌ **Clean up per-board E1.31** in `src/actor.rs` - currently only groups use E1.31, per-board code is unused
-5. ❌ **Remove E1.31 config** from `src/config.rs` - `E131Config` struct and board-level fields not used
-6. ❌ **Update `boards.toml`** - Remove `e131_enabled` and `e131_universe` fields (not used)
-7. ❌ **Remove WebSocket fallback** from `src/group.rs` - already removed, verify no references remain
-8. ❌ **Test group commands** after cleanup to ensure nothing breaks
+## Two Operating Modes
 
-**Other Cleanup:**
-- Review and remove any dead code warnings from compiler
-- Update documentation to reflect E1.31-only group control
-- Consider making group board IPs configurable instead of hardcoded in main.rs
+**Home Use** (WebSocket/HTTP API)
+- Individual board control via WLED's native API
+- WLED presets stored on each board
+- Effects run on WLED itself (smooth transitions, ambient effects)
+- Preset sync features for managing board presets
+- User picks presets from what's available on each board
+
+**Performance Mode** (E1.31/Effects Engine)
+- Server-side effect rendering at 60fps
+- Direct LED control via E1.31, bypasses WLED's effect engine
+- Frame-perfect BPM sync for strobes
+- Effect presets defined in `boards.toml` (not on WLED boards)
+- Group-based, multi-board synchronized control
+- API: `POST /effects/start` with `{ preset, bpm, target }`
+
+These are separate systems serving different needs. Home use features (preset management, per-board control) must coexist with performance features (effects engine, E1.31 transport).
+
+
+**Target:** Beryl router at `192.168.8.1`
+
+**Beryl File Structure:**
+```
+/etc/wled-server/
+├── data/
+│   └── boards.toml          # Board config, groups, effect presets
+├── presets/
+│   └── *.json               # Home-use WLED presets
+├── programs/                # Empty - programs stored on USB
+├── audio/                   # Empty - audio stored on USB
+└── frontend/build/          # Static frontend files
+
+/tmp/mountd/disk1_part1/wled-server/   # USB STORAGE (persistent)
+├── programs/                # Light sequencer programs (*.json)
+└── audio/                   # Compressed audio files (*.mp3)
+```
+
+**Why USB?** Router's internal storage is limited. Programs and audio are stored on USB drive mounted at `/tmp/mountd/disk1_part1/`.
+
+**⚠️ CRITICAL: Local vs Beryl boards.toml are DIFFERENT configs!**
+- **Local** (`data/boards.toml`): Home boards (Desk, Squiiiiiiish, etc.)
+- **Beryl** (`/etc/wled-server/data/boards.toml`): Performance boards (ONE-NINE)
+
+**NEVER scp local boards.toml to Beryl** - it will overwrite the 9 performance boards!
+
+**To edit Beryl config directly:**
+```bash
+ssh root@192.168.8.1 "vi /etc/wled-server/data/boards.toml"
+ssh root@192.168.8.1 "/etc/init.d/wled-server restart"
+```
+
+**Presets can be synced (same on both):**
+- `presets/` → Beryl: `/etc/wled-server/presets/`
+
+**Environment Variables (set in init script):**
+- `WLED_PROGRAMS_PATH=/tmp/mountd/disk1_part1/wled-server/programs`
+- `WLED_AUDIO_PATH=/tmp/mountd/disk1_part1/wled-server/audio`
+
+The server reads `boards.toml` at startup (no hot-reload). After updating effect presets, sync to Beryl and restart the server. Frontend fetches presets on page load.
 
 ## Development Workflow
 
@@ -27,6 +84,13 @@ A Rust-based intermediary server for controlling WLED devices with light sequenc
 - Build frontend with Bun on development machine
 - Only deploy pre-built binaries and assets to target devices
 - Target devices (especially routers) cannot handle compilation workload
+
+## Reference Resources
+
+**WLED Source Code:** `~/Productivity/Development/esp32/WLED/`
+- `wled00/FX.cpp` - All effect implementations with speed/timing formulas
+- `wled00/FX.h` - Effect IDs and metadata
+- Use this for researching effect timing formulas for BPM sync features
 
 
 
@@ -39,72 +103,6 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - Actors respond using oneshot channels for state queries
 - Each actor maintains its own WebSocket connection and auto-reconnects on failure
 
-## Implementation Status
-
-### Core Modules:
-- **actor.rs**: BoardActor implementation with async run loop
-- **board.rs**: BoardState and BoardCommand definitions
-- **config.rs**: TOML configuration loading (defined but not yet used)
-- **main.rs**: Axum HTTP server with route handlers
-
-### Implemented Features:
-- ✓ Actor-based architecture with message passing
-- ✓ WebSocket connection management per board
-- ✓ Auto-reconnection logic (5-second delay)
-- ✓ WebSocket keepalive (5-second ping interval, 5-10s disconnect detection)
-- ✓ Toggle power endpoint (returns full BoardState after toggle)
-- ✓ Brightness control endpoint
-- ✓ Color control endpoint (RGB)
-- ✓ Effect selection endpoint
-- ✓ List boards endpoint (queries actor state via oneshot)
-- ✓ Server-Sent Events (SSE) for real-time updates
-- ✓ Multi-board configuration from boards.toml
-- ✓ Dynamic board registration/deletion endpoints with persistence
-- ✓ Board edit/rename functionality (PUT endpoint)
-- ✓ CORS enabled for cross-origin requests (including DELETE)
-- ✓ Network-accessible server (0.0.0.0 binding)
-- ✓ Graceful fallback for unreachable boards in list_boards
-- ✓ **Per-Board Presets** - Board-specific preset management
-  - GET /board/:id/presets endpoint fetches actual presets from each WLED board
-  - Frontend shows only presets that exist on that specific board
-  - Clear indication when boards need syncing ("No presets - click Sync")
-  - Prominent "Sync Presets" button for boards without presets
-  - Automatic preset fetching when boards connect
-  - Cached preset lists per board in frontend state
-- ✓ SvelteKit frontend with static adapter
-- ✓ WLED-style HSV color wheel component with working selector circle
-- ✓ Complete effects list (186 effects, alphabetically sorted)
-- ✓ Touch-friendly mobile interface
-- ✓ Dark mode UI theme
-- ✓ **Board Groups** - Frontend-only feature for controlling multiple boards simultaneously
-  - Create groups with multiple member boards
-  - Group controls (power, color, brightness, effect) affect all members
-  - Groups persist in localStorage
-  - Toggle switch reflects group's actual LED color
-  - Group state derived from member board states (all ON = group ON)
-- ✓ **Light Sequencer** - Timeline-based light programming with Loopy Pro integration
-  - WaveSurfer.js integration with drag-and-drop WAV loading
-  - Click-to-create cue markers on waveform with draggable regions
-  - Full cue configuration (boards/groups, preset, color, effect, brightness)
-  - Audio compression (WebM/Opus at 64kbps, ~95% size reduction)
-  - Program metadata (song name, Loopy Pro track number)
-  - Save/load programs to/from localStorage
-  - Delete programs with confirmation dialog
-  - Browser audio preview playback
-  - Program playback with OSC/LED cue triggering
-
-## Technical Details:
-
-### Actor Pattern Implementation:
-```rust
-// Communication flow:
-HTTP Request → Route Handler → mpsc::Sender<BoardCommand>
-  → BoardActor.run() → WebSocket → WLED Device
-
-// State query flow:
-HTTP Request → BoardCommand::GetState(oneshot::Sender)
-  → BoardActor → oneshot::Receiver → JSON Response
-```
 
 ### Dependencies:
 
@@ -125,21 +123,6 @@ HTTP Request → BoardCommand::GetState(oneshot::Sender)
 - **typescript**: Type safety
 - **bun**: JavaScript runtime and package manager
 
-### Frontend Architecture:
-```
-frontend/
-├── src/
-│   ├── routes/
-│   │   ├── +page.svelte           # Main UI (board controls)
-│   │   ├── sequencer/
-│   │   │   └── +page.svelte       # Light sequencer editor
-│   │   └── +layout.ts             # Prerender config
-│   └── lib/
-│       └── ColorWheel.svelte      # HSV color picker component
-├── .env                           # API URL configuration
-└── svelte.config.js              # Static adapter config
-```
-
 ### Connection Monitoring:
 
 **WebSocket Keepalive Implementation:**
@@ -156,6 +139,57 @@ frontend/
 
 **Why Active Monitoring:**
 TCP connections don't immediately close when devices power off. Without active pings, the actor won't detect the disconnection until it tries to read/write, which could take a long time if the board is idle.
+
+### Loopy Pro Audio Muting Mechanism:
+
+**Problem:** When triggering Loopy Pro via OSC, audio comes from Loopy (high-quality, uncompressed). Playing the same audio from the browser creates double playback and uses compressed versions.
+
+**Solution:** Conditional audio playback with simulated progress tracking.
+
+**Implementation Details:**
+
+1. **Settings Storage** (`src/config.rs`):
+   - `LoopyProConfig` struct includes `mute_audio: bool` field
+   - Persisted to `config.toml` on disk
+   - API endpoints: `GET/PUT /api/settings/loopy-pro`
+
+2. **Playback Logic** (`frontend/src/routes/performance/+page.svelte:84-211`):
+   ```javascript
+   // Fetch mute setting from backend
+   const settings = await fetch('/api/settings/loopy-pro');
+   const muteAudio = settings.mute_audio || false;
+
+   // Conditional playback
+   if (!muteAudio) {
+     await audio.play();  // Browser plays audio
+   } else {
+     // Silent mode - Loopy Pro plays audio via OSC
+   }
+   ```
+
+3. **Progress Tracking** (lines 184-206):
+   - **Normal mode:** Uses `audio.currentTime / audio.duration` from Audio element
+   - **Muted mode:** Simulates progress using `performance.now()` and stored `program.audioDuration`
+   - **Chain trigger:** Manually calls `audio.onended()` when simulated time reaches duration
+   - Both modes use `requestAnimationFrame` for smooth 60fps progress bar updates
+
+4. **Chain Auto-Play Compatibility:**
+   - Chain mechanism relies on `audio.onended` event
+   - When muted: Timer-based simulation triggers `onended` manually
+   - Chains work identically in both playback modes
+
+**User Flow:**
+1. Settings page: Toggle "Mute App Audio" checkbox
+2. Backend persists `mute_audio: true` to config.toml
+3. Performance page: Fetches setting before each program play
+4. If muted: OSC triggers Loopy Pro track, LED cues fire, progress simulated, chains work
+5. If unmuted: Browser plays audio, LED cues fire, progress tracked, chains work
+
+**Why This Design:**
+- Allows preview/standalone use without Loopy Pro (browser audio)
+- Avoids double playback when using Loopy Pro's superior audio
+- Maintains chain functionality regardless of audio source
+- Progress bars work identically in both modes
 
 ## API Endpoints
 
@@ -206,9 +240,7 @@ TCP connections don't immediately close when devices power off. Without active p
 - `POST /api/osc` - Send OSC message
 - `GET /api/health` - Health check
 
-### Known Limitations:
-- Sequencer programs stored in localStorage only (not synced across devices)
-- SSE available on backend but frontend uses polling
-- No PWA manifest/service worker
-- No graceful shutdown handling
-- No logging/tracing infrastructure
+### Settings Management
+- `GET /api/settings/loopy-pro` - Get Loopy Pro settings (IP, port, mute_audio)
+- `PUT /api/settings/loopy-pro` - Update Loopy Pro settings (JSON: `{"ip": "192.168.1.100", "port": 7000, "mute_audio": true}`)
+

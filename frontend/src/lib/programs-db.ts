@@ -199,24 +199,42 @@ export async function reorderPrograms(reorderedPrograms: Program[]): Promise<voi
   if (!browser) return;
 
   try {
-    // Update displayOrder for each program
     const updatedPrograms = reorderedPrograms.map((program, index) => {
-      program.displayOrder = index;
-      return program;
+      const instance = Program.fromJson(program as any) || program;
+      instance.displayOrder = index;
+      return instance;
     });
 
-    // Update local store immediately for responsive UI
     programs.set(updatedPrograms);
 
-    // Persist to backend (batch update)
     await Promise.all(
-      updatedPrograms.map(program =>
-        fetch(`${API_URL}/programs/${program.id}`, {
+      updatedPrograms.map(program => {
+        const jsonBody = typeof program.toJson === 'function'
+          ? program.toJson()
+          : {
+              id: program.id,
+              song_name: program.songName,
+              loopy_pro_track: program.loopyProTrack,
+              file_name: program.fileName,
+              audio_file: program.audioId,
+              cues: program.cues.map((c: any) => typeof c.toJson === 'function' ? c.toJson() : c),
+              created_at: program.createdAt,
+              default_target_board: program.defaultTargetBoard,
+              next_program_id: program.nextProgramId,
+              transition_type: program.transitionType,
+              transition_duration: program.transitionDuration,
+              audio_duration: program.audioDuration,
+              display_order: program.displayOrder,
+              bpm: program.bpm,
+              grid_offset: program.gridOffset,
+            };
+
+        return fetch(`${API_URL}/programs/${program.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(program.toJson())
-        })
-      )
+          body: JSON.stringify(jsonBody)
+        });
+      })
     );
 
     console.log('[programs-db] Programs reordered successfully');

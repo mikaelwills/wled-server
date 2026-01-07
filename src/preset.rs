@@ -25,12 +25,6 @@ impl WledPreset {
         Ok(())
     }
 
-    /// Find preset by ID
-    pub fn find_by_id(id: &str, presets_path: &Path) -> Result<Option<WledPreset>, Box<dyn std::error::Error>> {
-        let all_presets = Self::load_all(presets_path)?;
-        Ok(all_presets.into_iter().find(|p| p.id == id))
-    }
-
     /// Convert preset to WLED API JSON format for syncing to board
     pub fn to_wled_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -50,5 +44,55 @@ impl WledPreset {
             "psave": self.wled_slot,  // Save to this slot on WLED board
             "n": self.name.clone(),    // Preset name
         })
+    }
+
+    /// Convert preset to WLED presets.json file format (for direct file upload)
+    pub fn to_wled_file_format(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mainseg": 0,
+            "seg": [{
+                "id": 0,
+                "grp": 1,
+                "spc": 0,
+                "of": 0,
+                "on": self.state.on,
+                "frz": false,
+                "bri": self.state.brightness,
+                "cct": 127,
+                "set": 0,
+                "col": [
+                    [self.state.color[0], self.state.color[1], self.state.color[2], 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0]
+                ],
+                "fx": self.state.effect,
+                "sx": self.state.speed,
+                "ix": self.state.intensity,
+                "pal": 0,
+                "c1": 128,
+                "c2": 128,
+                "c3": 16,
+                "sel": true,
+                "rev": false,
+                "mi": false,
+                "o1": false,
+                "o2": false,
+                "o3": false,
+                "si": 0,
+                "m12": 0
+            }],
+            "n": self.name.clone()
+        })
+    }
+
+    /// Build complete WLED presets.json file from all presets
+    pub fn build_wled_presets_file(presets: &[WledPreset]) -> serde_json::Value {
+        let mut file_obj = serde_json::Map::new();
+        file_obj.insert("0".to_string(), serde_json::json!({}));
+        for preset in presets {
+            let slot_key = preset.wled_slot.to_string();
+            file_obj.insert(slot_key, preset.to_wled_file_format());
+        }
+        serde_json::Value::Object(file_obj)
     }
 }

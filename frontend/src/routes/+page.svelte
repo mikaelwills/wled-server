@@ -30,6 +30,10 @@
 	let boardPresets: { [boardId: string]: any[] } = {};
 	let boardPresetsLoading: { [boardId: string]: boolean } = {};
 
+	// Live slider values (for real-time display while dragging)
+	let liveSpeed: { [boardId: string]: number } = {};
+	let liveIntensity: { [boardId: string]: number } = {};
+
 	// UI state (local to component)
 	let expandedBoard: string | null = null;
 	let showAddForm = false;
@@ -40,6 +44,8 @@
 	let newGroupUniverse: string = ''; // User-specified universe (empty = auto-assign)
 	let editBoardId = '';
 	let editBoardIp = '';
+	let editBoardLedCount = '';
+	let editBoardUniverse = '';
 	let editingBoardId = ''; // Original ID being edited
 	let ledCountTimeout: number | null = null;
 	let transitionTimeout: number | null = null;
@@ -55,6 +61,9 @@
 	// Save preset state
 	let savingPresetForBoard: string | null = null; // Board ID showing save preset form
 	let newPresetName = '';
+
+	// Selected preset per board (for Update Preset button)
+	let selectedPreset: { [boardId: string]: number } = {};
 
 	// Sync presets state
 	let syncingBoard: string | null = null;
@@ -81,6 +90,10 @@
 				const result = await response.json();
 				console.log('Group sync result:', result);
 
+				// Check for failures and build detailed message
+				const failures = result.member_results?.filter((r: any) => r.error) || [];
+				const successes = result.member_results?.filter((r: any) => !r.error) || [];
+
 				// Refresh presets for all member boards
 				if (board.memberIds) {
 					for (const memberId of board.memberIds) {
@@ -91,7 +104,18 @@
 					}
 				}
 
-				alert(`Successfully synced ${result.total_successful_syncs} presets to group members`);
+				// Show detailed sync results
+				let message = `Synced ${result.total_successful_syncs} presets to ${successes.length}/${board.memberIds?.length || 0} boards`;
+
+				if (failures.length > 0) {
+					message += `\n\n⚠️ ${failures.length} board(s) failed:`;
+					failures.forEach((f: any, i: number) => {
+						const memberBoard = board.memberIds?.[f.board_index];
+						message += `\n- ${memberBoard || 'Unknown'}: ${f.error}`;
+					});
+				}
+
+				alert(message);
 			} else {
 				// Sync presets to individual board
 				const result = await syncPresetsToBoard(boardId);
@@ -225,7 +249,9 @@
 		editingBoardId = board.id;
 		editBoardId = board.id;
 		editBoardIp = board.ip;
-		editingBoard = board.id; // Set inline edit mode
+		editBoardLedCount = board.ledCount?.toString() || '';
+		editBoardUniverse = board.universe?.toString() || '';
+		editingBoard = board.id;
 	}
 
 	function openEditGroupForm(group: BoardState) {
@@ -283,11 +309,11 @@
 			const preset = await response.json();
 			console.log('Preset saved with slot:', preset.wled_slot);
 
-			// Apply the preset to the current board immediately
-			await handleLoadPreset(boardId, preset.wled_slot);
-
-			// Refresh presets list
+			// Refresh global presets list first
 			await fetchPresets();
+
+			// Sync presets to the board so the new preset is available
+			await syncPresetsToBoard(boardId);
 
 			// Refresh board presets to show the new preset
 			await fetchBoardPresets(boardId, board.ip);
@@ -296,6 +322,58 @@
 		} catch (error) {
 			console.error('Error saving preset:', error);
 			alert(error instanceof Error ? error.message : 'Failed to save preset');
+		}
+	}
+
+	async function handleUpdatePreset(boardId: string) {
+		const presetSlot = selectedPreset[boardId];
+		if (!presetSlot) {
+			alert('Please select a preset to update');
+			return;
+		}
+
+		try {
+			// Get current board state
+			const board = $boards.find(b => b.id === boardId);
+			if (!board) {
+				throw new Error('Board not found');
+			}
+
+			// Get the preset name from presets list
+			const preset = $presets.find(p => p.id === presetSlot);
+			if (!preset) {
+				throw new Error('Preset not found');
+			}
+
+			const response = await fetch(`${API_URL}/presets/${presetSlot}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: preset.name, // Keep existing name
+					wled_slot: presetSlot,
+					state: {
+						on: board.on,
+						brightness: board.brightness,
+						color: board.color,
+						effect: board.effect,
+						speed: board.speed,
+						intensity: board.intensity
+					}
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error('Failed to update preset');
+			}
+
+			console.log(`✓ Updated preset "${preset.name}" (slot ${presetSlot})`);
+			alert(`Updated preset: ${preset.name}`);
+
+			// Refresh presets list
+			await fetchPresets();
+		} catch (error) {
+			console.error('Error updating preset:', error);
+			alert(error instanceof Error ? error.message : 'Failed to update preset');
 		}
 	}
 
@@ -371,12 +449,15 @@
 		}
 
 		try {
-			await updateBoard(editingBoardId, editBoardId, editBoardIp);
+			const ledCount = editBoardLedCount ? parseInt(editBoardLedCount) : undefined;
+			const universe = editBoardUniverse ? parseInt(editBoardUniverse) : undefined;
+			await updateBoard(editingBoardId, editBoardId, editBoardIp, ledCount, universe);
 
-			// Clear inline edit mode
 			editingBoard = null;
 			editBoardId = '';
 			editBoardIp = '';
+			editBoardLedCount = '';
+			editBoardUniverse = '';
 			editingBoardId = '';
 		} catch (e) {
 			alert(e instanceof Error ? e.message : 'Failed to update board');
@@ -387,6 +468,8 @@
 		editingBoard = null;
 		editBoardId = '';
 		editBoardIp = '';
+		editBoardLedCount = '';
+		editBoardUniverse = '';
 		editingBoardId = '';
 	}
 
@@ -569,7 +652,7 @@
 		{:else}
 			<div class="boards">
 				{#each $boards as board}
-					<div class="board-card">
+					<div class="board-card" class:expanded={expandedBoard === board.id}>
 						<div class="board-header">
 							<div on:click={() => toggleExpanded(board.id)} style="flex: 1; cursor: pointer;">
 								<h2>{board.id}</h2>
@@ -632,6 +715,28 @@
 												placeholder="e.g., 192.168.1.100"
 												class="form-input"
 											/>
+										</div>
+										<div class="form-row">
+											<div class="form-group half">
+												<label for="edit-board-leds-{board.id}">LED Count:</label>
+												<input
+													id="edit-board-leds-{board.id}"
+													type="number"
+													bind:value={editBoardLedCount}
+													placeholder="60"
+													class="form-input"
+												/>
+											</div>
+											<div class="form-group half">
+												<label for="edit-board-universe-{board.id}">Universe:</label>
+												<input
+													id="edit-board-universe-{board.id}"
+													type="number"
+													bind:value={editBoardUniverse}
+													placeholder="1"
+													class="form-input"
+												/>
+											</div>
 										</div>
 										<div class="form-actions">
 											<button class="submit-btn" on:click={handleUpdateBoard}>Update</button>
@@ -709,11 +814,28 @@
 								{:else}
 									<!-- Normal Controls -->
 									<div class="color-section">
-										<ColorWheel
-											color={board.color}
-											disabled={board.isGroup ? false : !board.connected}
-											onColorChange={(r, g, b) => setBoardColor(board.id, r, g, b)}
-										/>
+										{#if !board.isGroup}
+											<a
+												href="http://{board.ip}"
+												target="_blank"
+												rel="noopener noreferrer"
+												class="wled-gui-btn"
+												title="Open WLED GUI"
+											>
+												<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+													<polyline points="15 3 21 3 21 9"></polyline>
+													<line x1="10" y1="14" x2="21" y2="3"></line>
+												</svg>
+											</a>
+										{/if}
+										<div class="color-wheel-container">
+											<ColorWheel
+												color={board.color}
+												disabled={board.isGroup ? false : !board.connected}
+												onColorChange={(r, g, b) => setBoardColor(board.id, r, g, b)}
+											/>
+										</div>
 									</div>
 
 									<div class="brightness-section">
@@ -736,12 +858,11 @@
 											<div class="preset-container">
 												{#if $presets && $presets.length > 0}
 													<select
-														value=""
+														bind:value={selectedPreset[board.id]}
 														on:change={(e) => {
 															const value = e.currentTarget.value;
 															if (value) {
 																handleLoadPreset(board.id, parseInt(value));
-																e.currentTarget.value = ''; // Reset dropdown
 															}
 														}}
 														class="preset-dropdown"
@@ -751,6 +872,15 @@
 															<option value={preset.id}>{preset.name}</option>
 														{/each}
 													</select>
+													{#if selectedPreset[board.id]}
+														<button
+															class="update-preset-btn"
+															on:click={() => handleUpdatePreset(board.id)}
+															title="Update selected preset with current board state"
+														>
+															Update
+														</button>
+													{/if}
 												{:else}
 													<select disabled class="preset-dropdown no-presets">
 														<option>No server presets available</option>
@@ -777,22 +907,32 @@
 												<option>Loading presets...</option>
 											</select>
 										{:else if boardPresets[board.id] && boardPresets[board.id].length > 0}
-											<select
-												value=""
-												on:change={(e) => {
-													const value = e.currentTarget.value;
-													if (value) {
-														handleLoadPreset(board.id, parseInt(value));
-														e.currentTarget.value = ''; // Reset dropdown
-													}
-												}}
-												class="preset-dropdown"
-											>
-												<option value="">Presets ({boardPresets[board.id].length})</option>
-												{#each boardPresets[board.id].sort((a, b) => a.name.localeCompare(b.name)) as preset}
-													<option value={preset.wled_slot}>{preset.name}</option>
-												{/each}
-											</select>
+											<div class="preset-container">
+												<select
+													bind:value={selectedPreset[board.id]}
+													on:change={(e) => {
+														const value = e.currentTarget.value;
+														if (value) {
+															handleLoadPreset(board.id, parseInt(value));
+														}
+													}}
+													class="preset-dropdown"
+												>
+													<option value="">Presets ({boardPresets[board.id].length})</option>
+													{#each boardPresets[board.id].sort((a, b) => a.name.localeCompare(b.name)) as preset}
+														<option value={preset.wled_slot}>{preset.name}</option>
+													{/each}
+												</select>
+												{#if selectedPreset[board.id]}
+													<button
+														class="update-preset-btn"
+														on:click={() => handleUpdatePreset(board.id)}
+														title="Update selected preset with current board state"
+													>
+														Update
+													</button>
+												{/if}
+											</div>
 										{:else}
 											<div class="no-presets-container">
 												<select disabled class="preset-dropdown no-presets">
@@ -831,7 +971,7 @@
 
 									{#if !board.isGroup}
 										<div class="effect-params-section">
-											<label for="speed-{board.id}">Speed</label>
+											<label for="speed-{board.id}">Speed <span class="param-value">{liveSpeed[board.id] ?? board.speed ?? 0}</span></label>
 											<input
 												id="speed-{board.id}"
 												type="range"
@@ -839,6 +979,7 @@
 												max="255"
 												value={board.speed}
 												disabled={!board.connected}
+												on:input={(e) => liveSpeed = { ...liveSpeed, [board.id]: parseInt(e.currentTarget.value) }}
 												on:change={(e) =>
 													setBoardSpeed(board.id, parseInt(e.currentTarget.value))}
 												class="effect-param-slider"
@@ -846,7 +987,7 @@
 										</div>
 
 										<div class="effect-params-section">
-											<label for="intensity-{board.id}">Intensity</label>
+											<label for="intensity-{board.id}">Intensity <span class="param-value">{liveIntensity[board.id] ?? board.intensity ?? 0}</span></label>
 											<input
 												id="intensity-{board.id}"
 												type="range"
@@ -854,6 +995,7 @@
 												max="255"
 												value={board.intensity}
 												disabled={!board.connected}
+												on:input={(e) => liveIntensity = { ...liveIntensity, [board.id]: parseInt(e.currentTarget.value) }}
 												on:change={(e) =>
 													setBoardIntensity(board.id, parseInt(e.currentTarget.value))}
 												class="effect-param-slider"
@@ -976,42 +1118,30 @@
 		}
 	}
 
-	h1 {
-		margin-top: 0;
-		margin-bottom: 1.5rem;
-		color: #ffffff;
-	}
-
 	.add-board-btn {
 		width: 100%;
 		padding: 0.75rem 1.5rem;
 		margin-top: 2rem;
-		background: #2a2a2a;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 6px;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		color: #888;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		border-radius: 8px;
 		font-size: 1rem;
-		font-weight: 600;
+		font-weight: 500;
 		cursor: pointer;
 		transition: all 0.2s;
 	}
 
 	.add-board-btn:hover {
-		background: #333;
-		border-color: #555;
+		background: linear-gradient(145deg, #0f1419 0%, #0c0e12 50%, #0a0c10 100%);
+		color: #fff;
+		border-color: rgba(56, 89, 138, 0.4);
 	}
 
 	.add-board-fullscreen {
 		max-width: 500px;
 		margin: 0 auto;
 		padding: 2rem;
-	}
-
-	.add-board-fullscreen h2 {
-		margin-top: 0;
-		margin-bottom: 2rem;
-		color: #ffffff;
-		text-align: center;
 	}
 
 	.form-group {
@@ -1021,34 +1151,34 @@
 	.form-group label {
 		display: block;
 		margin-bottom: 0.5rem;
-		color: #e0e0e0;
+		color: #888;
 		font-weight: 500;
 	}
 
 	.form-input {
 		width: 100%;
 		padding: 0.75rem;
-		background: #333;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 6px;
+		background: #0f0f0f;
+		color: #e5e5e5;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		font-size: 1rem;
 		box-sizing: border-box;
 	}
 
 	.form-input:focus {
 		outline: none;
-		border-color: #4caf50;
+		border-color: #333;
 	}
 
 	.group-toggle-btn {
 		width: 60px;
 		height: 44px;
 		padding: 0;
-		background: #333;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 6px;
+		background: #0f0f0f;
+		color: #888;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		cursor: pointer;
 		transition: all 0.2s;
 		display: flex;
@@ -1057,18 +1187,18 @@
 	}
 
 	.group-toggle-btn:hover {
-		background: #3a3a3a;
-		border-color: #555;
+		background: #141414;
+		border-color: #222;
 	}
 
 	.group-toggle-btn.active {
-		background: #2d3a2d;
-		border-color: #4caf50;
-		color: #4caf50;
+		background: #111;
+		border-color: #333;
+		color: #fff;
 	}
 
 	.form-input::placeholder {
-		color: #666;
+		color: #444;
 	}
 
 	.form-actions {
@@ -1081,8 +1211,8 @@
 	.cancel-btn {
 		flex: 1;
 		padding: 0.75rem;
-		border: 1px solid #333;
-		border-radius: 6px;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		font-size: 1rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -1090,23 +1220,25 @@
 	}
 
 	.submit-btn {
-		background: #252525;
-		color: #4caf50;
+		background: transparent;
+		color: #666;
 	}
 
 	.submit-btn:hover {
-		background: #1e2d20;
-		border-color: #4caf50;
+		background: #111;
+		color: #fff;
+		border-color: #222;
 	}
 
 	.cancel-btn {
-		background: #252525;
-		color: #e57373;
+		background: transparent;
+		color: #555;
 	}
 
 	.cancel-btn:hover {
-		background: #2d2020;
-		border-color: #e57373;
+		background: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
 	}
 
 	.board-selection-grid {
@@ -1127,7 +1259,7 @@
 	}
 
 	.board-selection-item:hover {
-		background: #2a2a2a;
+		background: #111;
 	}
 
 	.board-selection-item input[type="checkbox"] {
@@ -1140,18 +1272,18 @@
 	}
 
 	.board-selection-item input[type="checkbox"]:checked + .board-selection-name {
-		color: #4caf50;
+		color: #fff;
 	}
 
 	.board-selection-name {
 		font-weight: 500;
-		color: #e0e0e0;
+		color: #888;
 		display: inline;
 	}
 
 	.board-selection-ip {
 		font-size: 0.9rem;
-		color: #999;
+		color: #444;
 		margin-left: auto;
 		display: inline;
 	}
@@ -1171,8 +1303,8 @@
 	.action-btn {
 		width: 100%;
 		padding: 0.6rem 0.75rem;
-		background: #252525;
-		border: 1px solid #333;
+		background: #0b0d14;
+		border: 1px solid rgba(56, 89, 138, 0.2);
 		border-radius: 6px;
 		font-size: 0.85rem;
 		font-weight: 500;
@@ -1181,52 +1313,81 @@
 	}
 
 	.action-btn-edit {
-		color: #64b5f6;
+		background: rgba(56, 89, 138, 0.15);
+		color: #8bb8de;
+		border-color: rgba(56, 89, 138, 0.3);
 	}
 
 	.action-btn-edit:hover {
-		background: #2d2d2d;
-		border-color: #64b5f6;
+		background: rgba(56, 89, 138, 0.25);
+		color: #a8d0f0;
+		border-color: rgba(56, 89, 138, 0.4);
 	}
 
 	.action-btn-save {
-		color: #4caf50;
+		background: rgba(90, 138, 56, 0.15);
+		color: #9cb88b;
+		border-color: rgba(90, 138, 56, 0.3);
 	}
 
 	.action-btn-save:hover {
-		background: #1e2d20;
-		border-color: #4caf50;
+		background: rgba(90, 138, 56, 0.25);
+		color: #b8d4a8;
+		border-color: rgba(90, 138, 56, 0.4);
 	}
 
 	.action-btn-presets {
-		color: #81c784;
+		background: rgba(139, 92, 246, 0.15);
+		color: #b8a8d8;
+		border-color: rgba(139, 92, 246, 0.3);
 	}
 
 	.action-btn-presets:hover {
-		background: #2d2d2d;
-		border-color: #81c784;
+		background: rgba(139, 92, 246, 0.25);
+		color: #d0c0f0;
+		border-color: rgba(139, 92, 246, 0.4);
 	}
 
 	.action-btn-delete {
-		color: #e57373;
+		background: rgba(180, 60, 60, 0.15);
+		color: #e08888;
+		border-color: rgba(180, 60, 60, 0.3);
 	}
 
 	.action-btn-delete:hover {
-		background: #2d2020;
-		border-color: #e57373;
+		background: rgba(180, 60, 60, 0.25);
+		color: #f0a0a0;
+		border-color: rgba(180, 60, 60, 0.4);
 	}
 
 	.boards {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-		gap: 1rem;
+		column-count: 3;
+		column-gap: 1rem;
+	}
+
+	@media (max-width: 900px) {
+		.boards {
+			column-count: 2;
+		}
+	}
+
+	@media (max-width: 600px) {
+		.boards {
+			column-count: 1;
+		}
 	}
 
 	.board-card {
-		border: 1px solid #333;
-		border-radius: 8px;
-		background: #2a2a2a;
+		border: 1px solid rgba(56, 89, 138, 0.15);
+		border-radius: 12px;
+		background: #0b0d14;
 		overflow: hidden;
+		break-inside: avoid;
+		margin-bottom: 1rem;
+	}
+
+	.board-card.expanded {
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
 	}
 
 	.board-header {
@@ -1241,13 +1402,13 @@
 	.board-header h2 {
 		margin: 0 0 0.2rem 0;
 		font-size: 1rem;
-		color: #ffffff;
+		color: #e5e5e5;
 	}
 
 	.ip-text {
 		margin: 0;
 		font-size: 0.75rem;
-		color: #888;
+		color: #555;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -1255,37 +1416,67 @@
 
 	.connection-dot {
 		display: inline-block;
-		width: 8px;
-		height: 8px;
+		width: 6px;
+		height: 6px;
 		border-radius: 50%;
 		transition: background-color 0.3s;
 	}
 
 	.connection-dot.connected {
-		background-color: #4caf50;
-		box-shadow: 0 0 6px rgba(76, 175, 80, 0.8);
+		background-color: #22c55e;
+		box-shadow: 0 0 4px rgba(34, 197, 94, 0.6);
 	}
 
 	.connection-dot.disconnected {
-		background-color: #f44336;
-		box-shadow: 0 0 6px rgba(244, 67, 54, 0.8);
+		background-color: #ef4444;
+		box-shadow: 0 0 4px rgba(239, 68, 68, 0.6);
 	}
 
 	.expand-icon {
 		font-size: 1.2rem;
-		color: #888;
+		color: #444;
 		transition: transform 0.2s;
 	}
 
 	.board-controls {
 		padding: 0.75rem;
-		border-top: 1px solid #333;
+		border-top: 1px solid #1a1a1a;
 	}
 
 	.color-section {
+		position: relative;
 		display: flex;
 		justify-content: center;
 		margin-bottom: 1rem;
+	}
+
+	.color-wheel-container {
+		position: relative;
+		display: inline-block;
+	}
+
+	.wled-gui-btn {
+		position: absolute;
+		top: 0;
+		right: 0.75rem;
+		z-index: 10;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		background: #0b0d14;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		border-radius: 50%;
+		color: #6b9fc8;
+		text-decoration: none;
+		transition: all 0.2s;
+	}
+
+	.wled-gui-btn:hover {
+		background: rgba(56, 89, 138, 0.15);
+		border-color: rgba(56, 89, 138, 0.4);
+		color: #8bb8de;
 	}
 
 	.toggle-switch {
@@ -1293,26 +1484,6 @@
 		display: inline-block;
 		width: 50px;
 		height: 26px;
-	}
-
-	.toggle-switch-large {
-		width: 70px;
-		height: 44px;
-	}
-
-	.toggle-switch-large .toggle-slider {
-		border-radius: 44px;
-	}
-
-	.toggle-switch-large .toggle-slider:before {
-		height: 38px;
-		width: 38px;
-		left: 3px;
-		bottom: 3px;
-	}
-
-	.toggle-switch-large input:checked + .toggle-slider:before {
-		transform: translateX(26px);
 	}
 
 	.toggle-switch input {
@@ -1328,7 +1499,7 @@
 		left: 0;
 		right: 0;
 		bottom: 0;
-		background-color: #444;
+		background-color: #222;
 		transition: 0.3s;
 		border-radius: 26px;
 	}
@@ -1340,17 +1511,18 @@
 		width: 20px;
 		left: 3px;
 		bottom: 3px;
-		background-color: white;
+		background-color: #666;
 		transition: 0.3s;
 		border-radius: 50%;
 	}
 
 	.toggle-switch input:checked + .toggle-slider.color-toggle {
-		background-color: var(--board-color, #4caf50);
+		background-color: var(--board-color, #22c55e);
 	}
 
 	.toggle-switch input:checked + .toggle-slider:before {
 		transform: translateX(24px);
+		background-color: white;
 	}
 
 	.toggle-switch input:disabled + .toggle-slider {
@@ -1370,25 +1542,26 @@
 		width: 100%;
 		padding: 0.75rem;
 		padding-right: 0.75rem;
-		background: #333;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 6px;
+		background: #0b0d14;
+		color: #888;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		border-radius: 8px;
 		font-size: 1rem;
 		cursor: pointer;
 		outline: none;
 		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23e0e0e0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
 		background-repeat: no-repeat;
 		background-position: right 0.75rem center;
 	}
 
 	.preset-dropdown:hover {
-		background: #3a3a3a;
+		background: #0d1117;
+		border-color: rgba(56, 89, 138, 0.3);
 	}
 
 	.preset-dropdown:focus {
-		border-color: #4caf50;
+		border-color: rgba(56, 89, 138, 0.5);
 	}
 
 	.preset-dropdown:disabled {
@@ -1409,40 +1582,57 @@
 	}
 
 	.preset-dropdown.no-presets {
-		background: #444;
-		color: #999;
-		border-color: #555;
+		background: #080a10;
+		color: #444;
+		border-color: rgba(56, 89, 138, 0.15);
 	}
 
 	.sync-presets-btn.prominent {
-		background: linear-gradient(135deg, #4caf50, #45a049);
-		color: white;
-		border: none;
+		background: #0b0d14;
+		color: #555;
+		border: 1px solid rgba(56, 89, 138, 0.2);
 		padding: 0.75rem 1rem;
-		border-radius: 6px;
+		border-radius: 8px;
 		font-size: 0.9rem;
-		font-weight: 600;
+		font-weight: 500;
 		cursor: pointer;
 		transition: all 0.2s ease;
 		text-align: center;
-		box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
 	}
 
 	.sync-presets-btn.prominent:hover:not(:disabled) {
-		background: linear-gradient(135deg, #45a049, #3d8b40);
-		transform: translateY(-1px);
-		box-shadow: 0 4px 8px rgba(76, 175, 80, 0.4);
+		background: #111;
+		color: #888;
+		border-color: #222;
 	}
 
 	.sync-presets-btn.prominent:active:not(:disabled) {
-		transform: translateY(0);
-		box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+		background: #0f0f0f;
 	}
 
 	.sync-presets-btn.prominent:disabled {
-		opacity: 0.6;
+		opacity: 0.5;
 		cursor: not-allowed;
-		transform: none;
+	}
+
+	.update-preset-btn {
+		width: 100%;
+		padding: 0.6rem 0.75rem;
+		background: transparent;
+		border: 1px solid #1a1a1a;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.15s;
+		color: #555;
+		margin-top: 0.5rem;
+	}
+
+	.update-preset-btn:hover {
+		background: #111;
+		color: #888;
+		border-color: #222;
 	}
 
 	.effects-section {
@@ -1453,25 +1643,26 @@
 		width: 100%;
 		padding: 0.75rem;
 		padding-right: 0.75rem;
-		background: #333;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 6px;
+		background: #0b0d14;
+		color: #888;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		border-radius: 8px;
 		font-size: 1rem;
 		cursor: pointer;
 		outline: none;
 		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23e0e0e0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
 		background-repeat: no-repeat;
 		background-position: right 0.75rem center;
 	}
 
 	.effects-dropdown:hover {
-		background: #3a3a3a;
+		background: #0d1117;
+		border-color: rgba(56, 89, 138, 0.3);
 	}
 
 	.effects-dropdown:focus {
-		border-color: #4caf50;
+		border-color: rgba(56, 89, 138, 0.5);
 	}
 
 	.effects-dropdown:disabled {
@@ -1489,19 +1680,19 @@
 		align-items: center;
 		margin-bottom: 0.5rem;
 		font-size: 0.875rem;
-		color: #9ca3af;
+		color: #8bb8de;
 	}
 
 	.led-count-value {
-		color: #e5e5e5;
+		color: #a8d0f0;
 		font-weight: 500;
 	}
 
 	.led-count-slider {
 		width: 100%;
-		height: 8px;
-		border-radius: 4px;
-		background: linear-gradient(to right, #444, #a855f7);
+		height: 4px;
+		border-radius: 2px;
+		background: rgba(56, 89, 138, 0.3);
 		outline: none;
 		-webkit-appearance: none;
 		cursor: pointer;
@@ -1515,22 +1706,22 @@
 	.led-count-slider::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #4caf50;
+		background: #fff;
 		cursor: pointer;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.led-count-slider::-moz-range-thumb {
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #4caf50;
+		background: #fff;
 		cursor: pointer;
 		border: none;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.transition-wrapper {
@@ -1543,19 +1734,19 @@
 		align-items: center;
 		margin-bottom: 0.5rem;
 		font-size: 0.875rem;
-		color: #9ca3af;
+		color: #8bb8de;
 	}
 
 	.transition-value {
-		color: #e5e5e5;
+		color: #a8d0f0;
 		font-weight: 500;
 	}
 
 	.transition-slider {
 		width: 100%;
-		height: 8px;
-		border-radius: 4px;
-		background: linear-gradient(to right, #444, #ff9800);
+		height: 4px;
+		border-radius: 2px;
+		background: rgba(56, 89, 138, 0.3);
 		outline: none;
 		-webkit-appearance: none;
 		cursor: pointer;
@@ -1569,29 +1760,29 @@
 	.transition-slider::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #ff9800;
+		background: #fff;
 		cursor: pointer;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.transition-slider::-moz-range-thumb {
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #ff9800;
+		background: #fff;
 		cursor: pointer;
 		border: none;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.brightness-slider {
 		width: 100%;
-		height: 8px;
-		border-radius: 4px;
-		background: linear-gradient(to right, #000, #fff);
+		height: 4px;
+		border-radius: 2px;
+		background: linear-gradient(to right, #111, #666);
 		outline: none;
 		-webkit-appearance: none;
 		cursor: pointer;
@@ -1605,22 +1796,22 @@
 	.brightness-slider::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #4caf50;
+		background: #fff;
 		cursor: pointer;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.brightness-slider::-moz-range-thumb {
-		width: 20px;
-		height: 20px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #4caf50;
+		background: #fff;
 		cursor: pointer;
 		border: none;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.effect-params-section {
@@ -1631,18 +1822,24 @@
 	}
 
 	.effect-params-section label {
-		min-width: 70px;
+		min-width: 100px;
 		font-size: 0.9rem;
-		color: #aaa;
+		color: #8bb8de;
+	}
+
+	.param-value {
+		color: #a8d0f0;
+		font-weight: 500;
+		margin-left: 4px;
 	}
 
 	.effect-param-slider {
 		flex: 1;
 		-webkit-appearance: none;
 		appearance: none;
-		height: 6px;
-		border-radius: 3px;
-		background: #333;
+		height: 4px;
+		border-radius: 2px;
+		background: rgba(56, 89, 138, 0.3);
 		outline: none;
 		transition: background 0.2s;
 	}
@@ -1655,22 +1852,22 @@
 	.effect-param-slider::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
-		width: 18px;
-		height: 18px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #2196f3;
+		background: #fff;
 		cursor: pointer;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.effect-param-slider::-moz-range-thumb {
-		width: 18px;
-		height: 18px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: #2196f3;
+		background: #fff;
 		cursor: pointer;
 		border: none;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
 	.error {
@@ -1688,28 +1885,39 @@
 	.edit-form .form-group label {
 		display: block;
 		margin-bottom: 0.5rem;
-		color: #e0e0e0;
+		color: #888;
 		font-weight: 500;
+	}
+
+	.edit-form .form-row {
+		display: flex;
+		gap: 0.75rem;
+		margin-bottom: 1rem;
+	}
+
+	.edit-form .form-group.half {
+		flex: 1;
+		margin-bottom: 0;
 	}
 
 	.edit-form .form-input {
 		width: 100%;
 		padding: 0.75rem;
-		background: #333;
-		color: #e0e0e0;
-		border: 1px solid #444;
-		border-radius: 4px;
+		background: #0f0f0f;
+		color: #e5e5e5;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		font-size: 1rem;
 		box-sizing: border-box;
 	}
 
 	.edit-form .form-input:focus {
 		outline: none;
-		border-color: #4caf50;
+		border-color: #333;
 	}
 
 	.edit-form .form-input::placeholder {
-		color: #888;
+		color: #444;
 	}
 
 	.edit-form .form-actions {
@@ -1722,34 +1930,34 @@
 	.edit-form .cancel-btn {
 		flex: 1;
 		padding: 0.6rem 0.75rem;
-		background: #252525;
-		border: 1px solid #333;
-		border-radius: 6px;
+		background: transparent;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		font-size: 0.85rem;
 		font-weight: 500;
 		cursor: pointer;
 		transition: all 0.15s;
-		color: #e0e0e0;
+		color: #555;
 	}
 
 	.edit-form .submit-btn {
-		color: #64b5f6;
-		border-color: #64b5f6;
+		color: #555;
 	}
 
 	.edit-form .submit-btn:hover {
-		background: #2d2d2d;
-		border-color: #64b5f6;
+		background: #111;
+		color: #fff;
+		border-color: #222;
 	}
 
 	.edit-form .cancel-btn {
-		color: #e57373;
-		border-color: #e57373;
+		color: #444;
 	}
 
 	.edit-form .cancel-btn:hover {
-		background: #2d2020;
-		border-color: #e57373;
+		background: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
 	}
 
 	.member-grid {
@@ -1772,9 +1980,9 @@
 		width: 16px;
 		height: 16px;
 		appearance: none;
-		border: 2px solid #4a5568;
+		border: 1px solid #333;
 		border-radius: 3px;
-		background: #1a202c;
+		background: #111;
 		cursor: pointer;
 		position: relative;
 		transition: all 0.2s ease;
@@ -1784,8 +1992,8 @@
 	}
 
 	.member-checkbox-input:checked {
-		background: #2d3748;
-		border-color: #4caf50;
+		background: #1a1a1a;
+		border-color: #444;
 	}
 
 	.member-checkbox-input:checked::after {
@@ -1794,18 +2002,18 @@
 		top: 50%;
 		left: 50%;
 		transform: translate(-50%, -50%);
-		color: #4caf50;
+		color: #fff;
 		font-size: 10px;
 		font-weight: bold;
 	}
 
 	.member-checkbox-input:hover {
-		border-color: #718096;
+		border-color: #444;
 	}
 
 	.member-name {
 		font-weight: 500;
-		color: #f7fafc;
+		color: #888;
 		font-size: 0.9rem;
 		flex: 1;
 		overflow: hidden;
@@ -1820,7 +2028,7 @@
 		left: 0;
 		right: 0;
 		bottom: 0;
-		background-color: rgba(0, 0, 0, 0.7);
+		background-color: rgba(0, 0, 0, 0.8);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1828,24 +2036,23 @@
 	}
 
 	.confirm-dialog {
-		background-color: #2a2a2a;
-		border: 1px solid #444;
-		border-radius: 8px;
+		background-color: #0f0f0f;
+		border: 1px solid #1a1a1a;
+		border-radius: 12px;
 		padding: 2rem;
 		max-width: 400px;
 		width: 90%;
-		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 	}
 
 	.confirm-dialog h3 {
 		margin: 0 0 1rem 0;
-		color: #ff6b6b;
+		color: #fff;
 		font-size: 1.2rem;
 	}
 
 	.confirm-dialog p {
 		margin: 0 0 1.5rem 0;
-		color: #e0e0e0;
+		color: #888;
 		line-height: 1.4;
 	}
 
@@ -1857,28 +2064,31 @@
 
 	.btn {
 		padding: 0.5rem 1rem;
-		border: none;
-		border-radius: 4px;
+		border: 1px solid #1a1a1a;
+		border-radius: 8px;
 		cursor: pointer;
 		font-size: 0.9rem;
-		transition: background-color 0.2s;
+		transition: all 0.2s;
+		background: transparent;
 	}
 
 	.btn-cancel {
-		background-color: #555;
-		color: #e0e0e0;
+		color: #555;
 	}
 
 	.btn-cancel:hover {
-		background-color: #666;
+		background: #111;
+		color: #888;
+		border-color: #222;
 	}
 
 	.btn-delete {
-		background-color: #ff6b6b;
-		color: white;
+		color: #555;
 	}
 
 	.btn-delete:hover {
-		background-color: #ff5252;
+		background: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
 	}
 </style>

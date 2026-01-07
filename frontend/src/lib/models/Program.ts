@@ -17,8 +17,13 @@ export interface ProgramData {
   nextProgramId?: string;
   transitionType: TransitionType;
   transitionDuration: number; // milliseconds
+  audioDuration?: number; // Audio duration in seconds (for muted playback chains)
   // Display order for performance page
   displayOrder: number;
+  // BPM for speed-synced effects
+  bpm?: number;
+  // Grid offset (downbeat position) for beat grid alignment
+  gridOffset?: number;
 }
 
 export class Program implements ProgramData {
@@ -35,8 +40,13 @@ export class Program implements ProgramData {
   nextProgramId?: string;
   transitionType: TransitionType;
   transitionDuration: number;
+  audioDuration?: number; // Audio duration in seconds (for muted playback chains)
   // Display order for performance page
   displayOrder: number;
+  // BPM for speed-synced effects
+  bpm?: number;
+  // Grid offset (downbeat position) for beat grid alignment
+  gridOffset?: number;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -51,7 +61,10 @@ export class Program implements ProgramData {
     this.nextProgramId = data.nextProgramId;
     this.transitionType = data.transitionType || 'immediate';
     this.transitionDuration = data.transitionDuration || 0;
+    this.audioDuration = data.audioDuration;
     this.displayOrder = data.displayOrder ?? 0;
+    this.bpm = data.bpm;
+    this.gridOffset = data.gridOffset;
   }
 
   /**
@@ -96,7 +109,10 @@ export class Program implements ProgramData {
       nextProgramId: data.nextProgramId || data.next_program_id,
       transitionType: (data.transitionType || data.transition_type || 'immediate') as TransitionType,
       transitionDuration: data.transitionDuration || data.transition_duration || 0,
+      audioDuration: data.audioDuration || data.audio_duration,
       displayOrder: data.displayOrder ?? data.display_order ?? 0,
+      bpm: data.bpm,
+      gridOffset: data.gridOffset ?? data.grid_offset ?? 0,
     });
   }
 
@@ -117,7 +133,10 @@ export class Program implements ProgramData {
       next_program_id: this.nextProgramId,
       transition_type: this.transitionType,
       transition_duration: this.transitionDuration,
+      audio_duration: this.audioDuration,
       display_order: this.displayOrder,
+      bpm: this.bpm,
+      grid_offset: this.gridOffset,
     };
   }
 }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Program {
@@ -24,6 +25,12 @@ pub struct Program {
     pub transition_type: String,  // "immediate", "blackout", or "hold"
     #[serde(default)]
     pub transition_duration: u32,  // Duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_duration: Option<f64>,  // Audio duration in seconds (for muted playback chains)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bpm: Option<u16>,  // BPM for speed-synced effects
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_offset: Option<f64>,  // Downbeat position for beat grid alignment
 }
 
 fn default_transition_type() -> String {
@@ -34,17 +41,14 @@ fn default_transition_type() -> String {
 pub struct Cue {
     pub time: f64,
     pub label: String,
-    pub boards: Vec<String>,
-    #[serde(default = "default_action")]
-    pub action: String,
-    pub preset: u8,
-    pub color: String,
-    pub effect: u8,
-    pub brightness: u8,
+    pub targets: Vec<String>,
+    pub preset_name: String,
+    #[serde(default = "default_sync_rate")]
+    pub sync_rate: f64,
 }
 
-fn default_action() -> String {
-    "preset".to_string()
+fn default_sync_rate() -> f64 {
+    1.0
 }
 
 impl Program {
@@ -56,13 +60,6 @@ impl Program {
         Ok(())
     }
 
-    pub fn load_from_file(id: &str, programs_path: &Path) -> Result<Program, Box<dyn std::error::Error>> {
-        let file_path = programs_path.join(format!("{}.json", id));
-        let json = fs::read_to_string(file_path)?;
-        let program = serde_json::from_str(&json)?;
-        Ok(program)
-    }
-
     pub fn load_all(programs_path: &Path) -> Result<Vec<Program>, Box<dyn std::error::Error>> {
         let mut programs = Vec::new();
 
@@ -72,10 +69,23 @@ impl Program {
 
         for entry in fs::read_dir(programs_path)? {
             let entry = entry?;
-            if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                let json = fs::read_to_string(entry.path())?;
-                if let Ok(program) = serde_json::from_str(&json) {
-                    programs.push(program);
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                match fs::read_to_string(&path) {
+                    Ok(json) => {
+                        match serde_json::from_str::<Program>(&json) {
+                            Ok(program) => {
+                                info!("Loaded program: {}", program.id);
+                                programs.push(program);
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse program {}: {}", path.display(), e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read program file {}: {}", path.display(), e);
+                    }
                 }
             }
         }

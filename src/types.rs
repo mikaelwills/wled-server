@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock, Mutex};
 
@@ -11,12 +12,16 @@ use crate::sse::SseEvent;
 pub struct RegisterBoardRequest {
     pub id: String,
     pub ip: String,
+    pub led_count: Option<u16>,
+    pub universe: Option<u16>,
 }
 
 #[derive(Deserialize)]
 pub struct UpdateBoardRequest {
     pub new_id: Option<String>,
     pub new_ip: Option<String>,
+    pub led_count: Option<u16>,
+    pub universe: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -84,9 +89,21 @@ pub struct GroupEffectRequest {
 
 #[derive(Deserialize)]
 pub struct GroupPresetRequest {
+    #[serde(default)]
     pub preset: u8,
     #[serde(default = "default_transition")]
     pub transition: u8,
+    #[serde(default)]
+    pub bpm: Option<u16>,
+    #[serde(default)]
+    pub preset_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct EffectsEngineStartRequest {
+    pub preset: String,
+    pub bpm: f64,
+    pub target: String,
 }
 
 fn default_transition() -> u8 { 0 }
@@ -107,6 +124,7 @@ pub struct UploadAudioResponse {
 pub struct SavePresetRequest {
     pub name: String,
     pub wled_slot: u8,
+    pub board_id: Option<String>,  // Optional board ID to sync preset to
     pub description: Option<String>,
     pub state: Option<PresetState>,
 }
@@ -145,9 +163,14 @@ pub struct AppState {
     pub boards: Arc<RwLock<HashMap<String, BoardEntry>>>,
     pub broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     pub storage_paths: Arc<crate::config::StoragePaths>,
-    // Per-group E1.31 transports - each group gets its own universe
     pub group_e131_transports: Arc<RwLock<HashMap<String, crate::transport::E131RawTransport>>>,
     pub config: Arc<Mutex<crate::config::Config>>,
+    pub effects_engine: Arc<crate::effects_engine::EffectsEngine>,
+    pub pattern_engine: Arc<crate::pattern_engine::PatternEngine>,
+    pub programs: Arc<RwLock<HashMap<String, crate::program::Program>>>,
+    pub program_engine: Arc<crate::program_engine::ProgramEngine>,
+    pub connected_ips: Arc<RwLock<HashSet<String>>>,
+    pub performance_mode: Arc<AtomicBool>,
 }
 
 pub type SharedState = Arc<AppState>;

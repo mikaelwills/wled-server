@@ -1,13 +1,14 @@
 <script>
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
+	import { page } from '$app/stores';
 	import WaveSurfer from 'wavesurfer.js';
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, dimProgramBoards } from '$lib/playback-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/playback-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
-	import { programs as programsStore, boards, presets, currentlyPlayingProgram } from '$lib/store';
+	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 
 	// Props
@@ -31,6 +32,200 @@
 	// Program metadata
 	let songName = $state('');
 	let loopyProTrack = $state('');
+	let audioDuration = $state(null); // Duration in seconds (extracted from audio)
+	let bpm = $state(null); // BPM for speed-synced effects
+	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
+
+	// Preset picker modal state
+	let presetPicker = $state({
+		open: false,
+		markerId: null,
+		step: 'category', // 'category' or 'color'
+		selectedCategory: null
+	});
+
+	const quickPresets = ['Off', 'Flash'];
+
+	const allCategories = $derived(() => {
+		const categoryMap = new Map();
+		$performancePresets.forEach(p => {
+			if (quickPresets.includes(p.name)) return;
+			const parts = p.name.split(' ');
+			if (parts.length >= 2) {
+				const category = parts.slice(0, -1).join(' ');
+				categoryMap.set(category, false);
+			}
+		});
+		$patternPresets.forEach(p => {
+			const parts = p.name.split(' ');
+			if (parts.length >= 2) {
+				const category = parts.slice(0, -1).join(' ');
+				categoryMap.set(category, true);
+			}
+		});
+		return Array.from(categoryMap.entries())
+			.map(([name, isPattern]) => ({ name, isPattern }))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	});
+
+	const categoryColors = $derived(() => {
+		if (!presetPicker.selectedCategory) return [];
+		const categoryInfo = allCategories().find(c => c.name === presetPicker.selectedCategory);
+		const isPattern = categoryInfo?.isPattern ?? false;
+		const presets = isPattern ? $patternPresets : $performancePresets;
+		return presets
+			.filter(p => p.name.startsWith(presetPicker.selectedCategory + ' '))
+			.map(p => ({
+				name: p.name,
+				color: p.name.split(' ').pop(),
+				isPattern
+			}));
+	});
+
+	function openPresetPicker(markerId) {
+		presetPicker = {
+			open: true,
+			markerId,
+			step: 'category',
+			selectedCategory: null
+		};
+	}
+
+	function selectCategory(category) {
+		presetPicker.selectedCategory = category;
+		presetPicker.step = 'color';
+	}
+
+	function selectPreset(presetName) {
+		if (presetPicker.markerId) {
+			updateMarkerPreset(presetPicker.markerId, presetName);
+		}
+		closePresetPicker();
+	}
+
+	function closePresetPicker() {
+		presetPicker = {
+			open: false,
+			markerId: null,
+			step: 'category',
+			selectedCategory: null
+		};
+	}
+
+	function getColorStyle(colorName) {
+		const colorMap = {
+			'Red': '#ef4444',
+			'Orange': '#f97316',
+			'Yellow': '#eab308',
+			'Green': '#22c55e',
+			'Cyan': '#06b6d4',
+			'Blue': '#3b82f6',
+			'Purple': '#a855f7',
+			'Pink': '#ec4899',
+			'White': '#ffffff',
+			'Warm': '#fbbf24',
+			'Cool': '#93c5fd'
+		};
+		return colorMap[colorName] || '#e5e5e5';
+	}
+
+	// Snap time to nearest grid line based on BPM and offset (only if within 10px)
+	function snapToGrid(time) {
+		if (!bpm || bpm <= 0 || !wavesurfer || !audioDuration) return time;
+
+		const barInterval = (60 / bpm) * 4;
+		const gridInterval = (barInterval * 4) / $gridMultiplier;
+
+		// Calculate snap threshold in time (25px worth)
+		// zoomLevel is minPxPerSec - when 0, calculate from container width
+		const wrapper = wavesurfer.getWrapper();
+		if (!wrapper) return time;
+		const pixelsPerSecond = zoomLevel > 0 ? zoomLevel : wrapper.clientWidth / audioDuration;
+		const snapThresholdTime = 25 / pixelsPerSecond;
+
+		// Find nearest grid line relative to offset
+		const relativeTime = time - gridOffset;
+		const nearestGridRelative = Math.round(relativeTime / gridInterval) * gridInterval;
+		const nearestGridTime = gridOffset + nearestGridRelative;
+
+		// Only snap if within threshold
+		if (Math.abs(time - nearestGridTime) <= snapThresholdTime) {
+			return nearestGridTime;
+		}
+		return time;
+	}
+
+	// Find the scroll container inside WaveSurfer's DOM
+	function getScrollContainer() {
+		const wrapper = wavesurfer?.getWrapper();
+		if (!wrapper) return null;
+		const findScrollable = (el) => {
+			const style = window.getComputedStyle(el);
+			if (style.overflowX === 'auto' || style.overflowX === 'scroll') return el;
+			for (const child of el.children) {
+				const found = findScrollable(child);
+				if (found) return found;
+			}
+			return null;
+		};
+		return findScrollable(wrapper) || wrapper.querySelector('div');
+	}
+
+	// Store grid region IDs so we can remove them on update
+	let gridRegionIds = [];
+
+	// Render beat grid using Regions plugin (syncs with zoom/scroll automatically)
+	function updateBeatGrid() {
+		// Remove existing grid regions first
+		gridRegionIds.forEach(id => {
+			const allRegions = regions?.getRegions();
+			const region = allRegions?.find(r => r.id === id);
+			if (region) region.remove();
+		});
+		gridRegionIds = [];
+
+		// Don't show grid when fully zoomed out or missing required data
+		if (!wavesurfer || !regions || !bpm || bpm <= 0 || !audioDuration || audioDuration <= 0 || zoomLevel === 0) {
+			return;
+		}
+
+		// Calculate grid intervals
+		const beatInterval = 60 / bpm;
+		const barInterval = beatInterval * 4;
+		const gridInterval = (barInterval * 4) / $gridMultiplier;
+
+		// Generate grid positions from offset, going both forward and backward
+		const gridPositions = [];
+
+		// Forward from offset
+		for (let t = gridOffset; t <= audioDuration; t += gridInterval) {
+			if (t >= 0) gridPositions.push(t);
+		}
+
+		// Backward from offset (excluding offset itself)
+		for (let t = gridOffset - gridInterval; t >= 0; t -= gridInterval) {
+			gridPositions.push(t);
+		}
+
+		// Create grid line regions
+		gridPositions.forEach(t => {
+			// Calculate bar number relative to offset
+			const relativeTime = t - gridOffset;
+			const barNumber = Math.round(relativeTime / barInterval);
+			const isDownbeat = barNumber % 4 === 0;
+
+			const region = regions.addRegion({
+				start: t,
+				end: t,
+				color: isDownbeat ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.06)',
+				drag: false,
+				resize: false
+			});
+			gridRegionIds.push(region.id);
+		});
+
+		console.log('📐 Grid:', { bpm, offset: gridOffset.toFixed(2), mult: $gridMultiplier, lines: gridRegionIds.length });
+	}
 
 	// Dropdown state
 	let openDropdownId = $state(null);
@@ -42,8 +237,12 @@
 	let defaultTargetBoard = $state(null);
 	let defaultBoardDropdownOpen = $state(false);
 
-	// Zoom state
-	let zoomLevel = $state(50); // pixels per second
+	// Zoom state (0 = fit to container, >0 = pixels per second)
+	let zoomLevel = $state(0);
+
+	// Seeking state for debouncing
+	let seekDebounceTimeout = null;
+	let lastSeekTime = 0;
 
 	// Pending cues to restore after audio loads (component-scoped, not global)
 	let pendingCues = [];
@@ -102,11 +301,59 @@
 		};
 		document.addEventListener('click', handleClickOutside);
 
+		// Keyboard handler for play/pause (Space) and add cue (C)
+		function handleKeyPress(event) {
+			// Only respond on the programming page
+			const currentPath = get(page).url.pathname;
+			if (currentPath !== '/programming') return;
+
+			// Check if this is the last active program
+			const lastActiveId = get(lastActiveProgramId);
+			if (lastActiveId !== programId) return;
+
+			// Only respond if this program has audio loaded
+			if (!wavesurfer || !isLoaded) return;
+
+			// Handle spacebar - play/pause
+			if (event.code === 'Space') {
+				event.preventDefault();
+
+				// Toggle play/pause
+				if (isPlaying) {
+					stopFullProgram();
+				} else {
+					playFullProgram();
+				}
+			}
+			// Handle 'C' key - add cue marker at current playhead position
+			else if (event.code === 'KeyC') {
+				event.preventDefault();
+
+				// Get current playhead position
+				const currentTime = wavesurfer.getCurrentTime();
+
+				// Add marker at this position
+				addMarker(currentTime);
+
+				// Select the newly created marker (it's the last one added)
+				const newMarker = markers[markers.length - 1];
+				if (newMarker) {
+					currentlySelectedMarker = newMarker.id;
+				}
+
+				console.log(`🎯 Added cue marker at ${currentTime.toFixed(3)}s via 'C' key`);
+			}
+		}
+
+		// Add keyboard listener
+		document.addEventListener('keydown', handleKeyPress);
+
 		return () => {
 			if (wavesurfer) {
 				wavesurfer.destroy();
 			}
 			document.removeEventListener('click', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyPress);
 		};
 	});
 
@@ -115,6 +362,8 @@
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
 		defaultTargetBoard = data.defaultTargetBoard || null;
+		bpm = data.bpm || null;
+		gridOffset = data.gridOffset || 0;
 		// Note: cues will need to be restored after audio file is loaded
 		// Store them temporarily in component-scoped variable
 		pendingCues = data.cues || [];
@@ -131,9 +380,9 @@
 		// Create WaveSurfer instance
 		wavesurfer = WaveSurfer.create({
 			container: `#waveform-${sanitizedProgramId}`,
-			waveColor: 'rgb(147, 51, 234)',
-			progressColor: 'rgb(168, 85, 247)',
-			cursorColor: 'rgb(192, 132, 252)',
+			waveColor: 'rgba(139, 92, 246, 0.5)',
+			progressColor: 'rgba(139, 92, 246, 0.8)',
+			cursorColor: 'rgba(167, 139, 250, 0.9)',
 			barWidth: 2,
 			barRadius: 3,
 			height: 120,
@@ -144,9 +393,29 @@
 		wavesurfer.on('decode', () => {
 			isLoaded = true;
 
+			// Extract and store audio duration
+			const duration = wavesurfer.getDuration();
+			if (duration && duration > 0) {
+				audioDuration = duration;
+				console.log(`📏 Audio duration extracted: ${duration.toFixed(2)}s`);
+				updateBeatGrid();
+			} else {
+				console.warn('⚠️ Could not extract audio duration');
+			}
+
 			// Restore pending cues if any
 			if (pendingCues && pendingCues.length > 0) {
 				pendingCues.forEach(cue => {
+					// Migrate legacy preset ID to preset name
+					let presetName = cue.presetName;
+					if (!presetName && cue.preset && cue.preset > 0) {
+						const preset = $performancePresets.find(p => p.id === cue.preset);
+						if (preset) {
+							presetName = preset.name;
+							console.log(`📦 Migrated cue preset ID ${cue.preset} → "${presetName}"`);
+						}
+					}
+
 					// Create region first to get ID
 					const markerRegion = regions.addRegion({
 						start: cue.time,
@@ -175,11 +444,12 @@
 						time: cue.time,
 						label: cue.label,
 						boards: cue.boards,
-						action: cue.action || 'preset',
+						presetName: presetName,
 						preset: cue.preset,
 						effect: cue.effect,
 						color: cue.color,
-						brightness: cue.brightness
+						brightness: cue.brightness,
+						syncRate: cue.syncRate ?? 1
 					}];
 				});
 				pendingCues = [];
@@ -193,6 +463,44 @@
 
 		wavesurfer.on('pause', () => {
 			isPlaying = false;
+		});
+
+		// Handle seeking during playback - reschedule cues from new position (debounced)
+		wavesurfer.on('seeking', (currentTime) => {
+			// Check if this program is currently playing
+			let currentProgram = null;
+			const unsub = currentlyPlayingProgram.subscribe(p => {
+				currentProgram = p;
+			});
+			unsub();
+
+			// Only reschedule if THIS program is playing
+			if (currentProgram && currentProgram.id === programId && isPlaying) {
+				// Clear any pending reschedule
+				if (seekDebounceTimeout) {
+					clearTimeout(seekDebounceTimeout);
+				}
+
+				// Only reschedule if seek distance is significant (> 0.5s from last processed seek)
+				const seekDistance = Math.abs(currentTime - lastSeekTime);
+
+				// Debounce: wait 150ms after user stops seeking before rescheduling
+				seekDebounceTimeout = setTimeout(() => {
+					console.log(`⏩ Seeking to ${currentTime.toFixed(2)}s during playback - rescheduling cues`);
+					lastSeekTime = currentTime;
+
+					// Get the current program data
+					let program = null;
+					const unsubPrograms = programsStore.subscribe(programs => {
+						program = programs.find(p => p.id === programId);
+					});
+					unsubPrograms();
+
+					if (program) {
+						playProgramService(program, currentTime);
+					}
+				}, 150);
+			}
 		});
 
 		// Handle left-click (seek) and right-click (add marker) on waveform
@@ -214,10 +522,16 @@
 				// Left-click: Seek to position
 				console.log('🖱️ Left-click: Seeking to', clickTime);
 				wavesurfer.seekTo(relativeX);
+			} else if (event.button === 2 && event.shiftKey) {
+				// Shift+Right-click: Set downbeat position (grid offset)
+				gridOffset = clickTime;
+				console.log('🎵 Downbeat set at:', clickTime.toFixed(3) + 's');
+				updateBeatGrid();
 			} else if (event.button === 2) {
-				// Right-click: Add marker
-				console.log('🖱️ Right-click: Adding marker at', clickTime);
-				addMarker(clickTime);
+				// Right-click: Add marker (snapped to grid if BPM set)
+				const snappedTime = snapToGrid(clickTime);
+				console.log('🖱️ Right-click: Adding marker at', snappedTime, bpm ? '(snapped)' : '');
+				addMarker(snappedTime);
 			}
 		});
 
@@ -230,7 +544,15 @@
 		regions.on('region-updated', (region) => {
 			const markerIndex = markers.findIndex(m => m.id === region.id);
 			if (markerIndex !== -1) {
-				markers[markerIndex].time = region.start;
+				// Snap to grid if BPM is set
+				const snappedTime = snapToGrid(region.start);
+
+				// If snapped position differs, update the region
+				if (snappedTime !== region.start && bpm) {
+					region.setOptions({ start: snappedTime, end: snappedTime });
+				}
+
+				markers[markerIndex].time = snappedTime;
 
 				// Regenerate label to ensure it's always centered
 				const marker = markers[markerIndex];
@@ -423,13 +745,14 @@
 		const newMarker = {
 			id: markerRegion.id,
 			time: time,
-			label: 'No Preset', // Matches default action='preset' with preset=0
+			label: 'No Preset',
+			presetName: undefined,
 			boards: initialBoards,
-			action: 'preset',
 			preset: 0,
 			effect: 0,
 			color: '#ff0000',
-			brightness: 255
+			brightness: 255,
+			syncRate: 1
 		};
 
 		markers = [...markers, newMarker];
@@ -446,24 +769,6 @@
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker[property] = value;
-
-			// Auto-update label when action changes
-			if (property === 'action') {
-				let newLabel = '';
-				if (value === 'on') {
-					newLabel = 'On';
-				} else if (value === 'off') {
-					newLabel = 'Off';
-				} else if (value === 'preset') {
-					// Find preset name by wled_slot
-					const preset = $presets.find(p => p.id === marker.preset);
-					newLabel = preset ? preset.name : 'No Preset';
-				}
-
-				marker.label = newLabel;
-				regenerateMarkerLabel(markerId, newLabel);
-			}
-
 			markers = [...markers];
 			syncMarkersToStore();
 		}
@@ -499,29 +804,15 @@
 		}
 	}
 
-	function updateMarkerPreset(markerId, presetSlot) {
+	function updateMarkerPreset(markerId, presetName) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
-			marker.preset = presetSlot;
+			marker.presetName = presetName;
+			marker.preset = undefined;
 
-			// Update label to preset name (find by wled_slot)
-			const preset = $presets.find(p => p.id === presetSlot);
-			if (preset) {
-				console.log('Updating marker with preset slot:', markerId, presetSlot, preset.name);
-				marker.label = preset.name;
-				regenerateMarkerLabel(markerId, preset.name);
-			}
+			marker.label = presetName;
+			regenerateMarkerLabel(markerId, presetName);
 
-			markers = [...markers];
-			syncMarkersToStore();
-		}
-	}
-
-	function updateMarkerLabel(markerId, newLabel) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.label = newLabel;
-			regenerateMarkerLabel(markerId, newLabel);
 			markers = [...markers];
 			syncMarkersToStore();
 		}
@@ -536,6 +827,7 @@
 				marker.boards = [...marker.boards, boardId];
 			}
 			markers = [...markers];
+			syncMarkersToStore();
 		}
 	}
 
@@ -569,51 +861,50 @@
 	function zoomIn() {
 		if (!wavesurfer || !isLoaded) return;
 
-		// Get current playhead position
-		const currentTime = wavesurfer.getCurrentTime();
-		const duration = wavesurfer.getDuration();
-		const relativePosition = currentTime / duration;
+		// Zoom levels: 0 (fit), 25, 38, 56, 84, 127, 190, 285, 428, 500 (max)
+		if (zoomLevel === 0) {
+			zoomLevel = 25;
+		} else {
+			zoomLevel = Math.min(Math.round(zoomLevel * 1.5), 500);
+		}
 
-		// Increase zoom by 50%
-		zoomLevel = Math.min(zoomLevel * 1.5, 500);
 		wavesurfer.zoom(zoomLevel);
-
-		// Maintain playhead position in viewport
-		setTimeout(() => {
-			const waveformContainer = wavesurfer.getWrapper();
-			const scrollContainer = waveformContainer.parentElement;
-			if (scrollContainer) {
-				const scrollPosition = (relativePosition * scrollContainer.scrollWidth) - (scrollContainer.clientWidth / 2);
-				scrollContainer.scrollLeft = Math.max(0, scrollPosition);
-			}
-		}, 0);
+		setTimeout(() => updateBeatGrid(), 10);
 	}
 
 	function zoomOut() {
 		if (!wavesurfer || !isLoaded) return;
 
-		// Get current playhead position
-		const currentTime = wavesurfer.getCurrentTime();
-		const duration = wavesurfer.getDuration();
-		const relativePosition = currentTime / duration;
+		if (zoomLevel <= 25) {
+			zoomLevel = 0;
+		} else {
+			zoomLevel = Math.round(zoomLevel / 1.5);
+		}
 
-		// Decrease zoom by 33%, or reset to 0 if close
-		zoomLevel = Math.max(zoomLevel / 1.5, 0);
 		wavesurfer.zoom(zoomLevel);
-
-		// Maintain playhead position in viewport
-		setTimeout(() => {
-			const waveformContainer = wavesurfer.getWrapper();
-			const scrollContainer = waveformContainer.parentElement;
-			if (scrollContainer) {
-				const scrollPosition = (relativePosition * scrollContainer.scrollWidth) - (scrollContainer.clientWidth / 2);
-				scrollContainer.scrollLeft = Math.max(0, scrollPosition);
-			}
-		}, 0);
+		setTimeout(() => updateBeatGrid(), 10);
 	}
 
+	function gridDenser() {
+		const maxMultiplier = 128;
+		if ($gridMultiplier < maxMultiplier) {
+			gridMultiplier.set($gridMultiplier * 2);
+			updateBeatGrid();
+		}
+	}
+
+	function gridSparser() {
+		const minMultiplier = 1;
+		if ($gridMultiplier > minMultiplier) {
+			gridMultiplier.set($gridMultiplier / 2);
+			updateBeatGrid();
+		}
+	}
 
 function playFullProgram() {
+		// Mark this program as the last active (for spacebar control)
+		lastActiveProgramId.set(programId);
+
 		// Get the current program data from store
 		let currentProgram = null;
 		const unsubscribe = programsStore.subscribe(programs => {
@@ -627,20 +918,19 @@ function playFullProgram() {
 		const currentTime = wavesurfer ? wavesurfer.getCurrentTime() : 0;
 		console.log('▶️ PLAY pressed - starting from position:', currentTime);
 
-		// Capture the EXACT moment audio starts
-		const audioStartTime = performance.now();
-
 		// Play from current position (or from start if at beginning)
 		if (wavesurfer) {
-			wavesurfer.setTime(currentTime);  // Sync audio to cursor position
+			wavesurfer.setTime(currentTime);
 			wavesurfer.play();
 		}
 
-		// IMMEDIATELY schedule LED cues with audio start timestamp
-		playProgramService(currentProgram, currentTime, audioStartTime);
+		playProgramService(currentProgram, currentTime);
 	}
 
 	function stopFullProgram() {
+		// Mark this program as the last active (for spacebar control)
+		lastActiveProgramId.set(programId);
+
 		const pausePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
 		console.log('⏸ PAUSE pressed - paused at position:', pausePosition);
 
@@ -648,50 +938,29 @@ function playFullProgram() {
 			wavesurfer.pause();
 		}
 
-		// Stop global playback
-		stopPlaybackService();
-
-		// Dim THIS program's boards (fire-and-forget, don't block UI)
-		let currentProgram = null;
-		const unsubscribe = programsStore.subscribe(programs => {
-			currentProgram = programs.find(p => p.id === programId);
-		});
-		unsubscribe();
-
-		if (currentProgram) {
-			dimProgramBoards(currentProgram).catch(err => {
-				console.error('Failed to dim boards:', err);
-			});
+		// Clear any pending seek debounce timeout
+		if (seekDebounceTimeout) {
+			clearTimeout(seekDebounceTimeout);
+			seekDebounceTimeout = null;
 		}
+
+		// Pause playback - clears timeouts but keeps lights as-is
+		pausePlaybackService();
 	}
 
 	function stopAndReset() {
-		const beforePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
-		console.log('⏹ STOP pressed - position before:', beforePosition);
+		lastActiveProgramId.set(programId);
+		console.log('⏹ STOP pressed');
 
-		// Stop global playback
-		stopPlaybackService();
-
-		// Dim THIS program's boards (fire-and-forget, don't block UI)
-		let currentProgram = null;
-		const unsubscribe = programsStore.subscribe(programs => {
-			currentProgram = programs.find(p => p.id === programId);
-		});
-		unsubscribe();
-
-		if (currentProgram) {
-			dimProgramBoards(currentProgram).catch(err => {
-				console.error('Failed to dim boards:', err);
-			});
+		if (seekDebounceTimeout) {
+			clearTimeout(seekDebounceTimeout);
+			seekDebounceTimeout = null;
 		}
 
-		// Stop and reset to start IMMEDIATELY (don't wait for dimming)
+		stopPlaybackService();
+
 		if (wavesurfer) {
-			wavesurfer.stop();  // Should stop playback and reset to 0
-			setTimeout(() => {
-				const afterPosition = wavesurfer.getCurrentTime();
-				console.log('⏹ Position after stop():', afterPosition);
-			}, 50);
+			wavesurfer.stop();
 		}
 	}
 
@@ -702,7 +971,14 @@ function playFullProgram() {
 			return;
 		}
 
-		// Check if any cue has no boards selected
+		const cuesWithoutPreset = markers.filter(m => !m.presetName);
+		if (cuesWithoutPreset.length > 0) {
+			const confirmed = confirm(
+				`${cuesWithoutPreset.length} cue(s) have no preset selected and will be skipped during playback. Save anyway?`
+			);
+			if (!confirmed) return;
+		}
+
 		const cuesWithoutBoards = markers.filter(m => m.boards.length === 0);
 		if (cuesWithoutBoards.length > 0) {
 			const confirmed = confirm(
@@ -736,14 +1012,18 @@ function playFullProgram() {
 				time: m.time,
 				label: m.label,
 				boards: m.boards,
-				action: m.action || 'preset',
-				preset: m.preset,
+				presetName: m.presetName,
 				color: m.color,
 				effect: m.effect,
-				brightness: m.brightness
+				brightness: m.brightness,
+				syncRate: m.syncRate ?? 1
 			})),
 			createdAt: existingProgram?.createdAt || new Date().toISOString(),
-			defaultTargetBoard: defaultTargetBoard
+			defaultTargetBoard: defaultTargetBoard,
+			audioDuration: audioDuration,
+			bpm: bpm ? Number(bpm) : undefined,
+			gridOffset: gridOffset || 0,
+			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0
 		};
 
 		// Create Program model using factory
@@ -885,6 +1165,15 @@ function playFullProgram() {
 		if (!defaultTargetBoard) return 'Default';
 		return defaultTargetBoard;
 	}
+
+	// Cleanup on component destroy
+	onDestroy(() => {
+		// Clear seek debounce timeout to prevent memory leaks
+		if (seekDebounceTimeout) {
+			clearTimeout(seekDebounceTimeout);
+			seekDebounceTimeout = null;
+		}
+	});
 </script>
 
 <div class="program-editor">
@@ -914,6 +1203,15 @@ function playFullProgram() {
 				placeholder="Track"
 				class="track-input"
 				maxlength="2"
+			/>
+			<input
+				type="number"
+				bind:value={bpm}
+				placeholder="BPM"
+				class="bpm-input"
+				min="20"
+				max="300"
+				oninput={updateBeatGrid}
 			/>
 			<span class="file-name">{fileName}</span>
 			<div class="spacer"></div>
@@ -956,6 +1254,14 @@ function playFullProgram() {
 					</svg>
 					<button class="zoom-btn zoom-btn-left" onclick={zoomOut} title="Zoom Out">−</button>
 					<button class="zoom-btn zoom-btn-right" onclick={zoomIn} title="Zoom In">+</button>
+				</div>
+
+				<div class="zoom-btn-group" title="Grid density">
+					<svg class="zoom-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+					<button class="zoom-btn zoom-btn-left" onclick={gridSparser} title="Sparser Grid">−</button>
+					<button class="zoom-btn zoom-btn-right" onclick={gridDenser} title="Denser Grid">+</button>
 				</div>
 
 				<div class="default-board-dropdown-wrapper">
@@ -1040,13 +1346,7 @@ function playFullProgram() {
 						<div class="marker-item">
 							<div class="marker-info">
 								<span class="marker-time">{formatTime(marker.time)}</span>
-								<input
-									type="text"
-									value={marker.label}
-									oninput={(e) => updateMarkerLabel(marker.id, e.target.value)}
-									class="marker-label-input"
-									placeholder="Cue label"
-								/>
+								<span class="marker-label">{marker.label}</span>
 							</div>
 							<div class="marker-controls">
 								<div class="boards-dropdown-wrapper">
@@ -1100,27 +1400,41 @@ function playFullProgram() {
 									{/if}
 								</div>
 
-								<select
-									value={marker.action || 'preset'}
-									onchange={(e) => updateMarkerProperty(marker.id, 'action', e.target.value)}
-									class="action-select"
+								<button
+									class="preset-picker-button"
+									class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
+									onclick={() => openPresetPicker(marker.id)}
 								>
-									<option value="preset">Preset</option>
-									<option value="on">On</option>
-									<option value="off">Off</option>
-								</select>
-
-								{#if marker.action === 'preset'}
-									<select
-										value={marker.preset}
-										onchange={(e) => updateMarkerPreset(marker.id, parseInt(e.target.value))}
-										class="preset-select"
-									>
-										{#each $presets as preset}
-											<option value={preset.id}>{preset.name}</option>
-										{/each}
-									</select>
-								{/if}
+									{marker.presetName || 'Select Preset'}
+									<span class="dropdown-arrow">▼</span>
+								</button>
+								<div class="sync-rate-group" title="BPM sync rate">
+									<button
+										class="sync-rate-btn"
+										class:active={marker.syncRate === 0.25}
+										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 0.25)}
+									>¼</button>
+									<button
+										class="sync-rate-btn"
+										class:active={marker.syncRate === 0.5}
+										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 0.5)}
+									>½</button>
+									<button
+										class="sync-rate-btn"
+										class:active={(marker.syncRate ?? 1) === 1}
+										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 1)}
+									>1</button>
+									<button
+										class="sync-rate-btn"
+										class:active={marker.syncRate === 2}
+										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 2)}
+									>2</button>
+									<button
+										class="sync-rate-btn"
+										class:active={marker.syncRate === 4}
+										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 4)}
+									>4</button>
+								</div>
 
 								<button class="btn-delete" onclick={() => deleteMarker(marker.id)}>
 									✕
@@ -1133,6 +1447,58 @@ function playFullProgram() {
 		{/if}
 	</div>
 </div>
+
+{#if presetPicker.open}
+	<div class="preset-picker-overlay" onclick={closePresetPicker}>
+		<div class="preset-picker-modal" onclick={(e) => e.stopPropagation()}>
+			{#if presetPicker.step === 'category'}
+				<div class="preset-picker-header">
+					<h3>Select Effect Type</h3>
+					<button class="preset-picker-close" onclick={closePresetPicker}>✕</button>
+				</div>
+				<div class="preset-picker-quick">
+					{#each quickPresets as preset}
+						<button
+							class="preset-quick-btn"
+							onclick={() => selectPreset(preset)}
+						>
+							{preset}
+						</button>
+					{/each}
+				</div>
+				<div class="preset-picker-grid">
+					{#each allCategories() as category}
+						<button
+							class="preset-category-btn"
+							onclick={() => selectCategory(category.name)}
+						>
+							{category.name}
+						</button>
+					{/each}
+				</div>
+			{:else}
+				<div class="preset-picker-header">
+					<button class="preset-picker-back" onclick={() => { presetPicker.step = 'category'; presetPicker.selectedCategory = null; }}>
+						←
+					</button>
+					<h3>{presetPicker.selectedCategory}</h3>
+					<button class="preset-picker-close" onclick={closePresetPicker}>✕</button>
+				</div>
+				<div class="preset-picker-grid colors">
+					{#each categoryColors() as preset}
+						<button
+							class="preset-color-btn"
+							style="color: {getColorStyle(preset.color)}"
+							onclick={() => selectPreset(preset.name)}
+						>
+							{preset.color}
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
 
 <style>
 	/* Force all WaveSurfer region labels to be centered - overrides plugin's default CSS */
@@ -1153,12 +1519,15 @@ function playFullProgram() {
 
 	.program-editor {
 		width: 100%;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		border-radius: 12px;
+		border: 1px solid rgba(56, 89, 138, 0.15);
 	}
 
 	.waveform-container {
-		background-color: #1a1a1a;
-		border-radius: 12px;
-		border: 1px solid #2a2a2a;
+		background: transparent;
+		border-radius: 0;
+		border: none;
 		overflow: visible;
 		min-height: 252px;
 	}
@@ -1168,7 +1537,7 @@ function playFullProgram() {
 		align-items: center;
 		gap: 0.5rem;
 		padding: 0.5rem 1rem;
-		background: linear-gradient(to bottom, #1f1f1f, #1a1a1a);
+		background: transparent;
 	}
 
 	.spacer {
@@ -1179,12 +1548,12 @@ function playFullProgram() {
 	.btn-program-pause,
 	.btn-program-stop {
 		padding: 0.5rem 1rem;
-		border: 1px solid #2a2a2a;
+		border: 1px solid #1a1a1a;
 		border-radius: 8px;
 		font-size: 1rem;
 		cursor: pointer;
 		transition: all 0.2s;
-		background-color: #1a1a1a;
+		background-color: transparent;
 		height: 36px;
 		display: flex;
 		align-items: center;
@@ -1193,39 +1562,39 @@ function playFullProgram() {
 	}
 
 	.btn-program-play {
-		color: #10b981;
+		color: #555;
 	}
 
 	.btn-program-play:hover {
-		background-color: #2a2a2a;
-		border-color: #10b981;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #22c55e;
+		border-color: #222;
 	}
 
 	.btn-program-pause {
-		color: #f59e0b;
+		color: #555;
 	}
 
 	.btn-program-pause:hover {
-		background-color: #2a2a2a;
-		border-color: #f59e0b;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #f59e0b;
+		border-color: #222;
 	}
 
 	.btn-program-stop {
-		color: #ef4444;
+		color: #555;
 	}
 
 	.btn-program-stop:hover {
-		background-color: #2a2a2a;
-		border-color: #ef4444;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #ef4444;
+		border-color: #222;
 	}
 
 	.song-name-input {
 		flex: 0 0 250px;
-		background-color: #0f0f0f;
-		border: 1px solid #2a2a2a;
+		background-color: #0a0a0a;
+		border: 1px solid #1a1a1a;
 		color: #e5e5e5;
 		padding: 0.5rem 0.75rem;
 		border-radius: 6px;
@@ -1234,22 +1603,22 @@ function playFullProgram() {
 	}
 
 	.song-name-input:hover {
-		border-color: #a855f7;
+		border-color: #333;
 	}
 
 	.song-name-input:focus {
 		outline: none;
-		border-color: #a855f7;
+		border-color: #444;
 	}
 
 	.song-name-input::placeholder {
-		color: #6b7280;
+		color: #444;
 	}
 
 	.track-input {
 		width: 45px;
-		background-color: #0f0f0f;
-		border: 1px solid #2a2a2a;
+		background-color: #0a0a0a;
+		border: 1px solid #1a1a1a;
 		color: #e5e5e5;
 		padding: 0.5rem 0.5rem;
 		border-radius: 6px;
@@ -1259,45 +1628,54 @@ function playFullProgram() {
 	}
 
 	.track-input:hover {
-		border-color: #a855f7;
+		border-color: #333;
 	}
 
 	.track-input:focus {
 		outline: none;
-		border-color: #a855f7;
+		border-color: #444;
 	}
 
 	.track-input::placeholder {
-		color: #6b7280;
+		color: #444;
 	}
 
-	.btn-collapse {
-		background-color: #2a2a2a;
-		color: #a0a0a0;
-		border: 1px solid #3a3a3a;
-		padding: 0.4rem 0.75rem;
-		font-size: 0.8rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.2s ease;
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		border-radius: 6px;
-		height: 28px;
-		box-sizing: border-box;
-	}
-
-	.btn-collapse:hover {
-		background-color: #333;
-		border-color: #555;
+	.bpm-input {
+		width: 60px;
+		background-color: #0a0a0a;
+		border: 1px solid #1a1a1a;
 		color: #e5e5e5;
+		padding: 0.5rem 0.5rem;
+		border-radius: 6px;
+		font-size: 0.9rem;
+		text-align: center;
+		transition: border-color 0.2s;
+		-moz-appearance: textfield;
+	}
+
+	.bpm-input::-webkit-outer-spin-button,
+	.bpm-input::-webkit-inner-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
+	.bpm-input:hover {
+		border-color: #333;
+	}
+
+	.bpm-input:focus {
+		outline: none;
+		border-color: #444;
+	}
+
+	.bpm-input::placeholder {
+		color: #444;
 	}
 
 	.cue-count-badge-wrapper {
-		background-color: #2a2a2a;
-		color: #e5e5e5;
-		border: 1px solid #3a3a3a;
+		background-color: transparent;
+		color: #888;
+		border: 1px solid #1a1a1a;
 		border-radius: 16px;
 		padding: 0;
 		cursor: pointer;
@@ -1311,12 +1689,12 @@ function playFullProgram() {
 
 	.cue-count-badge-wrapper:hover {
 		padding-right: 0.75rem;
-		background-color: #333;
-		border-color: #e57373;
+		background-color: #1a1212;
+		border-color: #331a1a;
 	}
 
 	.cue-count-badge {
-		color: #e5e5e5;
+		color: #888;
 		width: 32px;
 		height: 28px;
 		display: inline-flex;
@@ -1328,7 +1706,7 @@ function playFullProgram() {
 	}
 
 	.clear-cues-text {
-		color: #e57373;
+		color: #c44;
 		font-size: 0.75rem;
 		font-weight: 500;
 		white-space: nowrap;
@@ -1345,9 +1723,9 @@ function playFullProgram() {
 	}
 
 	.cue-count-badge-wrapper-static {
-		background-color: #2a2a2a;
-		color: #e5e5e5;
-		border: 1px solid #3a3a3a;
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
 		border-radius: 16px;
 		padding: 0;
 		display: flex;
@@ -1359,7 +1737,7 @@ function playFullProgram() {
 
 	.file-name {
 		font-size: 0.9rem;
-		color: #9ca3af;
+		color: #555;
 		font-weight: 400;
 		white-space: nowrap;
 		overflow: hidden;
@@ -1370,9 +1748,9 @@ function playFullProgram() {
 
 
 	.btn-save {
-		background-color: #1a1a1a;
-		color: #10b981;
-		border: 1px solid #2a2a2a;
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
 		padding: 0.5rem 1rem;
 		border-radius: 8px;
 		font-size: 0.875rem;
@@ -1388,41 +1766,19 @@ function playFullProgram() {
 	}
 
 	.btn-save:hover {
-		background-color: #2a2a2a;
-		border-color: #10b981;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #22c55e;
+		border-color: #222;
 	}
 
 	.btn-save:active {
-		transform: translateY(0);
-	}
-
-	.btn-clear {
-		background-color: #1a1a1a;
-		color: #f59e0b;
-		border: 1px solid #2a2a2a;
-		padding: 0.5rem 1rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.2s;
-	}
-
-	.btn-clear:hover {
-		background-color: #2a2a2a;
-		border-color: #f59e0b;
-		transform: translateY(-1px);
-	}
-
-	.btn-clear:active {
-		transform: translateY(0);
+		background-color: #0f0f0f;
 	}
 
 	.btn-download-program {
-		background-color: #1a1a1a;
-		color: #10b981;
-		border: 1px solid #2a2a2a;
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
 		padding: 0.5rem 1rem;
 		border-radius: 8px;
 		font-size: 0.875rem;
@@ -1438,19 +1794,19 @@ function playFullProgram() {
 	}
 
 	.btn-download-program:hover {
-		background-color: #2a2a2a;
-		border-color: #10b981;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #888;
+		border-color: #222;
 	}
 
 	.btn-download-program:active {
-		transform: translateY(0);
+		background-color: #0f0f0f;
 	}
 
 	.btn-delete-program {
-		background-color: #1a1a1a;
-		color: #ef4444;
-		border: 1px solid #2a2a2a;
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
 		padding: 0.5rem 1rem;
 		border-radius: 8px;
 		font-size: 0.875rem;
@@ -1466,13 +1822,13 @@ function playFullProgram() {
 	}
 
 	.btn-delete-program:hover {
-		background-color: #2a2a2a;
-		border-color: #ef4444;
-		transform: translateY(-1px);
+		background-color: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
 	}
 
 	.btn-delete-program:active {
-		transform: translateY(0);
+		background-color: #150f0f;
 	}
 
 	.waveform-wrapper {
@@ -1521,7 +1877,7 @@ function playFullProgram() {
 
 	.waveform-footer {
 		padding: 0.5rem 1rem 0.75rem 1rem;
-		background-color: #1a1a1a;
+		background: transparent;
 		display: flex;
 		justify-content: flex-end;
 		align-items: center;
@@ -1538,18 +1894,16 @@ function playFullProgram() {
 	.zoom-btn-group {
 		display: flex;
 		align-items: center;
-		border: 1px solid #3a3a3a;
+		border: 1px solid #1a1a1a;
 		border-radius: 4px;
 		overflow: hidden;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 		height: 28px;
 		box-sizing: border-box;
-		background: #2a2a2a;
+		background: transparent;
 	}
 
 	.zoom-icon {
-		color: #ffffff;
-		opacity: 0.7;
+		color: #555;
 		flex-shrink: 0;
 		padding: 0 6px;
 		display: flex;
@@ -1559,9 +1913,9 @@ function playFullProgram() {
 	.zoom-btn {
 		width: 32px;
 		height: 100%;
-		background: #2a2a2a;
+		background: transparent;
 		border: none;
-		color: #ffffff;
+		color: #555;
 		border-radius: 0;
 		font-size: 1rem;
 		font-weight: 500;
@@ -1576,16 +1930,16 @@ function playFullProgram() {
 	}
 
 	.zoom-btn-left {
-		border-right: 1px solid #3a3a3a;
+		border-right: 1px solid #1a1a1a;
 	}
 
 	.zoom-btn:hover {
-		background: #3a3a3a;
+		background: #111;
+		color: #888;
 	}
 
 	.zoom-btn:active {
-		transform: scale(0.98);
-		background: #1a1a1a;
+		background: #0a0a0a;
 	}
 
 	.waveform-skeleton {
@@ -1594,9 +1948,12 @@ function playFullProgram() {
 		left: 2rem;
 		right: 2rem;
 		bottom: 0;
-		background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+		background: linear-gradient(90deg,
+			transparent 25%,
+			rgba(255, 255, 255, 0.02) 50%,
+			transparent 75%);
 		background-size: 200% 100%;
-		animation: shimmer 1.5s infinite;
+		animation: shimmer 2.5s infinite ease-in-out;
 		border-radius: 8px;
 	}
 
@@ -1608,47 +1965,23 @@ function playFullProgram() {
 	.audio-missing {
 		padding: 2rem;
 		text-align: center;
-		background-color: #1a1a1a;
+		background-color: #0f0f0f;
 	}
 
 	.audio-missing p {
-		color: #ef4444;
+		color: #c44;
 		font-size: 0.875rem;
 		margin: 0.5rem 0;
 	}
 
 	.audio-missing-hint {
-		color: #6b7280 !important;
+		color: #444 !important;
 		font-size: 0.8rem !important;
 	}
 
 	.markers-section {
 		padding: 0.5rem 1rem;
-	}
-
-	.no-selection-message {
-		text-align: center;
-		padding: 2rem 1rem;
-		color: #9ca3af;
-		font-size: 0.95rem;
-	}
-
-	.no-selection-message p {
-		margin: 0;
-	}
-
-	.default-board-controls {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		margin-bottom: 1rem;
-	}
-
-	.default-board-label {
-		font-size: 0.875rem;
-		font-weight: 600;
-		color: #a8a29e;
-		white-space: nowrap;
+		overflow: visible;
 	}
 
 	.default-board-dropdown-wrapper {
@@ -1656,16 +1989,16 @@ function playFullProgram() {
 	}
 
 	.default-board-select-button {
-		background-color: #2a2a2a;
-		border: 1px solid #3a3a3a;
-		color: #e5e5e5;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #888;
 		padding: 0 2rem 0 0.75rem;
 		border-radius: 4px;
 		font-size: 0.875rem;
 		cursor: pointer;
 		width: 140px;
 		height: 28px;
-		transition: border-color 0.2s;
+		transition: all 0.2s;
 		display: flex;
 		align-items: center;
 		position: relative;
@@ -1676,28 +2009,35 @@ function playFullProgram() {
 	}
 
 	.default-board-select-button:hover {
-		border-color: #a855f7;
+		border-color: #333;
+		background: #111;
 	}
 
 	.default-board-select-button .dropdown-arrow {
 		position: absolute;
 		right: 0.75rem;
 		font-size: 0.7rem;
-		color: #9ca3af;
+		color: #555;
 	}
 
 	.default-board-dropdown-menu {
 		position: absolute;
 		top: calc(100% + 4px);
 		left: 0;
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
+		background-color: #0f0f0f;
+		border: 1px solid #1a1a1a;
 		border-radius: 6px;
 		min-width: 200px;
 		max-height: 300px;
 		overflow-y: auto;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
 		z-index: 1000;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+	}
+
+	.default-board-dropdown-menu::-webkit-scrollbar {
+		display: none;
 	}
 
 	.default-board-dropdown-menu .dropdown-section {
@@ -1711,7 +2051,7 @@ function playFullProgram() {
 	.default-board-dropdown-menu .dropdown-section-label {
 		font-size: 0.75rem;
 		font-weight: 600;
-		color: #6b7280;
+		color: #444;
 		margin-bottom: 0.25rem;
 		padding: 0.25rem 0.5rem;
 		text-transform: uppercase;
@@ -1729,7 +2069,7 @@ function playFullProgram() {
 	}
 
 	.default-board-dropdown-menu .dropdown-option:hover {
-		background-color: #2a2a2a;
+		background-color: #111;
 	}
 
 	.default-board-dropdown-menu .dropdown-option input[type="checkbox"] {
@@ -1737,16 +2077,16 @@ function playFullProgram() {
 	}
 
 	.default-board-dropdown-menu .dropdown-option span {
-		color: #e5e5e5;
+		color: #888;
 		font-size: 0.875rem;
 		flex: 1;
 	}
 
 	.btn-apply-default {
 		padding: 0 1rem;
-		background-color: #2a2a2a;
-		color: #e5e5e5;
-		border: 1px solid #3a3a3a;
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
 		border-radius: 6px;
 		font-size: 0.875rem;
 		font-weight: 600;
@@ -1763,18 +2103,18 @@ function playFullProgram() {
 	}
 
 	.btn-apply-default:hover:not(:disabled) {
-		background-color: #3a3a3a;
-		border-color: #4a4a4a;
-		transform: translateY(-1px);
+		background-color: #111;
+		color: #888;
+		border-color: #222;
 	}
 
 	.btn-apply-default:active:not(:disabled) {
-		transform: translateY(0);
+		background: #0f0f0f;
 	}
 
 	.btn-apply-default:disabled {
-		background-color: #2a2a2a;
-		color: #666;
+		background-color: transparent;
+		color: #333;
 		cursor: not-allowed;
 	}
 
@@ -1782,6 +2122,7 @@ function playFullProgram() {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
+		overflow: visible;
 	}
 
 	.marker-item {
@@ -1789,6 +2130,7 @@ function playFullProgram() {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		overflow: visible;
 	}
 
 	.marker-info {
@@ -1802,53 +2144,24 @@ function playFullProgram() {
 		display: flex;
 		gap: 0.75rem;
 		align-items: center;
-	}
-
-	.color-picker {
-		width: 40px;
-		height: 32px;
-		border: 1px solid #2a2a2a;
-		border-radius: 6px;
-		cursor: pointer;
-		background-color: transparent;
-		padding: 0;
-		overflow: hidden;
-	}
-
-	.color-picker::-webkit-color-swatch-wrapper {
-		padding: 0;
-		border: none;
-	}
-
-	.color-picker::-webkit-color-swatch {
-		border: none;
-		border-radius: 6px;
-	}
-
-	.color-picker::-moz-color-swatch {
-		border: none;
-		border-radius: 6px;
-	}
-
-	.color-picker:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+		overflow: visible;
 	}
 
 	.boards-dropdown-wrapper {
 		position: relative;
+		overflow: visible;
 	}
 
 	.boards-select-button {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #888;
 		padding: 0.5rem 2rem 0.5rem 0.75rem;
 		border-radius: 6px;
 		font-size: 0.875rem;
 		cursor: pointer;
 		width: 140px;
-		transition: border-color 0.2s;
+		transition: all 0.2s;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -1859,28 +2172,35 @@ function playFullProgram() {
 	}
 
 	.boards-select-button:hover {
-		border-color: #a855f7;
+		border-color: #333;
+		background: #111;
 	}
 
 	.dropdown-arrow {
 		position: absolute;
 		right: 0.75rem;
 		font-size: 0.7rem;
-		color: #9ca3af;
+		color: #555;
 	}
 
 	.boards-dropdown-menu {
 		position: absolute;
 		top: calc(100% + 4px);
 		left: 0;
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
+		background-color: #0f0f0f;
+		border: 1px solid #1a1a1a;
 		border-radius: 6px;
 		min-width: 200px;
 		max-height: 300px;
 		overflow-y: auto;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
 		z-index: 1000;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+	}
+
+	.boards-dropdown-menu::-webkit-scrollbar {
+		display: none;
 	}
 
 	.dropdown-section {
@@ -1888,14 +2208,14 @@ function playFullProgram() {
 	}
 
 	.dropdown-section:not(:last-child) {
-		border-bottom: 1px solid #2a2a2a;
+		border-bottom: 1px solid #1a1a1a;
 	}
 
 	.dropdown-section-label {
 		padding: 0.5rem 0.75rem;
 		font-size: 0.75rem;
 		font-weight: 600;
-		color: #6b7280;
+		color: #444;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 	}
@@ -1911,7 +2231,7 @@ function playFullProgram() {
 	}
 
 	.dropdown-option:hover {
-		background-color: #2a2a2a;
+		background-color: #111;
 	}
 
 	.dropdown-option input[type="checkbox"] {
@@ -1920,158 +2240,60 @@ function playFullProgram() {
 
 	.dropdown-option span {
 		font-size: 0.875rem;
-		color: #e5e5e5;
+		color: #888;
 	}
 
-	.action-select {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
-		padding: 0.5rem 2rem 0.5rem 0.75rem;
+	.sync-rate-group {
+		display: flex;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
 		border-radius: 6px;
+		overflow: hidden;
+	}
+
+	.sync-rate-btn {
+		background: transparent;
+		border: none;
+		color: #444;
+		padding: 0.5rem 0.6rem;
 		font-size: 0.875rem;
 		cursor: pointer;
-		min-width: 90px;
-		transition: border-color 0.2s;
-		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23e5e5e5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-		background-repeat: no-repeat;
-		background-position: right 0.75rem center;
+		border-right: 1px solid #1a1a1a;
+		transition: all 0.15s;
 	}
 
-	.action-select:hover {
-		border-color: #a855f7;
+	.sync-rate-btn:last-child {
+		border-right: none;
 	}
 
-	.action-select:focus {
-		outline: none;
-		border-color: #a855f7;
+	.sync-rate-btn:hover {
+		background-color: #111;
+		color: #888;
 	}
 
-	.preset-select {
+	.sync-rate-btn.active {
 		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
-		padding: 0.5rem 2rem 0.5rem 0.75rem;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		cursor: pointer;
-		min-width: 100px;
-		transition: border-color 0.2s;
-		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23e5e5e5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-		background-repeat: no-repeat;
-		background-position: right 0.75rem center;
-	}
-
-	.preset-select:hover {
-		border-color: #a855f7;
-	}
-
-	.preset-select:focus {
-		outline: none;
-		border-color: #a855f7;
-	}
-
-	.brightness-slider {
-		width: 80px;
-		height: 4px;
-		border-radius: 2px;
-		background: linear-gradient(to right, #2a2a2a, #a855f7);
-		outline: none;
-		cursor: pointer;
-		-webkit-appearance: none;
-		appearance: none;
-	}
-
-	.brightness-slider::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 14px;
-		height: 14px;
-		border-radius: 50%;
-		background: #a855f7;
-		cursor: pointer;
-		border: 2px solid #1a1a1a;
-	}
-
-	.brightness-slider::-moz-range-thumb {
-		width: 14px;
-		height: 14px;
-		border-radius: 50%;
-		background: #a855f7;
-		cursor: pointer;
-		border: 2px solid #1a1a1a;
-	}
-
-	.effect-select {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
-		padding: 0.5rem 2rem 0.5rem 0.75rem;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		cursor: pointer;
-		min-width: 150px;
-		transition: border-color 0.2s;
-		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23e5e5e5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-		background-repeat: no-repeat;
-		background-position: right 0.75rem center;
-	}
-
-	.effect-select:hover {
-		border-color: #a855f7;
-	}
-
-	.effect-select:focus {
-		outline: none;
-		border-color: #a855f7;
-	}
-
-	.effect-select:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+		color: #fff;
 	}
 
 	.marker-time {
 		font-family: 'Courier New', monospace;
 		font-size: 1.1rem;
-		color: #a855f7;
+		color: #888;
 		font-weight: bold;
 		min-width: 80px;
 	}
 
-	.marker-label-input {
-		background-color: #0f0f0f;
-		border: 1px solid #2a2a2a;
-		color: #e5e5e5;
-		padding: 0.375rem 0.625rem;
-		border-radius: 6px;
+	.marker-label {
+		color: #888;
 		font-size: 1rem;
-		transition: border-color 0.2s;
-		width: 200px;
-		max-width: 200px;
-	}
-
-	.marker-label-input:hover {
-		border-color: #a855f7;
-	}
-
-	.marker-label-input:focus {
-		outline: none;
-		border-color: #a855f7;
-		background-color: #1a1a1a;
-	}
-
-	.marker-label-input::placeholder {
-		color: #6b7280;
+		min-width: 120px;
 	}
 
 	.btn-delete {
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
-		color: #ef4444;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #555;
 		font-size: 1rem;
 		font-weight: 600;
 		cursor: pointer;
@@ -2085,8 +2307,190 @@ function playFullProgram() {
 	}
 
 	.btn-delete:hover {
-		background-color: #ef4444;
-		color: white;
-		border-color: #ef4444;
+		background-color: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
+	}
+
+	.preset-picker-button {
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #888;
+		padding: 0.5rem 2rem 0.5rem 0.75rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		min-width: 140px;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		position: relative;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.preset-picker-button:hover {
+		border-color: #333;
+		background: #111;
+	}
+
+	.preset-picker-button.broken-preset {
+		border-color: #331a1a;
+		background-color: #1a1212;
+	}
+
+	.preset-picker-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.8);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 10000;
+	}
+
+	.preset-picker-modal {
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		border: 1px solid rgba(56, 89, 138, 0.15);
+		border-radius: 12px;
+		min-width: 320px;
+		max-width: 400px;
+		max-height: 80vh;
+		overflow: hidden;
+	}
+
+	.preset-picker-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem;
+		background: transparent;
+	}
+
+	.preset-picker-header h3 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: #fff;
+		flex: 1;
+		text-align: center;
+	}
+
+	.preset-picker-back {
+		background: transparent;
+		border: none;
+		color: #888;
+		font-size: 0.875rem;
+		cursor: pointer;
+		padding: 0.25rem 0.5rem;
+		border-radius: 4px;
+		transition: all 0.2s;
+	}
+
+	.preset-picker-back:hover {
+		background-color: #1a1a1a;
+		color: #fff;
+	}
+
+	.preset-picker-close {
+		background: transparent;
+		border: none;
+		color: #444;
+		font-size: 1rem;
+		cursor: pointer;
+		padding: 0.25rem 0.5rem;
+		border-radius: 4px;
+		transition: all 0.2s;
+	}
+
+	.preset-picker-close:hover {
+		background-color: #1a1212;
+		color: #c44;
+	}
+
+	.preset-picker-quick {
+		display: flex;
+		gap: 0.75rem;
+		padding: 1rem 1rem 0 1rem;
+	}
+
+	.preset-quick-btn {
+		flex: 1;
+		background-color: transparent;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		color: #888;
+		padding: 0.75rem;
+		border-radius: 8px;
+		font-size: 0.875rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.2s;
+		text-align: center;
+	}
+
+	.preset-quick-btn:hover {
+		background-color: rgba(56, 89, 138, 0.1);
+		border-color: rgba(56, 89, 138, 0.3);
+		color: #fff;
+	}
+
+	.preset-picker-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: 0.75rem;
+		padding: 1rem;
+		max-height: 60vh;
+		overflow-y: auto;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
+	}
+
+	.preset-picker-grid::-webkit-scrollbar {
+		display: none;
+	}
+
+	.preset-picker-grid.colors {
+		grid-template-columns: repeat(3, 1fr);
+	}
+
+	.preset-category-btn {
+		background-color: transparent;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		color: #888;
+		padding: 1rem;
+		border-radius: 8px;
+		font-size: 0.875rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.2s;
+		text-align: center;
+	}
+
+	.preset-category-btn:hover {
+		background-color: rgba(56, 89, 138, 0.1);
+		border-color: rgba(56, 89, 138, 0.3);
+		color: #fff;
+	}
+
+	.preset-color-btn {
+		background-color: transparent;
+		border: 1px solid rgba(56, 89, 138, 0.2);
+		padding: 0.75rem;
+		border-radius: 8px;
+		font-size: 0.875rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.2s;
+		text-align: center;
+	}
+
+	.preset-color-btn:hover {
+		background-color: rgba(56, 89, 138, 0.1);
+		border-color: rgba(56, 89, 138, 0.3);
 	}
 </style>

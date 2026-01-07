@@ -1,7 +1,7 @@
 // frontend/src/lib/boards-db.ts
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { boards, boardsLoading, boardsError, presets } from './store';
+import { boards, boardsLoading, boardsError, presets, performancePresets, patternPresets } from './store';
 import { API_URL } from './api';
 import { createSseConnection } from './sse';
 import { 
@@ -16,10 +16,42 @@ import type { BoardState } from './types';
 
 let sseConnection: EventSource | null = null;
 
+function getMajorityColor(members: BoardState[]): number[] | undefined {
+  const connected = members.filter(m => m.connected);
+  const source = connected.length > 0 ? connected : members;
+  if (source.length === 0) return undefined;
+  const counts = new Map<string, { color: number[]; count: number }>();
+  for (const m of source) {
+    if (m.color) {
+      const key = JSON.stringify(m.color);
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        counts.set(key, { color: m.color, count: 1 });
+      }
+    }
+  }
+  let majority: { color: number[]; count: number } | undefined;
+  for (const entry of counts.values()) {
+    if (!majority || entry.count > majority.count) {
+      majority = entry;
+    }
+  }
+  return majority?.color;
+}
+
 /**
  * Recalculate group states based on current member board states
  * CRITICAL: Never modify group identity (isGroup, memberIds) - only update operational state
  */
+async function updateBoardFromResponse(response: Response, boardId: string): Promise<void> {
+  const updatedState: BoardState = await response.json();
+  boards.update((currentBoards) =>
+    currentBoards.map((b) => (b.id === boardId && !b.isGroup ? updatedState : b))
+  );
+}
+
 function recalculateGroupStates(currentBoards: BoardState[]): BoardState[] {
   return currentBoards.map((board) => {
     if (board.isGroup && board.memberIds) {
@@ -35,7 +67,7 @@ function recalculateGroupStates(currentBoards: BoardState[]): BoardState[] {
         // - isGroup: always true for groups
         // - memberIds: only changed via explicit group management
         // Only update derived operational state from member boards:
-        color: members.length > 0 ? members[0].color : board.color,
+        color: getMajorityColor(members) ?? board.color,
         brightness: members.length > 0 ? members[0].brightness : board.brightness,
         effect: members.length > 0 ? members[0].effect : board.effect,
         on: members.length > 0 ? members.some((m) => m.on) : board.on,
@@ -103,7 +135,7 @@ export async function initBoardsListener(): Promise<void> {
 
               return {
                 ...board,
-                color: members.length > 0 ? members[0].color : board.color,
+                color: getMajorityColor(members) ?? board.color,
                 brightness: members.length > 0 ? members[0].brightness : board.brightness,
                 effect: members.length > 0 ? members[0].effect : board.effect,
                 on: members.length > 0 ? members.some((m) => m.on) : board.on,
@@ -162,7 +194,7 @@ export async function initBoardsListener(): Promise<void> {
 
               return {
                 ...board,
-                color: members.length > 0 ? members[0].color : board.color,
+                color: getMajorityColor(members) ?? board.color,
                 brightness: members.length > 0 ? members[0].brightness : board.brightness,
                 effect: members.length > 0 ? members[0].effect : board.effect,
                 on: members.length > 0 ? members.some((m) => m.on) : board.on,
@@ -195,7 +227,29 @@ export async function fetchBoards(): Promise<void> {
     }
 
     const data = await res.json();
-    const loadedBoards = Array.isArray(data) ? data : [];
+
+    // API returns { boards: [...], groups: [...] }
+    const boardsList = Array.isArray(data.boards) ? data.boards : [];
+    const groupsList = Array.isArray(data.groups) ? data.groups : [];
+
+    // Convert groups to BoardState format with isGroup flag
+    const groupBoards = groupsList.map((g: any) => ({
+      id: g.id,
+      ip: '',
+      on: g.power ?? false,
+      brightness: g.brightness ?? 128,
+      color: g.color ?? [255, 255, 255],
+      effect: 0,
+      speed: 128,
+      intensity: 128,
+      connected: true,
+      isGroup: true,
+      memberIds: g.members ?? [],
+      universe: g.universe
+    }));
+
+    // Combine boards and groups
+    const loadedBoards = [...boardsList, ...groupBoards];
 
     // Derive group state from member boards using helper function
     const processedBoards = recalculateGroupStates(loadedBoards);
@@ -230,11 +284,28 @@ export async function refreshGroups(): Promise<void> {
     }
 
     const data = await res.json();
-    const loadedBoards = Array.isArray(data) ? data : [];
 
-    // Separate groups and regular boards from fresh data
-    const freshGroups = loadedBoards.filter(board => board.isGroup);
-    const freshRegularBoards = loadedBoards.filter(board => !board.isGroup);
+    // API returns { boards: [...], groups: [...] }
+    const boardsList = Array.isArray(data.boards) ? data.boards : [];
+    const groupsList = Array.isArray(data.groups) ? data.groups : [];
+
+    // Convert groups to BoardState format with isGroup flag
+    const freshGroups = groupsList.map((g: any) => ({
+      id: g.id,
+      ip: '',
+      on: g.power ?? false,
+      brightness: g.brightness ?? 128,
+      color: g.color ?? [255, 255, 255],
+      effect: 0,
+      speed: 128,
+      intensity: 128,
+      connected: true,
+      isGroup: true,
+      memberIds: g.members ?? [],
+      universe: g.universe
+    }));
+
+    const freshRegularBoards = boardsList;
 
     // Get current boards to preserve individual board states
     const currentBoards = get(boards);
@@ -273,11 +344,9 @@ export async function fetchPresets(): Promise<void> {
     const response = await fetch(`${API_URL}/presets`);
     if (response.ok) {
       const presetsData = await response.json();
-      // Add "No Preset" option at the front, sorted by effect type then name
-      const presetsList = [
-        { id: 0, name: 'No Preset' },
-        ...presetsData
-          .map((p: any) => ({ id: p.wled_slot, name: p.name }))
+      // Sort presets by effect type then name (Blackout is already in the server presets)
+      const presetsList = presetsData
+          .map((p: any) => ({ id: p.wled_slot, name: p.name, state: p.state }))
           .sort((a: any, b: any) => {
             // Extract first word (effect type) from preset name
             const typeA = a.name.split(' ')[0];
@@ -288,8 +357,7 @@ export async function fetchPresets(): Promise<void> {
               return a.name.localeCompare(b.name);
             }
             return typeA.localeCompare(typeB);
-          })
-      ];
+          });
       presets.set(presetsList);
     } else {
       console.error('Failed to fetch presets:', response.statusText);
@@ -300,13 +368,51 @@ export async function fetchPresets(): Promise<void> {
 }
 
 /**
+ * Fetch performance presets from server (effects engine presets for E1.31)
+ */
+export async function fetchPerformancePresets(): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/effects/presets`);
+    if (response.ok) {
+      const data = await response.json();
+      performancePresets.set(data);
+    } else {
+      console.error('Failed to fetch performance presets:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error fetching performance presets:', error);
+  }
+}
+
+/**
+ * Fetch pattern presets from server (group patterns like wave, random, etc.)
+ */
+export async function fetchPatternPresets(): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/patterns/presets`);
+    if (response.ok) {
+      const data = await response.json();
+      patternPresets.set(data);
+    } else {
+      console.error('Failed to fetch pattern presets:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error fetching pattern presets:', error);
+  }
+}
+
+/**
  * Sync all presets to a board
  */
 export async function syncPresetsToBoard(boardId: string): Promise<{ success: boolean; message: string }> {
   if (!browser) return { success: false, message: 'Not in browser context' };
 
   try {
-    const response = await fetch(`${API_URL}/board/${boardId}/presets/sync`, {
+    const response = await fetch(`${API_URL}/board/${boardId}/presets/replace`, {
       method: 'POST'
     });
 
@@ -314,14 +420,14 @@ export async function syncPresetsToBoard(boardId: string): Promise<{ success: bo
       const result = await response.json();
       return {
         success: true,
-        message: `Synced ${result.synced} of ${result.total} presets`
+        message: `Replaced presets on board (${result.preset_count} presets)`
       };
     } else {
       const error = await response.text();
       return { success: false, message: error };
     }
   } catch (error) {
-    console.error('Error syncing presets:', error);
+    console.error('Error replacing presets:', error);
     return { success: false, message: String(error) };
   }
 }
@@ -383,6 +489,8 @@ export async function setBoardPower(boardId: string, power: boolean): Promise<vo
         body: JSON.stringify({ on: power }),
       });
       if (!response.ok) throw new Error('Failed to set power');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting power:', error);
@@ -448,13 +556,15 @@ export async function setBoardColor(
         console.warn(`Group ${boardId} color command failed (boards may be unreachable):`, groupError);
       }
     } else {
-      // Regular board - SSE will update the state
+      // Regular board - update store from response
       const response = await fetch(`${API_URL}/board/${boardId}/color`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ r: red, g: green, b: blue }),
       });
       if (!response.ok) throw new Error('Failed to set color');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting color:', error);
@@ -511,13 +621,15 @@ export async function setBoardBrightness(boardId: string, brightness: number): P
         console.warn(`Group ${boardId} brightness command failed (boards may be unreachable):`, groupError);
       }
     } else {
-      // Regular board - SSE will update the state
+      // Regular board - update store from response
       const response = await fetch(`${API_URL}/board/${boardId}/brightness`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brightness }),
       });
       if (!response.ok) throw new Error('Failed to set brightness');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting brightness:', error);
@@ -574,13 +686,15 @@ export async function setBoardEffect(boardId: string, effect: number): Promise<v
         console.warn(`Group ${boardId} effect command failed (boards may be unreachable):`, groupError);
       }
     } else {
-      // Regular board - SSE will update the state
+      // Regular board - update store from response
       const response = await fetch(`${API_URL}/board/${boardId}/effect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ effect }),
       });
       if (!response.ok) throw new Error('Failed to set effect');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting effect:', error);
@@ -596,19 +710,27 @@ export async function setBoardSpeed(boardId: string, speed: number): Promise<voi
 
   const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
+  console.log(`🔧 setBoardSpeed: boardId=${boardId}, speed=${speed}, board found=${!!board}, isGroup=${board?.isGroup}`);
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // For now, skip group handling - could be added later
-      console.warn('Group speed control not yet implemented');
+      console.log(`🔧 Sending group speed request to /group/${boardId}/speed`);
+      const response = await fetch(`${API_URL}/group/${boardId}/speed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speed }),
+      });
+      if (!response.ok) throw new Error('Failed to set group speed');
     } else {
-      // Regular board - SSE will update the state
+      // Regular board - update store from response
       const response = await fetch(`${API_URL}/board/${boardId}/speed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ speed }),
       });
       if (!response.ok) throw new Error('Failed to set speed');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting speed:', error);
@@ -630,13 +752,15 @@ export async function setBoardIntensity(boardId: string, intensity: number): Pro
       // For now, skip group handling - could be added later
       console.warn('Group intensity control not yet implemented');
     } else {
-      // Regular board - SSE will update the state
+      // Regular board - update store from response
       const response = await fetch(`${API_URL}/board/${boardId}/intensity`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intensity }),
       });
       if (!response.ok) throw new Error('Failed to set intensity');
+
+      await updateBoardFromResponse(response, boardId);
     }
   } catch (error) {
     console.error('Error setting intensity:', error);
@@ -646,8 +770,13 @@ export async function setBoardIntensity(boardId: string, intensity: number): Pro
 
 /**
  * Set board preset
+ * When options.bpm is provided, uses DMX Mode 2 for atomic effect state with BPM-synced speed
  */
-export async function setBoardPreset(boardId: string, preset: number): Promise<void> {
+export async function setBoardPreset(
+  boardId: string,
+  preset: number,
+  options?: { bpm?: number; presetName?: string }
+): Promise<void> {
   if (!browser) return;
 
   const currentBoards = get(boards);
@@ -655,23 +784,12 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
 
   try {
     if (board?.isGroup && board.memberIds) {
-      // Use new group endpoint for atomic group operation
       try {
-        const result: GroupOperationResult = await setGroupPreset(boardId, preset);
-        
-        // Log any failures for debugging
-        // if (result.failed_members.length > 0) {
-        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        // }
-        
-        // Note: We don't update group state optimistically for presets since they can have complex effects
-        // SSE will update individual member states, which will then trigger group recalculation
+        await setGroupPreset(boardId, preset, 0, options);
       } catch (groupError) {
-        // Log to console but don't show global error - boards already show as disconnected
         console.warn(`Group ${boardId} preset command failed (boards may be unreachable):`, groupError);
       }
     } else {
-      // Regular board - SSE will update the state
       const fetchStartTime = performance.now();
       console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: board='${boardId}' preset=${preset}`);
 
@@ -695,14 +813,14 @@ export async function setBoardPreset(boardId: string, preset: number): Promise<v
 /**
  * Add a new board
  */
-export async function addBoard(id: string, ip: string): Promise<void> {
+export async function addBoard(id: string, ip: string, ledCount?: number, universe?: number): Promise<void> {
   if (!browser) return;
 
   try {
     const res = await fetch(`${API_URL}/boards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, ip }),
+      body: JSON.stringify({ id, ip, led_count: ledCount, universe }),
     });
 
     if (!res.ok) {
@@ -724,7 +842,7 @@ export async function addBoard(id: string, ip: string): Promise<void> {
 /**
  * Update a board
  */
-export async function updateBoard(boardId: string, newId: string, newIp: string): Promise<void> {
+export async function updateBoard(boardId: string, newId: string, newIp: string, ledCount?: number, universe?: number): Promise<void> {
   if (!browser) return;
 
   try {
@@ -734,6 +852,8 @@ export async function updateBoard(boardId: string, newId: string, newIp: string)
       body: JSON.stringify({
         new_id: newId !== boardId ? newId : undefined,
         new_ip: newIp,
+        led_count: ledCount,
+        universe: universe,
       }),
     });
 

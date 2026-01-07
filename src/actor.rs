@@ -2,9 +2,11 @@ use crate::board::{BoardCommand, BoardState};
 use crate::sse::SseEvent;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -14,6 +16,8 @@ pub struct BoardActor {
     pub ip: String,
     pub state: BoardState,
     broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+    connected_ips: Arc<RwLock<HashSet<String>>>,
+    performance_mode: Arc<AtomicBool>,
 }
 
 impl BoardActor {
@@ -21,30 +25,46 @@ impl BoardActor {
         id: String,
         ip: String,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        connected_ips: Arc<RwLock<HashSet<String>>>,
+        performance_mode: Arc<AtomicBool>,
     ) -> Self {
         Self {
             id: id.clone(),
             ip: ip.clone(),
             state: BoardState::new(id, ip),
             broadcast_tx,
+            connected_ips,
+            performance_mode,
         }
     }
 
-    pub fn new_with_transition(
+    pub fn new_with_config(
         id: String,
         ip: String,
         transition: Option<u8>,
+        led_count: Option<u16>,
+        universe: Option<u16>,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        connected_ips: Arc<RwLock<HashSet<String>>>,
+        performance_mode: Arc<AtomicBool>,
     ) -> Self {
         let mut state = BoardState::new(id.clone(), ip.clone());
         if let Some(trans) = transition {
             state.transition = trans;
+        }
+        if let Some(leds) = led_count {
+            state.led_count = Some(leds);
+        }
+        if let Some(uni) = universe {
+            state.universe = Some(uni);
         }
         Self {
             id,
             ip,
             state,
             broadcast_tx,
+            connected_ips,
+            performance_mode,
         }
     }
 
@@ -64,91 +84,106 @@ impl BoardActor {
         let _ = self.broadcast_tx.send(event);
     }
 
+    async fn send_ws_message<S>(
+        &mut self,
+        write: &mut futures_util::stream::SplitSink<S, Message>,
+        msg: Message,
+    ) -> bool
+    where
+        S: futures_util::Sink<Message> + Unpin,
+        <S as futures_util::Sink<Message>>::Error: std::fmt::Display,
+    {
+        if let Err(e) = timeout(tokio::time::Duration::from_secs(2), write.send(msg)).await {
+            error!(board_id = %self.id, error = %e, "WebSocket send timed out");
+            self.mark_disconnected().await;
+            return false;
+        }
+        if let Err(e) = timeout(tokio::time::Duration::from_millis(500), write.flush()).await {
+            error!(board_id = %self.id, error = %e, "WebSocket flush failed");
+            self.mark_disconnected().await;
+            return false;
+        }
+        self.broadcast_state();
+        true
+    }
+
+    async fn mark_connected(&mut self) {
+        self.state.connected = true;
+        let mut ips = self.connected_ips.write().await;
+        ips.insert(self.ip.clone());
+        self.broadcast_connection_status();
+    }
+
+    async fn mark_disconnected(&mut self) {
+        self.state.connected = false;
+        let mut ips = self.connected_ips.write().await;
+        ips.remove(&self.ip);
+        self.broadcast_connection_status();
+    }
+
+    async fn wait_for_retry(&mut self, cmd_rx: &mut mpsc::Receiver<BoardCommand>) -> bool {
+        let sleep_duration = if self.performance_mode.load(Ordering::Relaxed) {
+            tokio::time::Duration::from_secs(30)
+        } else {
+            tokio::time::Duration::from_secs(3)
+        };
+
+        tokio::select! {
+            _ = tokio::time::sleep(sleep_duration) => true,
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(BoardCommand::GetState(response_tx)) => {
+                        let _ = response_tx.send(self.state.clone());
+                        true
+                    }
+                    Some(BoardCommand::Shutdown) => {
+                        info!(board_id = %self.id, "Shutting down actor");
+                        false
+                    }
+                    None => false,
+                    _ => true,
+                }
+            }
+        }
+    }
+
     pub async fn run(
         mut self,
         mut cmd_rx: mpsc::Receiver<BoardCommand>,
     ) -> Result<(), Box<dyn Error>> {
+        let mut retry_count: u32 = 0;
         loop {
             let url = format!("ws://{}/ws", self.ip);
 
-            // Try to connect, but don't crash if it fails
-            let ws_stream = match connect_async(url).await {
-                Ok((stream, _)) => stream,
+            let ws_stream = match timeout(tokio::time::Duration::from_secs(2), connect_async(&url)).await {
+                Ok(Ok((stream, _))) => {
+                    if retry_count > 0 {
+                        info!(board_id = %self.id, retry_count, "Connected after {} retries", retry_count);
+                    }
+                    retry_count = 0;
+                    stream
+                }
+                Ok(Err(e)) => {
+                    retry_count += 1;
+                    if retry_count == 1 {
+                        warn!(board_id = %self.id, error = %e, "Connection failed, will retry every 3s");
+                    } else if retry_count % 20 == 0 {
+                        warn!(board_id = %self.id, retry_count, "Still trying to connect ({} attempts)", retry_count);
+                    }
+                    self.mark_disconnected().await;
+                    if !self.wait_for_retry(&mut cmd_rx).await {
+                        return Ok(());
+                    }
+                    continue;
+                }
                 Err(_) => {
-                    // Temporarily commented out to reduce noise in logs
-                    // warn!(board_id = %self.id, "Failed to connect: {}, retrying in 5 seconds...", e);
-                    self.state.connected = false;
-                    self.broadcast_connection_status();
-
-                    // Handle commands while disconnected
-                    tokio::select! {
-                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {},
-                        cmd = cmd_rx.recv() => {
-                            match cmd {
-                                Some(BoardCommand::GetState(response_tx)) => {
-                                    let _ = response_tx.send(self.state.clone());
-                                }
-                                Some(BoardCommand::SetPower(target_state, _transition)) => {
-                                    // Cache the state change, will be sent when reconnected
-                                    self.state.on = target_state;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetBrightness(bri, _transition)) => {
-                                    // Cache the state change
-                                    self.state.brightness = bri;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetColor { r, g, b, transition: _ }) => {
-                                    // Cache the state change
-                                    self.state.color = [r, g, b];
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetEffect(effect, _transition)) => {
-                                    // Cache the state change
-                                    self.state.effect = effect;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetSpeed(speed, _transition)) => {
-                                    // Cache the state change
-                                    self.state.speed = speed;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetIntensity(intensity, _transition)) => {
-                                    // Cache the state change
-                                    self.state.intensity = intensity;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetLedCount(led_count)) => {
-                                    // Cache the state change
-                                    self.state.led_count = Some(led_count);
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SetTransition(transition)) => {
-                                    // Cache the transition change
-                                    self.state.transition = transition;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::Shutdown) => {
-                                    info!(board_id = %self.id, "Shutting down actor");
-                                    return Ok(());
-                                }
-                                // Sync commands - update state without sending WebSocket
-                                Some(BoardCommand::SyncPowerState(on)) => {
-                                    self.state.on = on;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SyncBrightnessState(brightness)) => {
-                                    self.state.brightness = brightness;
-                                    self.broadcast_state();
-                                }
-                                Some(BoardCommand::SyncPresetState(preset)) => {
-                                    self.state.preset = Some(preset);
-                                    self.broadcast_state();
-                                }
-                                None => return Ok(()),
-                                _ => {} // Ignore preset and segment reset commands while disconnected
-                            }
-                        }
+                    retry_count += 1;
+                    if retry_count % 20 == 0 {
+                        warn!(board_id = %self.id, retry_count, "Connect timeout ({} attempts)", retry_count);
+                    }
+                    self.mark_disconnected().await;
+                    if !self.wait_for_retry(&mut cmd_rx).await {
+                        return Ok(());
                     }
                     continue;
                 }
@@ -178,9 +213,7 @@ impl BoardActor {
                 }
             }
 
-            // NOW mark as connected and broadcast the real state
-            self.state.connected = true;
-            self.broadcast_connection_status();
+            self.mark_connected().await;
             self.broadcast_state();
 
             // Immediately set transition to 0ms for instant E1.31 commands
@@ -205,10 +238,8 @@ impl BoardActor {
                   msg = timeout(tokio::time::Duration::from_secs(5), read.next()) => {
                       match msg {
                           Err(_) => {
-                              // Timeout - no message received in 12 seconds
                               warn!(board_id = %self.id, "Read timeout, connection dead");
-                              self.state.connected = false;
-                              self.broadcast_connection_status();
+                              self.mark_disconnected().await;
                               break;
                           }
                           Ok(Some(Ok(Message::Text(text)))) => {
@@ -217,30 +248,23 @@ impl BoardActor {
                                   self.broadcast_state();
                               }
                           }
-                          Ok(Some(Ok(Message::Pong(_)))) => {
-                              // Connection alive - keep going
-                          }
+                          Ok(Some(Ok(Message::Pong(_)))) => {}
                           Ok(Some(Ok(Message::Close(_)))) => {
                               info!(board_id = %self.id, "Connection closed by remote");
-                              self.state.connected = false;
-                              self.broadcast_connection_status();
+                              self.mark_disconnected().await;
                               break;
                           }
                           Ok(Some(Err(e))) => {
                               error!(board_id = %self.id, "Connection lost: {:?}", e);
-                              self.state.connected = false;
-                              self.broadcast_connection_status();
+                              self.mark_disconnected().await;
                               break;
                           }
                           Ok(None) => {
                               info!(board_id = %self.id, "Connection closed");
-                              self.state.connected = false;
-                              self.broadcast_connection_status();
+                              self.mark_disconnected().await;
                               break;
                           }
-                          _ => {
-                              // Other message types (Binary, Ping, etc.) - ignore
-                          }
+                          _ => {}
                       }
                   }
                   cmd = cmd_rx.recv() => {
@@ -248,18 +272,12 @@ impl BoardActor {
                             Some(BoardCommand::SetPower(target_state, _transition)) => {
                                 self.state.on = target_state;
                                 let msg = Message::Text(format!(r#"{{"on":{},"tt":0}}"#, target_state));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetBrightness(bri, _transition)) => {
                                 self.state.brightness = bri;
                                 let msg = Message::Text(format!(r#"{{"bri":{},"tt":0}}"#, bri));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetColor { r, g, b, transition }) => {
                                 self.state.color = [r, g, b];
@@ -267,58 +285,36 @@ impl BoardActor {
                                     r#"{{"seg":[{{"col":[[{},{},{}]]}}],"tt":{}}}"#,
                                     r, g, b, transition
                                 ));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetEffect(effect, _transition)) => {
                                 self.state.effect = effect;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"fx":{}}}],"tt":0}}"#, effect));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetSpeed(speed, _transition)) => {
                                 self.state.speed = speed;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"sx":{}}}],"tt":0}}"#, speed));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetIntensity(intensity, _transition)) => {
                                 self.state.intensity = intensity;
                                 let msg = Message::Text(format!(r#"{{"seg":[{{"ix":{}}}],"tt":0}}"#, intensity));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetPreset(preset, _transition)) => {
                                 self.state.preset = Some(preset);
                                 let msg = Message::Text(format!(r#"{{"ps":{},"tt":0}}"#, preset));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::SetLedCount(led_count)) => {
-                                let msg = Message::Text(format!(r#"{{"seg":[{{"len":{}}}]}}"#, led_count));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
                                 self.state.led_count = Some(led_count);
-                                self.broadcast_state();
+                                let msg = Message::Text(format!(r#"{{"seg":[{{"len":{}}}]}}"#, led_count));
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::ResetSegment) => {
-                                // Reset segment to defaults: grp=1, spc=0, of=0
                                 let msg = Message::Text(r#"{"seg":[{"id":0,"grp":1,"spc":0,"of":0}]}"#.to_string());
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             // Sync commands - update state without sending WebSocket (for E1.31 sync)
                             Some(BoardCommand::SyncPowerState(on)) => {
@@ -335,13 +331,8 @@ impl BoardActor {
                             }
                             Some(BoardCommand::SetTransition(transition)) => {
                                 self.state.transition = transition;
-                                // Set both 'tt' (per-command) and 'transition' (global default)
-                                // This ensures both WebSocket API and E1.31 commands respect the setting
                                 let msg = Message::Text(format!(r#"{{"tt":{},"transition":{}}}"#, transition, transition));
-                                timeout(tokio::time::Duration::from_secs(2), write.send(msg))
-                                    .await
-                                    .map_err(|_| "Timeout")??;
-                                self.broadcast_state();
+                                if !self.send_ws_message(&mut write, msg).await { break; }
                             }
                             Some(BoardCommand::GetState(response_tx)) => {
                                 let _ = response_tx.send(self.state.clone());

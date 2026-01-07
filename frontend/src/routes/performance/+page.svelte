@@ -1,14 +1,11 @@
 <script>
 	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram } from '$lib/store';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, dimProgramBoards } from '$lib/playback-db';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings, audioElements } from '$lib/store';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/playback-db';
 	import { updateProgram, reorderPrograms } from '$lib/programs-db';
 	import { setBoardBrightness } from '$lib/boards-db';
 	import { API_URL } from '$lib/api';
-
-	// Track which program is playing locally (for audio sync)
-	let audioElements = {};
 
 	// Track playback progress for each program (0-100)
 	let playbackProgress = $state({});
@@ -50,14 +47,9 @@
 	});
 
 	onMount(() => {
-		// Cleanup audio elements on unmount
+		// Audio is now loaded globally in +layout.svelte via audio-db.ts
+		// Cleanup animation frame on unmount
 		return () => {
-			Object.values(audioElements).forEach(audio => {
-				if (audio) {
-					audio.pause();
-					audio.src = '';
-				}
-			});
 			if (animationFrameId) {
 				cancelAnimationFrame(animationFrameId);
 			}
@@ -84,63 +76,34 @@
 	async function playProgram(program) {
 		console.log('▶️ Playing program:', program.songName);
 
-		// Fetch Loopy Pro settings to check mute status
-		let muteAudio = false;
-		try {
-			const settingsResponse = await fetch(`${API_URL}/settings/loopy-pro`);
-			if (settingsResponse.ok) {
-				const settings = await settingsResponse.json();
-				muteAudio = settings.mute_audio || false;
-			}
-		} catch (err) {
-			console.error('Failed to fetch settings:', err);
+		// Get mute status from store (loaded once on app init)
+		const muteAudio = $loopyProSettings.mute_audio;
+
+		// Get audio element from store (only if not muted)
+		let audio = muteAudio ? null : $audioElements[program.id];
+
+		// Only error if we need audio but don't have it
+		if (!muteAudio && !audio) {
+			console.error('No audio available for this program - audio may not be loaded yet');
+			return;
 		}
 
-		// Create or get audio element for this program
-		let audio = audioElements[program.id];
-
-		if (!audio) {
-			audio = new Audio();
-			audioElements[program.id] = audio;
-
-			// Load audio file
-			if (program.audioId) {
-				try {
-					const response = await fetch(`${API_URL}/audio/${program.audioId}`);
-					if (response.ok) {
-						const blob = await response.blob();
-						audio.src = URL.createObjectURL(blob);
-					} else {
-						console.error(`Failed to fetch audio: ${response.statusText}`);
-						return;
-					}
-				} catch (err) {
-					console.error('Error loading audio from API:', err);
-					return;
-				}
-			} else {
-				console.error('No audio available for this program');
-				return;
-			}
-		}
-
-		// Set up audio ended event
-		audio.onended = async () => {
+		// Shared ended handler for both muted and unmuted playback
+		const handleEnded = async () => {
 			console.log('🏁 Program ended:', program.songName);
 
-			// Cleanup current program
-			currentPlayingId = null;
+			// Reset progress
 			playbackProgress[program.id] = 0;
 			if (animationFrameId) {
 				cancelAnimationFrame(animationFrameId);
 				animationFrameId = null;
 			}
-			stopPlaybackService();
 
 			// Check for manual stop (breaks chain)
 			if (manualStop) {
 				console.log('⛔ Manual stop - chain broken');
 				manualStop = false;
+				stopPlaybackService();
 				return;
 			}
 
@@ -157,72 +120,70 @@
 					await playProgram(nextProgram);
 				} else {
 					console.warn(`⚠️  Next program "${program.nextProgramId}" not found`);
+					stopPlaybackService();
 				}
+			} else {
+				// No chain - stop playback completely
+				stopPlaybackService();
 			}
 		};
 
-		// Capture the EXACT moment audio starts
-		const audioStartTime = performance.now();
+		const playbackStartTime = performance.now();
 
-		// Play audio from the beginning (only if not muted)
-		audio.currentTime = 0;
-		if (!muteAudio) {
+		if (!muteAudio && audio) {
+			audio.onended = handleEnded;
+			audio.currentTime = 0;
 			await audio.play();
 			console.log('🔊 Audio playing');
 		} else {
 			console.log('🔇 Audio muted - using Loopy Pro audio');
 		}
 
-		// Update state
 		currentPlayingId = program.id;
 		playbackProgress[program.id] = 0;
 
-		// Start smooth progress animation using requestAnimationFrame
 		const updateProgress = () => {
-			if (audio && audio.duration && currentPlayingId === program.id) {
+			if (currentPlayingId !== program.id) return;
+
+			if (!muteAudio && audio && audio.duration) {
 				playbackProgress[program.id] = (audio.currentTime / audio.duration) * 100;
 				animationFrameId = requestAnimationFrame(updateProgress);
+			} else if (muteAudio && program.audioDuration) {
+				const elapsed = (performance.now() - playbackStartTime) / 1000;
+				playbackProgress[program.id] = Math.min((elapsed / program.audioDuration) * 100, 100);
+
+				if (elapsed >= program.audioDuration) {
+					handleEnded();
+				} else {
+					animationFrameId = requestAnimationFrame(updateProgress);
+				}
 			}
 		};
 		animationFrameId = requestAnimationFrame(updateProgress);
 
-		// Schedule LED cues with audio start timestamp (always send OSC and LED cues)
-		playProgramService(program, 0, audioStartTime);
+		playProgramService(program, 0);
 	}
 
 	async function stopProgram(program) {
 		console.log('⏹ Stopping program:', program.songName);
 
-		// Set manual stop flag to break chain
 		manualStop = true;
 
-		// Stop audio
-		const audio = audioElements[program.id];
+		const audio = $audioElements[program.id];
 		if (audio) {
 			audio.pause();
 			audio.currentTime = 0;
 		}
 
-		// Stop animation frame
 		if (animationFrameId) {
 			cancelAnimationFrame(animationFrameId);
 			animationFrameId = null;
 		}
 
-		// Reset progress
 		playbackProgress[program.id] = 0;
 
-		// Stop global playback
 		stopPlaybackService();
 
-		// Dim the program's boards
-		try {
-			await dimProgramBoards(program);
-		} catch (err) {
-			console.error('Failed to dim boards:', err);
-		}
-
-		// Clear playing state
 		currentPlayingId = null;
 	}
 
@@ -374,9 +335,15 @@
 		const program = $programs.find(p => p.id === contextMenu.programId);
 		if (!program) return;
 
-		program.nextProgramId = targetProgramId;
+		// Toggle: if clicking the currently selected program, deselect it
+		if (program.nextProgramId === targetProgramId) {
+			program.nextProgramId = undefined;
+		} else {
+			program.nextProgramId = targetProgramId;
+		}
+
 		await updateProgram(program);
-		hideContextMenu();
+		// Don't hide menu - let user see the selection and make more changes
 	}
 
 	async function setTransitionType(type) {
@@ -401,7 +368,7 @@
 
 		program.nextProgramId = undefined;
 		await updateProgram(program);
-		hideContextMenu();
+		// Don't hide menu - let user see the change
 	}
 
 	// Close context menu on click outside
@@ -411,17 +378,6 @@
 		}
 	}
 </script>
-
-<svg style="position: absolute; width: 0; height: 0;">
-	<defs>
-		<filter id="turbulent-displace" x="-50%" y="-50%" width="200%" height="200%">
-			<feTurbulence type="fractalNoise" baseFrequency="0.02 0.02" numOctaves="3" result="turbulence" seed="1">
-				<animate attributeName="seed" from="1" to="300" dur="6s" repeatCount="indefinite" />
-			</feTurbulence>
-			<feDisplacementMap in="SourceGraphic" in2="turbulence" scale="4" xChannelSelector="R" yChannelSelector="G" />
-		</filter>
-	</defs>
-</svg>
 
 <div class="performance-page" onclick={handleClickOutside}>
 	{#if $programsLoading}
@@ -438,7 +394,7 @@
 			<p class="empty-hint">Create programs in the Sequencer page first</p>
 		</div>
 	{:else}
-		<div class="programs-grid">
+		<div class="programs-grid" data-count={$programs.length}>
 			{#each $programs as program, index (program.id)}
 				<button
 					class="program-button"
@@ -533,6 +489,7 @@
 				style="left: {contextMenu.submenuX}px; top: {contextMenu.submenuY}px;"
 				onmouseenter={() => contextMenu.showChainSubmenu = true}
 				onmouseleave={() => contextMenu.showChainSubmenu = false}
+				onclick={(e) => e.stopPropagation()}
 			>
 				<div class="menu-item" onclick={() => setNextProgram(undefined)}>
 					<span>○ None</span>
@@ -552,6 +509,7 @@
 				style="left: {contextMenu.submenuX}px; top: {contextMenu.submenuY}px;"
 				onmouseenter={() => contextMenu.showTransitionSubmenu = true}
 				onmouseleave={() => contextMenu.showTransitionSubmenu = false}
+				onclick={(e) => e.stopPropagation()}
 			>
 				<div class="menu-item" onclick={() => setTransitionType('immediate')}>
 					<span>{currentProgram?.transitionType === 'immediate' ? '●' : '○'} Immediate</span>
@@ -584,17 +542,18 @@
 
 <style>
 	:global(body) {
-		background-color: #0f0f0f;
+		background-color: #0a0a0a;
 		color: #e5e5e5;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 	}
 
 	.performance-page {
 		width: 100%;
-		height: 100vh;
-		padding: 1rem;
+		min-height: 100vh;
+		padding: 0;
 		box-sizing: border-box;
-		overflow: visible;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.empty-state {
@@ -620,46 +579,58 @@
 
 	.programs-grid {
 		display: grid;
-		gap: 1rem;
+		gap: 0.5rem;
 		width: 100%;
-		height: 100%;
-		padding: 10px;
+		flex: 1;
+		padding: 0.5rem;
 		box-sizing: border-box;
-		overflow: visible;
+		/* Default: 3 columns x 3 rows for 8 programs */
+		grid-template-columns: 1fr 1fr 1fr;
+		grid-template-rows: 1fr 1fr 1fr;
 	}
 
-	/* Smart grid layout based on number of programs */
-	.programs-grid:has(:nth-child(1):last-child) {
+	/* Fallback grid layout using data attribute (more compatible) */
+	.programs-grid[data-count="1"] {
 		grid-template-columns: 1fr;
 		grid-template-rows: 1fr;
 	}
 
-	.programs-grid:has(:nth-child(2):last-child) {
+	.programs-grid[data-count="2"] {
 		grid-template-columns: 1fr 1fr;
 		grid-template-rows: 1fr;
 	}
 
-	.programs-grid:has(:nth-child(3):last-child),
-	.programs-grid:has(:nth-child(4):last-child) {
+	.programs-grid[data-count="3"],
+	.programs-grid[data-count="4"] {
 		grid-template-columns: 1fr 1fr;
 		grid-template-rows: 1fr 1fr;
 	}
 
-	.programs-grid:has(:nth-child(5):last-child),
-	.programs-grid:has(:nth-child(6):last-child) {
+	.programs-grid[data-count="5"],
+	.programs-grid[data-count="6"] {
 		grid-template-columns: 1fr 1fr 1fr;
 		grid-template-rows: 1fr 1fr;
 	}
 
-	.programs-grid:has(:nth-child(7):last-child),
-	.programs-grid:has(:nth-child(8):last-child),
-	.programs-grid:has(:nth-child(9):last-child) {
+	.programs-grid[data-count="7"],
+	.programs-grid[data-count="8"],
+	.programs-grid[data-count="9"] {
 		grid-template-columns: 1fr 1fr 1fr;
 		grid-template-rows: 1fr 1fr 1fr;
 	}
 
 	/* For 10+ programs, use 4 columns and auto rows */
-	.programs-grid:has(:nth-child(10)) {
+	.programs-grid[data-count="10"],
+	.programs-grid[data-count="11"],
+	.programs-grid[data-count="12"],
+	.programs-grid[data-count="13"],
+	.programs-grid[data-count="14"],
+	.programs-grid[data-count="15"],
+	.programs-grid[data-count="16"],
+	.programs-grid[data-count="17"],
+	.programs-grid[data-count="18"],
+	.programs-grid[data-count="19"],
+	.programs-grid[data-count="20"] {
 		grid-template-columns: 1fr 1fr 1fr 1fr;
 		grid-auto-rows: 1fr;
 		overflow-y: auto;
@@ -671,19 +642,18 @@
 		}
 
 		/* Mobile: max 2 columns */
-		.programs-grid:has(:nth-child(3):last-child),
-		.programs-grid:has(:nth-child(4):last-child),
-		.programs-grid:has(:nth-child(5):last-child),
-		.programs-grid:has(:nth-child(6):last-child) {
+		.programs-grid[data-count="3"],
+		.programs-grid[data-count="4"],
+		.programs-grid[data-count="5"],
+		.programs-grid[data-count="6"] {
 			grid-template-columns: 1fr 1fr;
 			grid-template-rows: auto;
 			grid-auto-rows: 1fr;
 		}
 
-		.programs-grid:has(:nth-child(7):last-child),
-		.programs-grid:has(:nth-child(8):last-child),
-		.programs-grid:has(:nth-child(9):last-child),
-		.programs-grid:has(:nth-child(10)) {
+		.programs-grid[data-count="7"],
+		.programs-grid[data-count="8"],
+		.programs-grid[data-count="9"] {
 			grid-template-columns: 1fr 1fr;
 			grid-auto-rows: 1fr;
 			overflow-y: auto;
@@ -692,8 +662,8 @@
 
 
 	.program-button {
-		background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
-		border: 2px solid #2a2a2a;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		border: 1px solid rgba(56, 89, 138, 0.2);
 		border-radius: 12px;
 		cursor: grab;
 		transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -705,7 +675,6 @@
 		justify-content: center;
 		width: 100%;
 		height: 100%;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 		user-select: none;
 		-webkit-user-select: none;
 		-webkit-touch-callout: none;
@@ -715,15 +684,15 @@
 		content: '';
 		position: absolute;
 		inset: 0;
-		background: radial-gradient(circle at center, rgba(168, 85, 247, 0.1) 0%, transparent 70%);
+		background: radial-gradient(circle at center, rgba(56, 89, 138, 0.15) 0%, transparent 70%);
 		opacity: 0;
 		transition: opacity 0.3s;
+		border-radius: 12px;
 	}
 
 	.program-button:hover {
-		border-color: #3a3a3a;
+		border-color: rgba(56, 89, 138, 0.4);
 		transform: scale(1.02);
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 	}
 
 	.program-button:hover::before {
@@ -765,8 +734,8 @@
 	}
 
 	.program-button.drag-over {
-		border: 2px dashed #a855f7;
-		background: rgba(168, 85, 247, 0.1);
+		border: 2px dashed rgba(56, 89, 138, 0.6);
+		background: rgba(56, 89, 138, 0.1);
 	}
 
 	/* Progress bar (fills from left to right) */
@@ -776,8 +745,8 @@
 		left: 0;
 		bottom: 0;
 		background: linear-gradient(90deg,
-			rgba(168, 85, 247, 0.15) 0%,
-			rgba(168, 85, 247, 0.25) 100%
+			rgba(139, 92, 246, 0.1) 0%,
+			rgba(139, 92, 246, 0.2) 100%
 		);
 		border-radius: 12px 0 0 12px;
 		z-index: 1;
@@ -785,38 +754,11 @@
 	}
 
 	.program-button.playing {
-		background: rgba(0, 0, 0, 0.6);
-		border: none;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		border: 1px solid rgba(139, 92, 246, 0.5);
 		position: relative;
 		animation: none;
-		box-shadow: none;
-	}
-
-	/* Purple inner border */
-	.program-button.playing::before {
-		content: '';
-		position: absolute;
-		inset: -2px;
-		border-radius: 14px;
-		border: 1px solid rgba(168, 85, 247, 0.5);
-		filter: url(#turbulent-displace) drop-shadow(0 0 3px rgba(168, 85, 247, 0.3));
-		pointer-events: none;
-		z-index: 3;
-		opacity: 1 !important;
-		background: none !important;
-	}
-
-	/* Purple outer glow */
-	.program-button.playing::after {
-		content: '';
-		position: absolute;
-		inset: -2px;
-		border-radius: 14px;
-		border: 1px solid #a855f7;
-		filter: url(#turbulent-displace) drop-shadow(0 0 6px rgba(168, 85, 247, 0.3));
-		opacity: 0.7;
-		pointer-events: none;
-		z-index: 2;
+		box-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
 	}
 
 	.program-content {
@@ -849,61 +791,6 @@
 	.program-button.playing .song-name {
 		color: #ffffff;
 		text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-	}
-
-	.track-number {
-		font-size: 0.875rem;
-		font-weight: 600;
-		color: #9ca3af;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 0.25rem 0.75rem;
-		background-color: rgba(0, 0, 0, 0.2);
-		border-radius: 12px;
-	}
-
-	.program-button.playing .track-number {
-		color: #e9d5ff;
-		background-color: rgba(255, 255, 255, 0.2);
-	}
-
-	.playing-indicator {
-		position: absolute;
-		bottom: 1.5rem;
-		left: 50%;
-		transform: translateX(-50%);
-		display: flex;
-		gap: 4px;
-		align-items: flex-end;
-		height: 24px;
-	}
-
-	.wave-bar {
-		width: 4px;
-		background-color: white;
-		border-radius: 2px;
-		animation: wave 1s ease-in-out infinite;
-	}
-
-	.wave-bar:nth-child(1) {
-		animation-delay: 0s;
-	}
-
-	.wave-bar:nth-child(2) {
-		animation-delay: 0.2s;
-	}
-
-	.wave-bar:nth-child(3) {
-		animation-delay: 0.4s;
-	}
-
-	@keyframes wave {
-		0%, 100% {
-			height: 8px;
-		}
-		50% {
-			height: 24px;
-		}
 	}
 
 	/* Context Menu */

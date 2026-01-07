@@ -3,8 +3,10 @@
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import favicon from '$lib/assets/favicon.svg';
-	import { initBoardsListener, cleanupBoardsListener, fetchPresets } from '$lib/boards-db';
+	import { initBoardsListener, cleanupBoardsListener, fetchPresets, fetchPerformancePresets, fetchPatternPresets } from '$lib/boards-db';
 	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
+	import { initLoopyProSettings } from '$lib/loopy-db';
+	import { initAudio, cleanupAudio } from '$lib/audio-db';
 
 	let { children } = $props();
 
@@ -28,11 +30,20 @@
 			// Initialize boards SSE listener (waits for initial fetch to avoid race condition)
 			await initBoardsListener();
 
-			// Fetch presets from server
+			// Fetch presets from server (home use + performance + patterns)
 			await fetchPresets();
+			await fetchPerformancePresets();
+			await fetchPatternPresets();
 
 			// Initialize programs from API
-			initPrograms();
+			await initPrograms();
+
+			// Initialize Loopy Pro settings
+			await initLoopyProSettings();
+
+			// Initialize audio (always loads - mute only affects playback, not loading)
+			// Must run after programs are loaded
+			await initAudio();
 		}
 	});
 
@@ -41,6 +52,7 @@
 		if (browser) {
 			cleanupBoardsListener();
 			cleanupPrograms();
+			cleanupAudio();
 		}
 	});
 </script>
@@ -59,7 +71,8 @@
 
 		<div class="nav-links" class:open={mobileMenuOpen}>
 			<a href="/" class:active={$page.url.pathname === '/'}>Boards</a>
-			<a href="/sequencer" class:active={$page.url.pathname === '/sequencer'}>Programming</a>
+			<a href="/presets" class:active={$page.url.pathname === '/presets'}>Presets</a>
+			<a href="/programming" class:active={$page.url.pathname === '/programming'}>Programming</a>
 			<a href="/performance" class:active={$page.url.pathname === '/performance'}>Performance</a>
 			<a href="/settings" class:active={$page.url.pathname === '/settings'}>Settings</a>
 		</div>
@@ -74,25 +87,25 @@
 	:global(body) {
 		margin: 0;
 		padding: 0;
-		background-color: #1a1a1a;
-		color: #e0e0e0;
+		background: radial-gradient(ellipse at 50% 0%, rgba(56, 89, 138, 0.04) 0%, transparent 50%), #0a0a0a;
+		color: #e5e5e5;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
 	}
 
 	:global(html) {
-		background-color: #1a1a1a;
+		background-color: #0a0a0a;
 	}
 
 	.app {
 		display: flex;
 		flex-direction: column;
 		min-height: 100vh;
-		background-color: #1a1a1a;
+		background: transparent;
 	}
 
 	.nav {
-		background-color: #1a1a1a;
-		border-bottom: 1px solid #2a2a2a;
+		background-color: #0a0a0a;
+		border-bottom: 1px solid #1a1a1a;
 		display: flex;
 		gap: 0;
 		padding: 0;
@@ -116,7 +129,7 @@
 	.hamburger-line {
 		width: 100%;
 		height: 3px;
-		background-color: #9ca3af;
+		background-color: #666;
 		transition: all 0.3s;
 		border-radius: 2px;
 	}
@@ -128,7 +141,7 @@
 	}
 
 	.nav a {
-		color: #9ca3af;
+		color: #666;
 		text-decoration: none;
 		padding: 1rem 1.5rem;
 		font-weight: 500;
@@ -137,13 +150,13 @@
 	}
 
 	.nav a:hover {
-		color: #e5e5e5;
-		background-color: #2a2a2a;
+		color: #fff;
+		background-color: #111;
 	}
 
 	.nav a.active {
-		color: #a855f7;
-		border-bottom-color: #a855f7;
+		color: #fff;
+		border-bottom-color: #fff;
 	}
 
 	main {
@@ -168,15 +181,15 @@
 			left: 0;
 			right: 0;
 			flex-direction: column;
-			background-color: #1a1a1a;
-			border-bottom: 1px solid #2a2a2a;
+			background-color: #0a0a0a;
+			border-bottom: 1px solid #1a1a1a;
 			transform: translateY(-100%);
 			opacity: 0;
 			visibility: hidden;
 			transition: all 0.3s ease-in-out;
 			gap: 0;
 			z-index: 100;
-			box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 		}
 
 		.nav-links.open {
@@ -187,13 +200,13 @@
 
 		.nav a {
 			padding: 1rem 1.5rem;
-			border-bottom: 1px solid #2a2a2a;
+			border-bottom: 1px solid #1a1a1a;
 			border-left: 3px solid transparent;
 		}
 
 		.nav a.active {
-			border-bottom-color: #2a2a2a;
-			border-left-color: #a855f7;
+			border-bottom-color: #1a1a1a;
+			border-left-color: #fff;
 		}
 	}
 </style>

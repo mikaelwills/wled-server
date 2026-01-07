@@ -102,21 +102,28 @@ export async function setGroupEffect(
 
 /**
  * Set preset for all boards in a group
+ * When bpm is provided, uses DMX Mode 2 for atomic effect state with BPM-synced speed
  */
 export async function setGroupPreset(
   groupId: string,
   preset: number,
-  transition: number = 0
+  transition: number = 0,
+  options?: { bpm?: number; presetName?: string }
 ): Promise<GroupOperationResult> {
   if (!browser) throw new Error('Not in browser environment');
 
   const fetchStartTime = performance.now();
-  console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: group='${groupId}' preset=${preset}`);
+  const bpmInfo = options?.bpm ? ` bpm=${options.bpm}` : '';
+  console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: group='${groupId}' preset=${preset}${bpmInfo}`);
+
+  const body: Record<string, any> = { preset, transition };
+  if (options?.bpm) body.bpm = options.bpm;
+  if (options?.presetName) body.preset_name = options.presetName;
 
   const response = await fetch(`${API_URL}/group/${groupId}/preset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ preset, transition }),
+    body: JSON.stringify(body),
   });
 
   const fetchEndTime = performance.now();

@@ -74,9 +74,9 @@ pub enum BoardCommand {
 
 #[derive(Debug, Clone)]
 pub enum GroupCommand {
-    SetPower(bool, u8), // on/off, transition
-    SetBrightness(u8, u8), // brightness, transition
+    SetPower(bool, u8),
+    SetBrightness(u8, u8),
     SetColor { r: u8, g: u8, b: u8, transition: u8 },
-    SetEffect(u8, u8), // effect, transition
-    SetPreset(u8, u8), // preset, transition
+    SetEffect(u8, u8),
+    SetPreset(u8, u8),
 }

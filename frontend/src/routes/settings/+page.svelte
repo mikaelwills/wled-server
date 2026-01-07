@@ -1,44 +1,28 @@
 <script>
-	import { onMount } from 'svelte';
-	import { API_URL } from '$lib/api';
+	import { loopyProSettings, loopyProSettingsLoading } from '$lib/store';
+	import { updateLoopyProSettings } from '$lib/loopy-db';
 
-	let ip = $state('192.168.1.242');
-	let port = $state(9595);
-	let muteAudio = $state(false);
+	let ip = $state($loopyProSettings.ip);
+	let port = $state($loopyProSettings.port);
+	let muteAudio = $state($loopyProSettings.mute_audio);
+	let audioSyncDelay = $state($loopyProSettings.audio_sync_delay_ms ?? 0);
 	let saved = $state(false);
-	let loading = $state(true);
 
-	onMount(async () => {
-		// Fetch settings from server
-		try {
-			const response = await fetch(`${API_URL}/settings/loopy-pro`);
-			if (response.ok) {
-				const settings = await response.json();
-				ip = settings.ip;
-				port = settings.port;
-				muteAudio = settings.mute_audio || false;
-			}
-		} catch (err) {
-			console.error('Failed to load settings:', err);
-		} finally {
-			loading = false;
-		}
+	// Sync local state with store changes
+	$effect(() => {
+		ip = $loopyProSettings.ip;
+		port = $loopyProSettings.port;
+		muteAudio = $loopyProSettings.mute_audio;
+		audioSyncDelay = $loopyProSettings.audio_sync_delay_ms ?? 0;
 	});
 
 	async function saveSettings() {
 		try {
-			const response = await fetch(`${API_URL}/settings/loopy-pro`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ip, port, mute_audio: muteAudio })
-			});
-
-			if (response.ok) {
-				saved = true;
-				setTimeout(() => {
-					saved = false;
-				}, 2000);
-			}
+			await updateLoopyProSettings({ ip, port, mute_audio: muteAudio, audio_sync_delay_ms: audioSyncDelay });
+			saved = true;
+			setTimeout(() => {
+				saved = false;
+			}, 2000);
 		} catch (err) {
 			console.error('Failed to save settings:', err);
 			alert('Failed to save settings');
@@ -50,6 +34,9 @@
 	<div class="settings-container">
 		<h1>Loopy Pro IP Address</h1>
 
+		{#if $loopyProSettingsLoading}
+			<p>Loading settings...</p>
+		{:else}
 		<div class="input-row">
 			<input
 				id="ip"
@@ -81,15 +68,31 @@
 			</label>
 		</div>
 
+		<div class="delay-row">
+			<label for="audio-sync-delay" class="delay-label">
+				Sync Offset (ms)
+			</label>
+			<input
+				id="audio-sync-delay"
+				type="number"
+				bind:value={audioSyncDelay}
+				min="-1000"
+				max="1000"
+				class="text-input delay-input"
+			/>
+		</div>
+		<p class="help-text">+ delays audio / − delays lights</p>
+
 		<button onclick={saveSettings} class="save-button">
 			{saved ? 'Saved' : 'Save'}
 		</button>
+		{/if}
 	</div>
 </div>
 
 <style>
 	:global(body) {
-		background-color: #0f0f0f;
+		background-color: #0a0a0a;
 		color: #e5e5e5;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 	}
@@ -129,8 +132,8 @@
 
 	.text-input {
 		padding: 0.75rem 1rem;
-		background-color: #1a1a1a;
-		border: 1px solid #2a2a2a;
+		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		border: 1px solid rgba(56, 89, 138, 0.2);
 		border-radius: 6px;
 		color: #e5e5e5;
 		font-size: 1rem;
@@ -151,7 +154,7 @@
 
 	.text-input:focus {
 		outline: none;
-		border-color: #a855f7;
+		border-color: rgba(56, 89, 138, 0.5);
 	}
 
 	.text-input::placeholder {
@@ -224,7 +227,7 @@
 		left: 0;
 		right: 0;
 		bottom: 0;
-		background-color: #2a2a2a;
+		background-color: rgba(56, 89, 138, 0.2);
 		transition: 0.3s;
 		border-radius: 28px;
 	}
@@ -236,7 +239,7 @@
 		width: 20px;
 		left: 4px;
 		bottom: 4px;
-		background-color: #6b7280;
+		background-color: rgba(56, 89, 138, 0.5);
 		transition: 0.3s;
 		border-radius: 50%;
 	}
@@ -248,5 +251,29 @@
 	input:checked + .toggle-slider:before {
 		background-color: white;
 		transform: translateX(20px);
+	}
+
+	.delay-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 0.5rem;
+	}
+
+	.delay-label {
+		font-size: 0.875rem;
+		color: #e5e5e5;
+	}
+
+	.delay-input {
+		width: 80px;
+		text-align: center;
+	}
+
+	.help-text {
+		font-size: 0.75rem;
+		color: #6b7280;
+		margin: 0.25rem 0 0.5rem 0;
+		line-height: 1.4;
 	}
 </style>

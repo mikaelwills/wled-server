@@ -1,11 +1,11 @@
 use crate::board::{BoardCommand, GroupCommand};
 use crate::config::Config;
-use crate::types::{GroupOperationResult, SharedState};
+use crate::types::{GroupOperationResult, SharedState, WledPreset};
 use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::{info, error, warn};
 
-// Cache last preset sent via E1.31 (default: 1)
-static CACHED_PRESET: AtomicU8 = AtomicU8::new(1);
+static CACHED_COLOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x00FFFFFF);
+static CACHED_BRIGHTNESS: AtomicU8 = AtomicU8::new(255);
 
 pub async fn execute_group_command(
     state: SharedState,
@@ -19,45 +19,81 @@ pub async fn execute_group_command(
         .find(|g| g.id == group_id)
         .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> { Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Group '{}' not found", group_id))) })?;
 
-    // OPTIMIZATION: Use E1.31 for preset/power/brightness commands
-    // Each group has its own E1.31 transport with unique universe
-    let use_e131 = matches!(command, GroupCommand::SetPreset(_, _) | GroupCommand::SetPower(_, _) | GroupCommand::SetBrightness(_, _));
+    // OPTIMIZATION: Use E1.31 only for presets (performance mode)
+    // Power/brightness should use WebSocket for home use mode
+    let use_e131 = matches!(command, GroupCommand::SetPreset(_, _));
 
     if use_e131 {
         // Try E1.31 send in separate scope to ensure guard is dropped
         {
             let mut transports_lock = state.group_e131_transports.write().await;
             if let Some(e131) = transports_lock.get_mut(group_id) {
-                // Log universe and target board information
                 let universe = e131.universe();
-                let target_ips: Vec<String> = e131.board_ips().iter().map(|addr| addr.to_string()).collect();
+                let broadcast = e131.broadcast_addr();
                 info!(
                     group_id = %group_id,
                     universe = universe,
-                    targets = ?target_ips,
-                    member_count = target_ips.len(),
-                    "E1.31 group command - sending to universe {} with {} member board(s)",
-                    universe,
-                    target_ips.len()
+                    broadcast = %broadcast,
+                    "E1.31 broadcast group command - universe {} → {}",
+                    universe, broadcast
                 );
 
-                // Send E1.31 packet to this group's universe
+                // Send E1.31 packet via Mode 6 (direct LED control)
                 let result = match &command {
-                    GroupCommand::SetPreset(preset, _transition) => {
-                        // Cache the preset for future power/brightness commands
-                        CACHED_PRESET.store(*preset, Ordering::Relaxed);
-                        info!(group_id = %group_id, preset = preset, universe = universe, "Sending preset command");
-                        e131.send_preset(*preset, 255)  // Full brightness
+                    GroupCommand::SetPreset(preset_slot, _transition) => {
+                        let presets = match WledPreset::load_all(&state.storage_paths.presets) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!(group_id = %group_id, "Failed to load presets: {}", e);
+                                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                            }
+                        };
+
+                        if let Some(preset) = presets.iter().find(|p| p.wled_slot == *preset_slot) {
+                            let [r, g, b] = preset.state.color;
+                            let brightness = preset.state.brightness;
+                            let color_packed = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                            CACHED_COLOR.store(color_packed, Ordering::Relaxed);
+                            CACHED_BRIGHTNESS.store(brightness, Ordering::Relaxed);
+                            info!(
+                                group_id = %group_id,
+                                preset_slot = preset_slot,
+                                preset_name = %preset.name,
+                                r = r, g = g, b = b,
+                                brightness = brightness,
+                                universe = universe,
+                                "Sending preset color via Mode 6"
+                            );
+                            e131.send_solid_color(r, g, b, brightness)
+                        } else {
+                            warn!(group_id = %group_id, preset_slot = preset_slot, "Preset slot not found");
+                            Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                format!("Preset slot {} not found", preset_slot)
+                            )) as Box<dyn std::error::Error>)
+                        }
                     }
                     GroupCommand::SetPower(on, _transition) => {
-                        let preset = CACHED_PRESET.load(Ordering::Relaxed);
-                        info!(group_id = %group_id, on = on, preset = if *on { preset } else { 0 }, universe = universe, "Sending power command");
-                        e131.send_power(*on, preset)  // Use cached preset or blackout (preset 0)
+                        info!(group_id = %group_id, on = on, universe = universe, "Sending power via Mode 6");
+                        if *on {
+                            let color = CACHED_COLOR.load(Ordering::Relaxed);
+                            let r = ((color >> 16) & 0xFF) as u8;
+                            let g = ((color >> 8) & 0xFF) as u8;
+                            let b = (color & 0xFF) as u8;
+                            let brightness = CACHED_BRIGHTNESS.load(Ordering::Relaxed);
+                            e131.send_solid_color(r, g, b, brightness)
+                        } else {
+                            e131.send_blackout()
+                        }
                     }
                     GroupCommand::SetBrightness(brightness, _transition) => {
-                        let preset = CACHED_PRESET.load(Ordering::Relaxed);
-                        info!(group_id = %group_id, brightness = brightness, preset = preset, universe = universe, "Sending brightness command");
-                        e131.send_brightness(*brightness, preset)  // Use cached preset
+                        CACHED_BRIGHTNESS.store(*brightness, Ordering::Relaxed);
+                        let color = CACHED_COLOR.load(Ordering::Relaxed);
+                        let r = ((color >> 16) & 0xFF) as u8;
+                        let g = ((color >> 8) & 0xFF) as u8;
+                        let b = (color & 0xFF) as u8;
+                        info!(group_id = %group_id, brightness = brightness, universe = universe, "Sending brightness via Mode 6");
+                        e131.send_solid_color(r, g, b, *brightness)
                     }
                     _ => unreachable!(),
                 };
@@ -130,6 +166,12 @@ pub async fn execute_group_command(
 
             // Convert GroupCommand to BoardCommand for this board
             let board_command = match &command {
+                GroupCommand::SetPower(on, transition) => {
+                    BoardCommand::SetPower(*on, *transition)
+                }
+                GroupCommand::SetBrightness(brightness, transition) => {
+                    BoardCommand::SetBrightness(*brightness, *transition)
+                }
                 GroupCommand::SetColor { r, g, b, transition } => {
                     BoardCommand::SetColor { r: *r, g: *g, b: *b, transition: *transition }
                 }
