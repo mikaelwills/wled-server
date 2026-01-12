@@ -138,7 +138,7 @@ export async function initBoardsListener(): Promise<void> {
                 color: getMajorityColor(members) ?? board.color,
                 brightness: members.length > 0 ? members[0].brightness : board.brightness,
                 effect: members.length > 0 ? members[0].effect : board.effect,
-                on: members.length > 0 ? members.some((m) => m.on) : board.on,
+                on: newOn,
               };
             }
 
@@ -412,7 +412,7 @@ export async function syncPresetsToBoard(boardId: string): Promise<{ success: bo
   if (!browser) return { success: false, message: 'Not in browser context' };
 
   try {
-    const response = await fetch(`${API_URL}/board/${boardId}/presets/replace`, {
+    const response = await fetch(`${API_URL}/board/${boardId}/presets/sync`, {
       method: 'POST'
     });
 
@@ -444,38 +444,21 @@ export async function setBoardPower(boardId: string, power: boolean): Promise<vo
   try {
     if (board?.isGroup && board.memberIds) {
       // This is a GROUP - use group endpoint for atomic group operation
+
+      boards.update((currentBoards) =>
+        currentBoards.map((b) => {
+          if (b.id === boardId && b.isGroup) {
+            return { ...b, on: power };
+          }
+          if (board?.memberIds?.includes(b.id) && !b.isGroup) {
+            return { ...b, on: power };
+          }
+          return b;
+        })
+      );
+
       try {
-        const result: GroupOperationResult = await setGroupPower(boardId, power);
-        
-        // Log any failures for debugging
-        // if (result.failed_members.length > 0) {
-        //   console.warn(`Group ${boardId} - Failed members:`, result.failed_members);
-        // }
-        
-        // Update group's state optimistically, preserving group identity
-        boards.update((currentBoards) =>
-          currentBoards.map((b) => {
-            if (b.id === boardId) {
-              // CRITICAL: Preserve immutable group identity
-              if (!b.isGroup) {
-                console.error(`Group operation attempted on non-group ${boardId}`);
-                return b;
-              }
-              return {
-                // Preserve ALL existing group properties
-                ...b,
-                // Only update derived operational state
-                on: power,
-                // CRITICAL: Never modify these immutable group properties:
-                isGroup: true, // Preserve group identity
-                memberIds: b.memberIds, // Preserve group membership
-                ip: b.ip, // Preserve group IP (empty string)
-                connected: b.connected, // Preserve group connection status
-              };
-            }
-            return b;
-          })
-        );
+        await setGroupPower(boardId, power);
       } catch (groupError) {
         // Log to console but don't show global error - boards already show as disconnected
         console.warn(`Group ${boardId} power command failed (boards may be unreachable):`, groupError);
@@ -710,11 +693,9 @@ export async function setBoardSpeed(boardId: string, speed: number): Promise<voi
 
   const currentBoards = get(boards);
   const board = currentBoards.find((b) => b.id === boardId);
-  console.log(`🔧 setBoardSpeed: boardId=${boardId}, speed=${speed}, board found=${!!board}, isGroup=${board?.isGroup}`);
 
   try {
     if (board?.isGroup && board.memberIds) {
-      console.log(`🔧 Sending group speed request to /group/${boardId}/speed`);
       const response = await fetch(`${API_URL}/group/${boardId}/speed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -790,17 +771,11 @@ export async function setBoardPreset(
         console.warn(`Group ${boardId} preset command failed (boards may be unreachable):`, groupError);
       }
     } else {
-      const fetchStartTime = performance.now();
-      console.log(`🌐 [${fetchStartTime.toFixed(3)}ms] Firing HTTP request: board='${boardId}' preset=${preset}`);
-
       const response = await fetch(`${API_URL}/board/${boardId}/preset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preset, transition: 0 }),
       });
-
-      const fetchEndTime = performance.now();
-      console.log(`✅ [${fetchEndTime.toFixed(3)}ms] HTTP response received: board='${boardId}' (took ${(fetchEndTime - fetchStartTime).toFixed(1)}ms)`);
 
       if (!response.ok) throw new Error('Failed to set preset');
     }

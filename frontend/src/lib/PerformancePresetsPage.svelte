@@ -119,19 +119,20 @@
 
 	.toggle-all-btn {
 		padding: 0.4rem 0.8rem;
-		background: transparent;
+		background: #0c0c0c;
 		color: #888;
-		border: 1px solid rgba(56, 89, 138, 0.2);
-		border-radius: 6px;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 12px;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		cursor: pointer;
 		font-size: 0.85rem;
 		transition: all 0.2s;
 	}
 
 	.toggle-all-btn:hover {
-		background: rgba(56, 89, 138, 0.1);
+		background: #0e0e0e;
 		color: #fff;
-		border-color: rgba(56, 89, 138, 0.3);
+		border-color: rgba(255, 255, 255, 0.05);
 	}
 
 	h1 {
@@ -147,9 +148,10 @@
 	}
 
 	.preset-group {
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
-		border: 1px solid rgba(56, 89, 138, 0.15);
-		border-radius: 8px;
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 12px;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		margin-bottom: 0.5rem;
 		overflow: hidden;
 	}
@@ -168,11 +170,11 @@
 	}
 
 	.group-header:hover {
-		background: rgba(56, 89, 138, 0.08);
+		background: rgba(255, 255, 255, 0.02);
 	}
 
 	.chevron {
-		color: rgba(56, 89, 138, 0.5);
+		color: #555;
 		font-size: 0.75rem;
 		transition: transform 0.2s;
 	}
@@ -194,14 +196,14 @@
 	}
 
 	.group-content {
-		border-top: 1px solid rgba(56, 89, 138, 0.1);
+		border-top: 1px solid rgba(255, 255, 255, 0.03);
 	}
 
 	.table-row {
 		display: grid;
 		grid-template-columns: 40px 1fr 100px;
 		padding: 0.6rem 1rem;
-		border-bottom: 1px solid rgba(56, 89, 138, 0.05);
+		border-bottom: 1px solid rgba(255, 255, 255, 0.02);
 		align-items: center;
 		transition: background 0.2s;
 	}
@@ -211,7 +213,7 @@
 	}
 
 	.table-row:hover {
-		background: rgba(56, 89, 138, 0.05);
+		background: rgba(255, 255, 255, 0.02);
 	}
 
 	.col-color {
@@ -223,7 +225,7 @@
 		width: 16px;
 		height: 16px;
 		border-radius: 4px;
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		border: 1px solid rgba(255, 255, 255, 0.1);
 	}
 
 	.col-name {

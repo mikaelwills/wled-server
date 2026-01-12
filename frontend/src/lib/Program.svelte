@@ -7,6 +7,8 @@
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/playback-db';
+	import { loadAudioForProgram, getCachedPeaks } from '$lib/audio-db';
+	import { audioBlobUrls, audioLoading } from '$lib/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
@@ -28,6 +30,7 @@
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
 	let audioToUpload = $state(null);
+	let wavesurferInitialized = $state(false);
 
 	// Program metadata
 	let songName = $state('');
@@ -266,31 +269,14 @@
 
 			loadProgramData(program);
 
-			// Load audio: try backend API first (new), then embedded data (legacy)
-			if (program.audioId) {
-				// Fetch from backend API
-				console.log(`[Program.svelte] Loading audio from backend API: ${program.audioId}`);
-				setTimeout(async () => {
-					try {
-						const response = await fetch(`${API_URL}/audio/${program.audioId}`);
-						if (response.ok) {
-							const blob = await response.blob();
-							const audioUrl = URL.createObjectURL(blob);
-							loadCompressedAudio(audioUrl);
-						} else {
-							console.error(`Failed to fetch audio: ${response.statusText}`);
-						}
-					} catch (err) {
-						console.error('Error loading audio from API:', err);
-					}
-				}, 100);
-			} else if (program.audioData) {
-				// Fallback to embedded audio for legacy programs
+			// Legacy embedded audio (rare case)
+			if (!program.audioId && program.audioData) {
 				console.log(`[Program.svelte] Loading legacy embedded audio`);
 				setTimeout(() => {
 					loadCompressedAudio(program.audioData);
-				}, 100);
+				}, 50);
 			}
+			// Modern programs: audio loading handled by reactive $effect below
 		}
 
 		// Close dropdown when clicking outside
@@ -374,10 +360,11 @@
 	 * @param {string} audioUrl - Blob URL of the audio file
 	 */
 	function initializeWaveSurfer(audioUrl) {
-		// Initialize Regions plugin
 		regions = RegionsPlugin.create();
 
-		// Create WaveSurfer instance
+		// Check for cached peaks once at the start
+		const cached = programId ? getCachedPeaks(programId) : null;
+
 		wavesurfer = WaveSurfer.create({
 			container: `#waveform-${sanitizedProgramId}`,
 			waveColor: 'rgba(139, 92, 246, 0.5)',
@@ -389,18 +376,13 @@
 			plugins: [regions]
 		});
 
-		// When waveform is loaded and decoded
 		wavesurfer.on('decode', () => {
 			isLoaded = true;
 
-			// Extract and store audio duration
 			const duration = wavesurfer.getDuration();
 			if (duration && duration > 0) {
 				audioDuration = duration;
-				console.log(`📏 Audio duration extracted: ${duration.toFixed(2)}s`);
 				updateBeatGrid();
-			} else {
-				console.warn('⚠️ Could not extract audio duration');
 			}
 
 			// Restore pending cues if any
@@ -581,9 +563,12 @@
 			console.log('Cleared selection');
 		});
 
-		// Store URL and load audio
-		window._currentAudioUrl = audioUrl;
-		wavesurfer.load(audioUrl);
+		// Load audio with cached peaks if available
+		if (cached) {
+			wavesurfer.load(audioUrl, cached.peaks, cached.duration);
+		} else {
+			wavesurfer.load(audioUrl);
+		}
 
 		// Clear existing markers if not loading program
 		if (!program) {
@@ -1166,6 +1151,21 @@ function playFullProgram() {
 		return defaultTargetBoard;
 	}
 
+	// Reactive audio loading: initializes WaveSurfer when blob URL becomes available
+	// Waits for global audio loading to complete before attempting on-demand load
+	$effect(() => {
+		if (!program?.audioId || wavesurferInitialized) return;
+
+		const blobUrl = $audioBlobUrls[program.id];
+		if (blobUrl) {
+			wavesurferInitialized = true;
+			initializeWaveSurfer(blobUrl);
+		} else if (!$audioLoading) {
+			// Only trigger on-demand load after global init completes
+			loadAudioForProgram(program.id, program.audioId);
+		}
+	});
+
 	// Cleanup on component destroy
 	onDestroy(() => {
 		// Clear seek debounce timeout to prevent memory leaks
@@ -1519,9 +1519,10 @@ function playFullProgram() {
 
 	.program-editor {
 		width: 100%;
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		background: #0c0c0c;
 		border-radius: 12px;
-		border: 1px solid rgba(56, 89, 138, 0.15);
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 	}
 
 	.waveform-container {
@@ -1608,7 +1609,7 @@ function playFullProgram() {
 
 	.song-name-input:focus {
 		outline: none;
-		border-color: #444;
+		border-color: #222;
 	}
 
 	.song-name-input::placeholder {
@@ -1633,7 +1634,7 @@ function playFullProgram() {
 
 	.track-input:focus {
 		outline: none;
-		border-color: #444;
+		border-color: #222;
 	}
 
 	.track-input::placeholder {
@@ -1665,7 +1666,7 @@ function playFullProgram() {
 
 	.bpm-input:focus {
 		outline: none;
-		border-color: #444;
+		border-color: #222;
 	}
 
 	.bpm-input::placeholder {
@@ -2355,9 +2356,10 @@ function playFullProgram() {
 	}
 
 	.preset-picker-modal {
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
-		border: 1px solid rgba(56, 89, 138, 0.15);
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		border-radius: 12px;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		min-width: 320px;
 		max-width: 400px;
 		max-height: 80vh;
@@ -2422,7 +2424,7 @@ function playFullProgram() {
 	.preset-quick-btn {
 		flex: 1;
 		background-color: transparent;
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		color: #888;
 		padding: 0.75rem;
 		border-radius: 8px;
@@ -2434,8 +2436,8 @@ function playFullProgram() {
 	}
 
 	.preset-quick-btn:hover {
-		background-color: rgba(56, 89, 138, 0.1);
-		border-color: rgba(56, 89, 138, 0.3);
+		background-color: rgba(255, 255, 255, 0.02);
+		border-color: rgba(255, 255, 255, 0.05);
 		color: #fff;
 	}
 
@@ -2460,7 +2462,7 @@ function playFullProgram() {
 
 	.preset-category-btn {
 		background-color: transparent;
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		color: #888;
 		padding: 1rem;
 		border-radius: 8px;
@@ -2472,14 +2474,14 @@ function playFullProgram() {
 	}
 
 	.preset-category-btn:hover {
-		background-color: rgba(56, 89, 138, 0.1);
-		border-color: rgba(56, 89, 138, 0.3);
+		background-color: rgba(255, 255, 255, 0.02);
+		border-color: rgba(255, 255, 255, 0.05);
 		color: #fff;
 	}
 
 	.preset-color-btn {
 		background-color: transparent;
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		padding: 0.75rem;
 		border-radius: 8px;
 		font-size: 0.875rem;
@@ -2490,7 +2492,7 @@ function playFullProgram() {
 	}
 
 	.preset-color-btn:hover {
-		background-color: rgba(56, 89, 138, 0.1);
-		border-color: rgba(56, 89, 138, 0.3);
+		background-color: rgba(255, 255, 255, 0.02);
+		border-color: rgba(255, 255, 255, 0.05);
 	}
 </style>

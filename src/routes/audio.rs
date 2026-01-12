@@ -1,8 +1,16 @@
 use axum::{extract::{Path, State}, http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
+use std::fs;
 use tracing::{error, info};
 
 use crate::audio;
 use crate::types::{SharedState, UploadAudioRequest, UploadAudioResponse};
+
+#[derive(Serialize, Deserialize)]
+pub struct PeaksData {
+    pub peaks: Vec<Vec<f32>>,
+    pub duration: f64,
+}
 
 pub async fn upload_audio(
     State(state): State<SharedState>,
@@ -60,4 +68,52 @@ pub async fn delete_audio(
     info!("Deleted audio file: {}", id);
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_peaks(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    if !state.storage_paths.is_available() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let peaks_path = state.storage_paths.audio.join(format!("{}.peaks.json", id));
+
+    if !peaks_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let data = fs::read_to_string(&peaks_path).map_err(|e| {
+        error!("Failed to read peaks file '{}': {}", id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(([(axum::http::header::CONTENT_TYPE, "application/json")], data))
+}
+
+pub async fn save_peaks(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(peaks): Json<PeaksData>,
+) -> Result<StatusCode, StatusCode> {
+    if !state.storage_paths.is_available() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let peaks_path = state.storage_paths.audio.join(format!("{}.peaks.json", id));
+
+    let json = serde_json::to_string(&peaks).map_err(|e| {
+        error!("Failed to serialize peaks: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    fs::write(&peaks_path, json).map_err(|e| {
+        error!("Failed to write peaks file '{}': {}", id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    info!("Saved peaks for: {}", id);
+
+    Ok(StatusCode::CREATED)
 }

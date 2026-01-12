@@ -1,6 +1,9 @@
 use std::error::Error;
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
 use tracing::info;
+
+use crate::timing_metrics::TimingMetrics;
 
 const SEQUENCE_OFFSET: usize = 111;
 const DMX_DATA_OFFSET: usize = 126;
@@ -15,6 +18,7 @@ pub struct E131RawTransport {
     send_wouldblock: u32,
     send_err: u32,
     packet: [u8; PACKET_SIZE],
+    timing_metrics: Option<Arc<TimingMetrics>>,
 }
 
 impl E131RawTransport {
@@ -42,7 +46,12 @@ impl E131RawTransport {
             send_wouldblock: 0,
             send_err: 0,
             packet,
+            timing_metrics: None,
         })
+    }
+
+    pub fn set_timing_metrics(&mut self, metrics: Arc<TimingMetrics>) {
+        self.timing_metrics = Some(metrics);
     }
 
     fn build_header_template(universe: u16) -> [u8; PACKET_SIZE] {
@@ -94,9 +103,24 @@ impl E131RawTransport {
         self.packet[DMX_DATA_OFFSET..].copy_from_slice(dmx_data);
 
         match self.socket.send_to(&self.packet, self.broadcast_addr) {
-            Ok(_) => { self.send_ok += 1; }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => { self.send_wouldblock += 1; }
-            Err(_) => { self.send_err += 1; }
+            Ok(_) => {
+                self.send_ok += 1;
+                if let Some(ref metrics) = self.timing_metrics {
+                    metrics.record_packet_ok();
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                self.send_wouldblock += 1;
+                if let Some(ref metrics) = self.timing_metrics {
+                    metrics.record_packet_wouldblock();
+                }
+            }
+            Err(_) => {
+                self.send_err += 1;
+                if let Some(ref metrics) = self.timing_metrics {
+                    metrics.record_packet_err();
+                }
+            }
         }
 
         self.sequence = self.sequence.wrapping_add(1);

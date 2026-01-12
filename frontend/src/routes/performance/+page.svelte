@@ -662,9 +662,10 @@
 
 
 	.program-button {
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		border-radius: 12px;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		cursor: grab;
 		transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 		padding: 0;
@@ -680,23 +681,10 @@
 		-webkit-touch-callout: none;
 	}
 
-	.program-button::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: radial-gradient(circle at center, rgba(56, 89, 138, 0.15) 0%, transparent 70%);
-		opacity: 0;
-		transition: opacity 0.3s;
-		border-radius: 12px;
-	}
-
 	.program-button:hover {
-		border-color: rgba(56, 89, 138, 0.4);
+		border-color: rgba(255, 255, 255, 0.05);
+		background: #0e0e0e;
 		transform: scale(1.02);
-	}
-
-	.program-button:hover::before {
-		opacity: 1;
 	}
 
 	.program-button:active {
@@ -734,8 +722,8 @@
 	}
 
 	.program-button.drag-over {
-		border: 2px dashed rgba(56, 89, 138, 0.6);
-		background: rgba(56, 89, 138, 0.1);
+		border: 2px dashed rgba(255, 255, 255, 0.1);
+		background: rgba(255, 255, 255, 0.02);
 	}
 
 	/* Progress bar (fills from left to right) */
@@ -754,11 +742,11 @@
 	}
 
 	.program-button.playing {
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		background: #0c0c0c;
 		border: 1px solid rgba(139, 92, 246, 0.5);
 		position: relative;
 		animation: none;
-		box-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 0 20px rgba(139, 92, 246, 0.2);
 	}
 
 	.program-content {

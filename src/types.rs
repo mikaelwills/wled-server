@@ -171,6 +171,8 @@ pub struct AppState {
     pub program_engine: Arc<crate::program_engine::ProgramEngine>,
     pub connected_ips: Arc<RwLock<HashSet<String>>>,
     pub performance_mode: Arc<AtomicBool>,
+    pub timing_metrics: Arc<crate::timing_metrics::TimingMetrics>,
+    pub playback_history: Arc<crate::playback_history::PlaybackHistory>,
 }
 
 pub type SharedState = Arc<AppState>;

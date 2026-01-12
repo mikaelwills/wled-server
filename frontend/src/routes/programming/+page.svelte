@@ -347,24 +347,25 @@
 	}
 
 	.thin-drop-zone {
-		border: 1px dashed rgba(56, 89, 138, 0.3);
+		border: 1px dashed rgba(255, 255, 255, 0.08);
 		border-radius: 12px;
 		padding: 1.5rem;
 		text-align: center;
 		transition: all 0.2s;
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
+		background: #0c0c0c;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		cursor: pointer;
 	}
 
 	.thin-drop-zone.dragging {
-		border-color: rgba(56, 89, 138, 0.5);
-		background: linear-gradient(145deg, #0f1419 0%, #0c0e12 50%, #0a0c10 100%);
+		border-color: rgba(255, 255, 255, 0.15);
+		background: #0e0e0e;
 		border-style: solid;
 	}
 
 	.thin-drop-zone:hover {
-		border-color: rgba(56, 89, 138, 0.4);
-		background: linear-gradient(145deg, #0f1419 0%, #0c0e12 50%, #0a0c10 100%);
+		border-color: rgba(255, 255, 255, 0.1);
+		background: #0e0e0e;
 	}
 
 	.drop-text {
@@ -392,9 +393,10 @@
 	}
 
 	.compression-loading-card {
-		background-color: #0f0f0f;
+		background: #0c0c0c;
 		border-radius: 12px;
-		border: 1px solid #1a1a1a;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		text-align: center;
 		padding: 3rem 2rem;
 		color: #888;

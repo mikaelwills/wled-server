@@ -2,10 +2,12 @@ mod audio;
 mod boards;
 mod effects;
 pub mod groups;
+mod history;
 mod patterns;
 mod presets;
 mod programs;
 mod settings;
+mod timing;
 
 use axum::{
     extract::{DefaultBodyLimit, State},
@@ -50,8 +52,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/board/:id/led-count", post(boards::set_led_count))
         .route("/board/:id/transition", post(boards::set_transition))
         .route("/board/:id/reset-segment", post(boards::reset_segment))
-        .route("/board/:id/presets/sync", post(boards::sync_presets_to_board))
-        .route("/board/:id/presets/replace", post(boards::replace_presets_on_board))
+        .route("/board/:id/presets/sync", post(boards::replace_presets_on_board))
         .route("/events", get(sse_handler))
         .route("/programs", post(programs::save_program))
         .route("/programs", get(programs::list_programs))
@@ -63,6 +64,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/presets", post(presets::save_preset).get(presets::list_presets))
         .route("/presets/:id", get(presets::get_preset).put(presets::update_preset).delete(presets::delete_preset))
         .route("/audio/:id", post(audio::upload_audio).get(audio::get_audio).delete(audio::delete_audio))
+        .route("/audio/:id/peaks", get(audio::get_peaks).post(audio::save_peaks))
         .route("/osc", post(settings::send_osc))
         .route("/settings/loopy-pro", get(settings::get_loopy_pro_settings).put(settings::update_loopy_pro_settings))
         .route("/effects/start", post(effects::start_effects_engine))
@@ -71,6 +73,12 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/patterns/presets", get(patterns::list_pattern_presets))
         .route("/patterns/start", post(patterns::start_pattern))
         .route("/patterns/stop", post(patterns::stop_pattern))
+        .route("/timing/snapshot", get(timing::get_timing_snapshot))
+        .route("/timing/events", get(timing::get_timing_events).delete(timing::clear_timing_events))
+        .route("/timing/reset", post(timing::reset_timing_metrics))
+        .route("/timing/threshold", get(timing::get_timing_threshold).put(timing::update_timing_threshold))
+        .route("/history", get(history::get_history).delete(history::clear_history))
+        .route("/history/:id", get(history::get_session).delete(history::delete_session))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state)
 }

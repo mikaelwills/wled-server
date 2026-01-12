@@ -90,12 +90,14 @@ pub async fn start_pattern(
     let sequence = generate_sequence(&online_members, &preset.pattern, req.bpm, req.sync_rate);
 
     let is_random = preset.pattern == PatternType::Random;
+    let is_ping_pong = preset.pattern == PatternType::PingPong;
 
     state.pattern_engine.send_command(PatternCommand::Start {
         sequence,
         color: preset.colour,
         boards,
         is_random,
+        is_ping_pong,
     }).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     info!("Pattern started: {} @ {} BPM -> {}", req.preset, req.bpm, req.target);

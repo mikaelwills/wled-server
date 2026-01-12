@@ -1,6 +1,7 @@
 <script>
 	import { loopyProSettings, loopyProSettingsLoading } from '$lib/store';
 	import { updateLoopyProSettings } from '$lib/loopy-db';
+	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
 
 	let ip = $state($loopyProSettings.ip);
 	let port = $state($loopyProSettings.port);
@@ -87,6 +88,26 @@
 			{saved ? 'Saved' : 'Save'}
 		</button>
 		{/if}
+
+		<div class="section-divider"></div>
+
+		<h1>Developer Tools</h1>
+
+		<div class="toggle-row">
+			<label for="timing-toggle" class="toggle-label">
+				Timing Monitor
+			</label>
+			<label class="toggle-switch">
+				<input
+					id="timing-toggle"
+					type="checkbox"
+					checked={$timingMonitorVisible}
+					onchange={toggleTimingMonitor}
+				/>
+				<span class="toggle-slider"></span>
+			</label>
+		</div>
+		<p class="help-text">Press Ctrl+T to toggle (tracks cue drift)</p>
 	</div>
 </div>
 
@@ -132,8 +153,8 @@
 
 	.text-input {
 		padding: 0.75rem 1rem;
-		background: linear-gradient(145deg, #0d1117 0%, #0b0d14 50%, #080a12 100%);
-		border: 1px solid rgba(56, 89, 138, 0.2);
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.03);
 		border-radius: 6px;
 		color: #e5e5e5;
 		font-size: 1rem;
@@ -154,7 +175,7 @@
 
 	.text-input:focus {
 		outline: none;
-		border-color: rgba(56, 89, 138, 0.5);
+		border-color: rgba(255, 255, 255, 0.08);
 	}
 
 	.text-input::placeholder {
@@ -175,10 +196,11 @@
 	.save-button {
 		width: 100%;
 		padding: 0.75rem 1rem;
-		background-color: #a855f7;
-		color: white;
-		border: none;
-		border-radius: 6px;
+		background: #0c0c0c;
+		color: #888;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 12px;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		font-size: 0.875rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -187,12 +209,13 @@
 	}
 
 	.save-button:hover {
-		background-color: #9333ea;
+		background: #0e0e0e;
+		color: #fff;
+		border-color: rgba(255, 255, 255, 0.05);
 	}
 
 	.save-button:active {
-		background-color: #7e22ce;
-		transform: scale(0.98);
+		background: #0a0a0a;
 	}
 
 	.toggle-row {
@@ -227,7 +250,7 @@
 		left: 0;
 		right: 0;
 		bottom: 0;
-		background-color: rgba(56, 89, 138, 0.2);
+		background-color: rgba(255, 255, 255, 0.05);
 		transition: 0.3s;
 		border-radius: 28px;
 	}
@@ -239,7 +262,7 @@
 		width: 20px;
 		left: 4px;
 		bottom: 4px;
-		background-color: rgba(56, 89, 138, 0.5);
+		background-color: rgba(255, 255, 255, 0.2);
 		transition: 0.3s;
 		border-radius: 50%;
 	}
@@ -275,5 +298,10 @@
 		color: #6b7280;
 		margin: 0.25rem 0 0.5rem 0;
 		line-height: 1.4;
+	}
+
+	.section-divider {
+		border-top: 1px solid #222;
+		margin: 1.5rem 0;
 	}
 </style>

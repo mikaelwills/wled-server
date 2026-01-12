@@ -62,8 +62,18 @@ export const loopyProSettingsError: Writable<string | null> = writable(null);
 
 // Audio store - maps program.id to loaded Audio elements
 export const audioElements: Writable<Record<string, HTMLAudioElement>> = writable({});
-export const audioLoading: Writable<boolean> = writable(false);
+export const audioLoading: Writable<boolean> = writable(true); // Start true - initAudio sets false when done
 export const audioError: Writable<string | null> = writable(null);
+
+// Audio blob URLs cache - maps program.id to blob URL for WaveSurfer
+export const audioBlobUrls: Writable<Record<string, string>> = writable({});
+
+// Cached waveform peaks - maps program.id to pre-computed peaks data
+// This allows WaveSurfer to render instantly without decoding audio
+export const cachedPeaks: Writable<Record<string, {
+	peaks: Array<number[]>;
+	duration: number;
+}>> = writable({});
 
 // Grid multiplier for beat grid display (4 = "1" button default)
 export const gridMultiplier: Writable<number> = writable(4);

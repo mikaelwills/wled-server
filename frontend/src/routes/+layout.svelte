@@ -7,8 +7,17 @@
 	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
 	import { initLoopyProSettings } from '$lib/loopy-db';
 	import { initAudio, cleanupAudio } from '$lib/audio-db';
+	import TimingMonitor from '$lib/TimingMonitor.svelte';
+	import { toggleTimingMonitor } from '$lib/timing-store';
 
 	let { children } = $props();
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 't' && e.ctrlKey) {
+			e.preventDefault();
+			toggleTimingMonitor();
+		}
+	}
 
 	// Mobile menu state
 	let mobileMenuOpen = $state(false);
@@ -61,6 +70,10 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
+<svelte:window onkeydown={handleKeydown} />
+
+<TimingMonitor />
+
 <div class="app">
 	<nav class="nav">
 		<button class="hamburger" onclick={toggleMobileMenu} aria-label="Toggle menu">
@@ -74,6 +87,7 @@
 			<a href="/presets" class:active={$page.url.pathname === '/presets'}>Presets</a>
 			<a href="/programming" class:active={$page.url.pathname === '/programming'}>Programming</a>
 			<a href="/performance" class:active={$page.url.pathname === '/performance'}>Performance</a>
+			<a href="/history" class:active={$page.url.pathname === '/history'}>History</a>
 			<a href="/settings" class:active={$page.url.pathname === '/settings'}>Settings</a>
 		</div>
 	</nav>

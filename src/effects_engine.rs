@@ -1,9 +1,11 @@
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 use crate::effects::{Effect, EffectType};
+use crate::timing_metrics::TimingMetrics;
 use crate::transport::E131RawTransport;
 
 #[derive(Debug, Clone)]
@@ -34,10 +36,10 @@ pub struct EffectsEngine {
 }
 
 impl EffectsEngine {
-    pub fn new() -> Self {
+    pub fn new(timing_metrics: Option<Arc<TimingMetrics>>) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
 
-        thread::spawn(move || Self::run_loop(command_rx));
+        thread::spawn(move || Self::run_loop(command_rx, timing_metrics));
 
         Self { command_tx }
     }
@@ -50,9 +52,11 @@ impl EffectsEngine {
         Ok(())
     }
 
-    fn run_loop(command_rx: mpsc::Receiver<EngineCommand>) {
+    fn run_loop(command_rx: mpsc::Receiver<EngineCommand>, timing_metrics: Option<Arc<TimingMetrics>>) {
         let mut state: Option<EngineState> = None;
         let tick_duration = Duration::from_millis(25);
+        let mut next_tick = Instant::now() + tick_duration;
+        let mut last_tick = Instant::now();
 
         loop {
             match command_rx.try_recv() {
@@ -64,7 +68,9 @@ impl EffectsEngine {
                             boards = boards.len(),
                             "Effects engine START"
                         );
-                        state = Some(EngineState::new(config, boards));
+                        state = Some(EngineState::new(config, boards, timing_metrics.clone()));
+                        next_tick = Instant::now() + tick_duration;
+                        last_tick = Instant::now();
                     }
                     EngineCommand::Stop => {
                         info!("Effects engine STOP");
@@ -79,10 +85,22 @@ impl EffectsEngine {
             }
 
             if let Some(ref mut s) = state {
+                let now = Instant::now();
+                let actual_tick_ms = now.duration_since(last_tick).as_secs_f64() * 1000.0;
+                last_tick = now;
+
+                if let Some(ref metrics) = timing_metrics {
+                    metrics.record_frame_tick(actual_tick_ms);
+                }
+
                 s.tick();
             }
 
-            thread::sleep(tick_duration);
+            let now = Instant::now();
+            if next_tick > now {
+                thread::sleep(next_tick - now);
+            }
+            next_tick += tick_duration;
         }
     }
 }
@@ -96,17 +114,20 @@ struct EngineState {
 }
 
 impl EngineState {
-    fn new(config: EffectConfig, boards: Vec<BoardTarget>) -> Self {
+    fn new(config: EffectConfig, boards: Vec<BoardTarget>, timing_metrics: Option<Arc<TimingMetrics>>) -> Self {
         let mut transports = Vec::new();
 
         for board in &boards {
             match E131RawTransport::new(vec![board.ip.clone()], board.universe) {
-                Ok(t) => {
+                Ok(mut t) => {
                     info!(
                         ip = %board.ip,
                         universe = board.universe,
                         "E1.31 transport created"
                     );
+                    if let Some(ref metrics) = timing_metrics {
+                        t.set_timing_metrics(metrics.clone());
+                    }
                     transports.push((t, board.led_count));
                 }
                 Err(e) => {

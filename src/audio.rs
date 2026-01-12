@@ -66,7 +66,7 @@ impl AudioFile {
         Ok(bytes)
     }
 
-    /// Delete an audio file
+    /// Delete an audio file and its associated peaks file
     pub fn delete(filename: &str, audio_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // Validate filename (prevent path traversal)
         if filename.contains("..") || filename.contains("/") || filename.contains("\\") {
@@ -80,6 +80,13 @@ impl AudioFile {
             tracing::info!("Deleted audio file: {}", filename);
         } else {
             tracing::warn!("Audio file not found for deletion: {}", filename);
+        }
+
+        // Also delete associated peaks file if it exists
+        let peaks_path = audio_path.join(format!("{}.peaks.json", filename));
+        if peaks_path.exists() {
+            fs::remove_file(&peaks_path)?;
+            tracing::info!("Deleted peaks file: {}.peaks.json", filename);
         }
 
         Ok(())

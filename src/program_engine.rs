@@ -9,10 +9,11 @@ use crate::cue_scheduler::{CueScheduler, CueType, PatternCueConfig, ScheduledCue
 use crate::effects::EffectType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
+use crate::playback_history::PlaybackHistory;
 use crate::program::Program;
+use crate::timing_metrics::TimingMetrics;
 
 pub type AudioPlayCallback = Arc<dyn Fn(&str) + Send + Sync>;
-pub type AudioStopCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 struct TargetInfo {
@@ -36,6 +37,7 @@ struct PatternPresetInfo {
 pub enum PlaybackCommand {
     Play { program: Program, start_time: f64 },
     Stop,
+    CuesCompleted,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,7 @@ pub struct ActiveTarget {
 pub struct PlaybackState {
     pub audio_track: Option<String>,
     pub active_targets: Vec<ActiveTarget>,
+    pub current_session_id: Option<String>,
 }
 
 pub struct ProgramEngine {
@@ -71,16 +74,23 @@ impl ProgramEngine {
         pattern_engine: Arc<PatternEngine>,
         performance_mode: Arc<AtomicBool>,
         on_audio_play: Option<AudioPlayCallback>,
-        on_audio_stop: Option<AudioStopCallback>,
         connected_ips: Arc<RwLock<HashSet<String>>>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+        playback_history: Option<Arc<PlaybackHistory>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let state = Arc::new(RwLock::new(PlaybackState {
             audio_track: None,
             active_targets: Vec::new(),
+            current_session_id: None,
         }));
 
-        let cue_scheduler = CueScheduler::new(effects_engine.clone(), pattern_engine.clone());
+        let completion_tx = command_tx.clone();
+        let on_cues_complete: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+            let _ = completion_tx.blocking_send(PlaybackCommand::CuesCompleted);
+        }));
+
+        let cue_scheduler = CueScheduler::new(effects_engine.clone(), pattern_engine.clone(), timing_metrics.clone(), on_cues_complete);
 
         let state_clone = state.clone();
         let performance_mode_clone = performance_mode.clone();
@@ -93,8 +103,9 @@ impl ProgramEngine {
             state_clone,
             performance_mode_clone,
             on_audio_play,
-            on_audio_stop,
             connected_ips,
+            timing_metrics,
+            playback_history,
         ));
 
         Self { command_tx }
@@ -126,8 +137,9 @@ impl ProgramEngine {
         state: Arc<RwLock<PlaybackState>>,
         performance_mode: Arc<AtomicBool>,
         on_audio_play: Option<AudioPlayCallback>,
-        on_audio_stop: Option<AudioStopCallback>,
         connected_ips: Arc<RwLock<HashSet<String>>>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+        playback_history: Option<Arc<PlaybackHistory>>,
     ) {
         loop {
             match command_rx.recv().await {
@@ -143,6 +155,18 @@ impl ProgramEngine {
 
                     performance_mode.store(true, Ordering::SeqCst);
                     println!("🎭 Performance mode: ON (WebSocket reconnection paused)");
+
+                    if let Some(ref metrics) = timing_metrics {
+                        metrics.reset();
+                    }
+
+                    let session_id = if let Some(ref history) = playback_history {
+                        let id = history.start_session(&program.id, &program.song_name);
+                        println!("📊 Started playback session: {}", id);
+                        Some(id)
+                    } else {
+                        None
+                    };
 
                     let bpm = program.bpm.unwrap_or(120) as f64;
 
@@ -333,6 +357,7 @@ impl ProgramEngine {
                                 boards: t.boards.clone(),
                             })
                             .collect();
+                        s.current_session_id = session_id.clone();
                     }
 
                     let _ = cue_scheduler.start(scheduled_cues, playback_start);
@@ -357,10 +382,16 @@ impl ProgramEngine {
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
                     println!("  ✓ Stop sent to pattern engine");
 
-                    let (audio_track, active_targets) = {
+                    let (active_targets, session_id) = {
                         let s = state.read().await;
-                        (s.audio_track.clone(), s.active_targets.clone())
+                        (s.active_targets.clone(), s.current_session_id.clone())
                     };
+
+                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {
+                        let snapshot = metrics.snapshot();
+                        history.end_session(sid, &snapshot, false);
+                        println!("📊 Ended playback session: {}", sid);
+                    }
 
                     println!(
                         "  → Sending blackout to {} targets...",
@@ -373,10 +404,38 @@ impl ProgramEngine {
 
                     let _ = effects_engine.send_command(EngineCommand::Stop);
 
-                    if let (Some(ref callback), Some(ref track)) = (&on_audio_stop, &audio_track) {
-                        println!("🎵 Stopping audio playback: {}", track);
-                        callback(track);
+                    performance_mode.store(false, Ordering::SeqCst);
+                    println!("🎭 Performance mode: OFF (WebSocket reconnection resumed)");
+
+                    {
+                        let mut s = state.write().await;
+                        s.audio_track = None;
+                        s.active_targets.clear();
+                        s.current_session_id = None;
                     }
+                }
+
+                Some(PlaybackCommand::CuesCompleted) => {
+                    println!("✅ Program engine: All cues completed naturally");
+
+                    let _ = pattern_engine.send_command(PatternCommand::Stop);
+
+                    let (active_targets, session_id) = {
+                        let s = state.read().await;
+                        (s.active_targets.clone(), s.current_session_id.clone())
+                    };
+
+                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {
+                        let snapshot = metrics.snapshot();
+                        history.end_session(sid, &snapshot, true);
+                        println!("📊 Ended playback session (completed): {}", sid);
+                    }
+
+                    for target in &active_targets {
+                        send_blackout(&effects_engine, target.boards.clone());
+                    }
+
+                    let _ = effects_engine.send_command(EngineCommand::Stop);
 
                     performance_mode.store(false, Ordering::SeqCst);
                     println!("🎭 Performance mode: OFF (WebSocket reconnection resumed)");
@@ -385,6 +444,7 @@ impl ProgramEngine {
                         let mut s = state.write().await;
                         s.audio_track = None;
                         s.active_targets.clear();
+                        s.current_session_id = None;
                     }
                 }
 

@@ -17,6 +17,9 @@ pub fn transform_board_order(members: &[String], pattern: &PatternType) -> Vec<V
     match pattern {
         PatternType::Wave => members.iter().map(|b| vec![b.clone()]).collect(),
         PatternType::WaveReverse => members.iter().rev().map(|b| vec![b.clone()]).collect(),
+        PatternType::PingPong => {
+            members.iter().map(|b| vec![b.clone()]).collect()
+        }
         PatternType::Alternate => {
             let odds: Vec<String> = members.iter().step_by(2).cloned().collect();
             let evens: Vec<String> = members.iter().skip(1).step_by(2).cloned().collect();

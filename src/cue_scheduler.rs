@@ -9,6 +9,7 @@ use crate::config::PatternType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
 use crate::pattern::generate_sequence;
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
+use crate::timing_metrics::TimingMetrics;
 
 const COARSE_THRESHOLD: Duration = Duration::from_millis(100);
 const FINE_THRESHOLD: Duration = Duration::from_millis(10);
@@ -54,13 +55,19 @@ pub struct CueScheduler {
 }
 
 impl CueScheduler {
-    pub fn new(effects_engine: Arc<EffectsEngine>, pattern_engine: Arc<PatternEngine>) -> Self {
+    pub fn new(
+        effects_engine: Arc<EffectsEngine>,
+        pattern_engine: Arc<PatternEngine>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+        on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let on_complete_clone = on_complete.clone();
 
         thread::spawn(move || {
-            Self::run_scheduler(command_rx, effects_engine, pattern_engine, stop_flag_clone);
+            Self::run_scheduler(command_rx, effects_engine, pattern_engine, stop_flag_clone, timing_metrics, on_complete_clone);
         });
 
         Self {
@@ -88,6 +95,8 @@ impl CueScheduler {
         effects_engine: Arc<EffectsEngine>,
         pattern_engine: Arc<PatternEngine>,
         stop_flag: Arc<AtomicBool>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+        on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
     ) {
         loop {
             match command_rx.recv() {
@@ -144,6 +153,10 @@ impl CueScheduler {
 
                         let drift_ms = (Instant::now() - target_time).as_secs_f64() * 1000.0;
 
+                        if let Some(ref metrics) = timing_metrics {
+                            metrics.record_cue_drift(drift_ms, &cue.label);
+                        }
+
                         match &cue.cue_type {
                             CueType::Pattern(pcfg) => {
                                 println!(
@@ -163,12 +176,14 @@ impl CueScheduler {
                                 );
 
                                 let is_random = pcfg.pattern_type == PatternType::Random;
+                                let is_ping_pong = pcfg.pattern_type == PatternType::PingPong;
 
                                 let _ = pattern_engine.send_command(PatternCommand::Start {
                                     sequence,
                                     color: pcfg.color,
                                     boards: pcfg.board_info.clone(),
                                     is_random,
+                                    is_ping_pong,
                                 });
                             }
                             CueType::Effect { config, boards } => {
@@ -193,6 +208,9 @@ impl CueScheduler {
                         println!("⏹️ Cue scheduler: stopped");
                     } else {
                         println!("✅ All cues fired");
+                        if let Some(ref callback) = on_complete {
+                            callback();
+                        }
                     }
                 }
                 Err(_) => break,

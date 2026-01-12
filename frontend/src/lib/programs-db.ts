@@ -4,6 +4,7 @@ import { get } from 'svelte/store';
 import { programs, programsLoading, programsError } from './store';
 import { Program } from './models/Program';
 import { API_URL } from '$lib/api';
+import { removeAudioForProgram } from './audio-db';
 
 /**
  * Initialize programs from API
@@ -185,6 +186,9 @@ export async function deleteProgram(programId: string): Promise<void> {
     programs.update(currentPrograms =>
       currentPrograms.filter(p => p.id !== programId)
     );
+
+    // Clean up cached audio blob URL
+    removeAudioForProgram(programId);
   } catch (error) {
     console.error('Failed to delete program:', error);
     programsError.set('Failed to delete program from server.');

@@ -22,6 +22,7 @@ struct PatternState {
     transports: HashMap<String, (E131RawTransport, usize)>,
     cycle_count: u64,
     is_random: bool,
+    is_ping_pong: bool,
     prev_chosen: Option<String>,
 }
 
@@ -32,6 +33,7 @@ pub enum PatternCommand {
         color: [u8; 3],
         boards: HashMap<String, BoardInfo>,
         is_random: bool,
+        is_ping_pong: bool,
     },
     Stop,
 }
@@ -60,7 +62,7 @@ impl PatternEngine {
 
         loop {
             match command_rx.try_recv() {
-                Ok(PatternCommand::Start { sequence, color, boards, is_random }) => {
+                Ok(PatternCommand::Start { sequence, color, boards, is_random, is_ping_pong }) => {
                     let mut transports = HashMap::new();
                     for (board_id, info) in boards {
                         if let Ok(transport) = E131RawTransport::new(vec![info.ip.clone()], info.universe) {
@@ -74,6 +76,7 @@ impl PatternEngine {
                             transports,
                             cycle_count: 0,
                             is_random,
+                            is_ping_pong,
                             prev_chosen: None,
                         });
                     }
@@ -93,7 +96,7 @@ impl PatternEngine {
                 let stopped = if state.is_random {
                     Self::run_random_beat(&state.sequence, state.color, &mut state.transports, &command_rx, &mut state.prev_chosen)
                 } else {
-                    Self::run_one_cycle(&state.sequence, state.color, &mut state.transports, &command_rx, state.cycle_count)
+                    Self::run_one_cycle(&state.sequence, state.color, &mut state.transports, &command_rx, state.cycle_count, state.is_ping_pong)
                 };
                 if stopped {
                     for (transport, led_count) in state.transports.values_mut() {
@@ -116,8 +119,8 @@ impl PatternEngine {
         command_rx: &mpsc::Receiver<PatternCommand>,
         prev_chosen: &mut Option<String>,
     ) -> bool {
-        const FADE_DURATION_MS: u64 = 150;
-        const FRAME_MS: u64 = 25;
+        const FLASH_DURATION_MS: u64 = 120;
+        const FRAME_MS: u64 = 20;
 
         let board_ids: Vec<String> = transports.keys().cloned().collect();
         if board_ids.is_empty() {
@@ -137,19 +140,16 @@ impl PatternEngine {
             let idx = rand::rng().random_range(0..available.len());
             available[idx].clone()
         };
-        let fading = prev_chosen.clone();
 
-        for board_id in &board_ids {
-            if let Some((transport, led_count)) = transports.get_mut(board_id) {
-                if board_id == &chosen {
-                    let _ = transport.send_raw_leds(*led_count, color[0], color[1], color[2]);
-                } else {
-                    let _ = transport.send_raw_leds(*led_count, 0, 0, 0);
-                }
-            }
+        for (transport, led_count) in transports.values_mut() {
+            let _ = transport.send_raw_leds(*led_count, 0, 0, 0);
         }
 
-        let fade_frames = FADE_DURATION_MS / FRAME_MS;
+        if let Some((transport, led_count)) = transports.get_mut(&chosen) {
+            let _ = transport.send_raw_leds(*led_count, color[0], color[1], color[2]);
+        }
+
+        let fade_frames = FLASH_DURATION_MS / FRAME_MS;
         for frame in 1..=fade_frames {
             thread::sleep(Duration::from_millis(FRAME_MS));
 
@@ -157,18 +157,18 @@ impl PatternEngine {
                 return true;
             }
 
-            if let Some(ref fade_board) = fading {
-                if fade_board != &chosen {
-                    let brightness = 1.0 - (frame as f64 / fade_frames as f64);
-                    let r = (color[0] as f64 * brightness) as u8;
-                    let g = (color[1] as f64 * brightness) as u8;
-                    let b = (color[2] as f64 * brightness) as u8;
+            let brightness = 1.0 - (frame as f64 / fade_frames as f64);
+            let r = (color[0] as f64 * brightness) as u8;
+            let g = (color[1] as f64 * brightness) as u8;
+            let b = (color[2] as f64 * brightness) as u8;
 
-                    if let Some((transport, led_count)) = transports.get_mut(fade_board) {
-                        let _ = transport.send_raw_leds(*led_count, r, g, b);
-                    }
-                }
+            if let Some((transport, led_count)) = transports.get_mut(&chosen) {
+                let _ = transport.send_raw_leds(*led_count, r, g, b);
             }
+        }
+
+        if let Some((transport, led_count)) = transports.get_mut(&chosen) {
+            let _ = transport.send_raw_leds(*led_count, 0, 0, 0);
         }
 
         *prev_chosen = Some(chosen);
@@ -189,7 +189,8 @@ impl PatternEngine {
         color: [u8; 3],
         transports: &mut HashMap<String, (E131RawTransport, usize)>,
         command_rx: &mpsc::Receiver<PatternCommand>,
-        _cycle_count: u64,
+        cycle_count: u64,
+        is_ping_pong: bool,
     ) -> bool {
         const WAVE_PORTION: f64 = 0.5;
         const TRAIL_BRIGHTNESS: [f64; 3] = [1.0, 0.4, 0.1];
@@ -225,7 +226,14 @@ impl PatternEngine {
 
         let mut trail: Vec<Vec<String>> = Vec::new();
 
-        for (step_idx, step) in seq.steps.iter().enumerate() {
+        let reverse_direction = is_ping_pong && cycle_count % 2 == 1;
+        let steps: Vec<_> = if reverse_direction {
+            seq.steps.iter().rev().collect()
+        } else {
+            seq.steps.iter().collect()
+        };
+
+        for (step_idx, step) in steps.iter().enumerate() {
             let step_delay_ms = (step_idx as f64 * step_interval_ms) as u64;
             let target_time = cycle_start + Duration::from_millis(step_delay_ms);
 

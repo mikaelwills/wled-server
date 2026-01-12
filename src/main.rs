@@ -17,11 +17,13 @@ mod effects_engine;
 mod group;
 mod pattern;
 mod pattern_engine;
+mod playback_history;
 mod preset;
 mod program;
 mod program_engine;
 mod routes;
 mod sse;
+mod timing_metrics;
 mod transport;
 mod types;
 
@@ -134,7 +136,9 @@ async fn main() {
         Err(_) => warn!("Universe configuration timed out after 10s - some boards may not be configured"),
     }
 
-    let effects_engine = Arc::new(effects_engine::EffectsEngine::new());
+    let timing_metrics = Arc::new(timing_metrics::TimingMetrics::new());
+    let playback_history = Arc::new(playback_history::PlaybackHistory::new(storage_paths.history.clone()));
+    let effects_engine = Arc::new(effects_engine::EffectsEngine::new(Some(timing_metrics.clone())));
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
 
     let programs_map: HashMap<String, program::Program> =
@@ -167,17 +171,6 @@ async fn main() {
         })
     };
 
-    let on_audio_stop: program_engine::AudioStopCallback = {
-        let ip = loopy_ip;
-        let port = loopy_port;
-        Arc::new(move |track: &str| {
-            let address = format!("/Stop/0:{}", track);
-            if let Err(e) = routes::send_osc_sync(&ip, port, &address) {
-                eprintln!("Failed to send OSC stop: {}", e);
-            }
-        })
-    };
-
     let connected_ips: Arc<RwLock<std::collections::HashSet<String>>> = Arc::new(RwLock::new(std::collections::HashSet::new()));
 
     let program_engine = Arc::new(program_engine::ProgramEngine::new(
@@ -186,8 +179,9 @@ async fn main() {
         pattern_engine.clone(),
         performance_mode.clone(),
         Some(on_audio_play),
-        Some(on_audio_stop),
         connected_ips.clone(),
+        Some(timing_metrics.clone()),
+        Some(playback_history.clone()),
     ));
 
     let state: SharedState = Arc::new(AppState {
@@ -202,6 +196,8 @@ async fn main() {
         program_engine,
         connected_ips: connected_ips.clone(),
         performance_mode: performance_mode.clone(),
+        timing_metrics,
+        playback_history,
     });
 
     match Config::load() {
