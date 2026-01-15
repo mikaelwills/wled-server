@@ -2,16 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::config::{Config, PatternType};
-use crate::routes::send_osc_sync;
+use crate::audio::AudioEngine;
+use crate::config::{AudioSource, Config, PatternType};
 use crate::cue_scheduler::{CueScheduler, CueType, PatternCueConfig, ScheduledCue};
 use crate::effects::EffectType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
 use crate::playback_history::PlaybackHistory;
 use crate::program::Program;
+use crate::routes::send_osc_sync;
 use crate::timing_metrics::TimingMetrics;
 
 pub type AudioPlayCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -70,7 +71,7 @@ fn send_blackout(effects_engine: &EffectsEngine, boards: Vec<BoardTarget>) {
 
 impl ProgramEngine {
     pub fn new(
-        config: Arc<tokio::sync::Mutex<Config>>,
+        config: Arc<Mutex<Config>>,
         effects_engine: Arc<EffectsEngine>,
         pattern_engine: Arc<PatternEngine>,
         performance_mode: Arc<AtomicBool>,
@@ -78,6 +79,7 @@ impl ProgramEngine {
         connected_ips: Arc<RwLock<HashSet<String>>>,
         timing_metrics: Option<Arc<TimingMetrics>>,
         playback_history: Option<Arc<PlaybackHistory>>,
+        audio_engine: Option<Arc<Mutex<AudioEngine>>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let state = Arc::new(RwLock::new(PlaybackState {
@@ -107,6 +109,7 @@ impl ProgramEngine {
             connected_ips,
             timing_metrics,
             playback_history,
+            audio_engine,
         ));
 
         Self { command_tx }
@@ -131,7 +134,7 @@ impl ProgramEngine {
 
     async fn run_loop(
         mut command_rx: mpsc::Receiver<PlaybackCommand>,
-        config: Arc<tokio::sync::Mutex<Config>>,
+        config: Arc<Mutex<Config>>,
         effects_engine: Arc<EffectsEngine>,
         pattern_engine: Arc<PatternEngine>,
         cue_scheduler: CueScheduler,
@@ -141,6 +144,7 @@ impl ProgramEngine {
         connected_ips: Arc<RwLock<HashSet<String>>>,
         timing_metrics: Option<Arc<TimingMetrics>>,
         playback_history: Option<Arc<PlaybackHistory>>,
+        audio_engine: Option<Arc<Mutex<AudioEngine>>>,
     ) {
         loop {
             match command_rx.recv().await {
@@ -368,9 +372,29 @@ impl ProgramEngine {
                         tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
                     }
 
-                    if let Some(ref callback) = on_audio_play {
-                        println!("🎵 Triggering audio playback: {}", program.loopy_pro_track);
-                        callback(&program.loopy_pro_track);
+                    let audio_source = {
+                        let cfg = config.lock().await;
+                        cfg.loopy_pro.audio_source.clone()
+                    };
+
+                    match audio_source {
+                        AudioSource::LoopyPro => {
+                            if let Some(ref callback) = on_audio_play {
+                                println!("🎵 Triggering Loopy Pro playback: {}", program.loopy_pro_track);
+                                callback(&program.loopy_pro_track);
+                            }
+                        }
+                        AudioSource::AudioEngine => {
+                            if let Some(ref engine) = audio_engine {
+                                let track_id = &program.id;
+                                let mut eng = engine.lock().await;
+                                if eng.play(track_id, None).await {
+                                    println!("🔊 Playing audio via local engine: {}", track_id);
+                                } else {
+                                    println!("⚠️ Track not loaded in audio engine: {}", track_id);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -388,18 +412,32 @@ impl ProgramEngine {
                         (s.active_targets.clone(), s.current_session_id.clone(), s.audio_track.clone())
                     };
 
-                    println!("  🔍 audio_track from state: {:?}", audio_track);
-                    if let Some(track) = &audio_track {
+                    let audio_source = {
                         let cfg = config.lock().await;
-                        let address = format!("/Stop/0:{}", track);
-                        println!("  🎵 Sending OSC stop to Loopy Pro: {} -> {}:{}", address, cfg.loopy_pro.ip, cfg.loopy_pro.port);
-                        if let Err(e) = send_osc_sync(&cfg.loopy_pro.ip, cfg.loopy_pro.port, &address) {
-                            eprintln!("  ❌ Failed to send OSC stop: {}", e);
-                        } else {
-                            println!("  ✅ OSC stop sent successfully to Loopy Pro");
+                        cfg.loopy_pro.audio_source.clone()
+                    };
+
+                    match audio_source {
+                        AudioSource::LoopyPro => {
+                            if let Some(track) = &audio_track {
+                                let cfg = config.lock().await;
+                                let loopy = &cfg.loopy_pro;
+                                let stop_address = format!("/Stop/0:{}", track);
+                                println!("  → Sending OSC stop to Loopy Pro ({}:{}) - {}", loopy.ip, loopy.port, stop_address);
+                                if let Err(e) = send_osc_sync(&loopy.ip, loopy.port, &stop_address) {
+                                    eprintln!("  ✗ Failed to send OSC stop: {}", e);
+                                } else {
+                                    println!("  ✓ OSC stop sent to Loopy Pro");
+                                }
+                            }
                         }
-                    } else {
-                        println!("  ⚠️ No audio_track in state - nothing was playing, skipping OSC stop");
+                        AudioSource::AudioEngine => {
+                            if let Some(ref engine) = audio_engine {
+                                let mut eng = engine.lock().await;
+                                eng.stop().await;
+                                println!("  ✓ Stopped local audio engine");
+                            }
+                        }
                     }
 
                     if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {

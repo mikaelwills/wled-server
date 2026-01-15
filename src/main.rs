@@ -108,13 +108,7 @@ async fn main() {
 
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
 
-    let loaded_config = Config::load().unwrap_or(Config {
-        boards: vec![],
-        groups: vec![],
-        loopy_pro: config::LoopyProConfig::default(),
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let loaded_config = Config::load().unwrap_or_default();
 
     let mut group_e131_transports = HashMap::new();
 
@@ -153,7 +147,10 @@ async fn main() {
         }
     }
 
-    info!("Initialized {} E1.31 group transport(s)", group_e131_transports.len());
+    info!(
+        "Initialized {} E1.31 group transport(s)",
+        group_e131_transports.len()
+    );
 
     info!("Configuring board E1.31 universes in parallel...");
     let mut config_tasks = Vec::new();
@@ -191,13 +188,67 @@ async fn main() {
     let config_timeout = tokio::time::Duration::from_secs(10);
     match tokio::time::timeout(config_timeout, futures::future::join_all(config_tasks)).await {
         Ok(_) => info!("Universe configuration complete"),
-        Err(_) => warn!("Universe configuration timed out after 10s - some boards may not be configured"),
+        Err(_) => {
+            warn!("Universe configuration timed out after 10s - some boards may not be configured")
+        }
     }
 
     let timing_metrics = Arc::new(timing_metrics::TimingMetrics::new());
-    let playback_history = Arc::new(playback_history::PlaybackHistory::new(storage_paths.history.clone()));
-    let effects_engine = Arc::new(effects_engine::EffectsEngine::new(Some(timing_metrics.clone())));
+    let playback_history = Arc::new(playback_history::PlaybackHistory::new(
+        storage_paths.history.clone(),
+    ));
+    let effects_engine = Arc::new(effects_engine::EffectsEngine::new(Some(
+        timing_metrics.clone(),
+    )));
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
+    let device_manager = Arc::new(audio::DeviceManager::new());
+    let mut audio_engine = audio::AudioEngine::new();
+
+    let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
+        let position = audio_engine.get_position_arc();
+        match audio::AudioThread::new(command_rx, position, device_manager.clone()) {
+            Ok(thread) => {
+                info!("Audio playback thread started");
+                Some(Arc::new(thread))
+            }
+            Err(e) => {
+                warn!("Failed to start audio thread: {} - audio playback disabled", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if storage_paths.audio.exists() {
+        let mut loaded_count = 0;
+        if let Ok(entries) = std::fs::read_dir(&storage_paths.audio) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_audio = path.extension().map_or(false, |ext| {
+                    ext == "mp3" || ext == "wav"
+                });
+                if is_audio {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        match audio::decode_file(&path) {
+                            Ok(track) => {
+                                audio_engine.load_track(stem.to_string(), track);
+                                loaded_count += 1;
+                            }
+                            Err(e) => {
+                                warn!("Failed to preload audio '{}': {}", stem, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if loaded_count > 0 {
+            info!("Preloaded {} audio track(s) into engine", loaded_count);
+        }
+    }
+
+    let audio_engine = Arc::new(Mutex::new(audio_engine));
 
     let programs_map: HashMap<String, program::Program> =
         match program::Program::load_all(&storage_paths.programs) {
@@ -229,7 +280,8 @@ async fn main() {
         })
     };
 
-    let connected_ips: Arc<RwLock<std::collections::HashSet<String>>> = Arc::new(RwLock::new(std::collections::HashSet::new()));
+    let connected_ips: Arc<RwLock<std::collections::HashSet<String>>> =
+        Arc::new(RwLock::new(std::collections::HashSet::new()));
 
     let program_engine = Arc::new(program_engine::ProgramEngine::new(
         config_arc.clone(),
@@ -240,6 +292,7 @@ async fn main() {
         connected_ips.clone(),
         Some(timing_metrics.clone()),
         Some(playback_history.clone()),
+        Some(audio_engine.clone()),
     ));
 
     let state: SharedState = Arc::new(AppState {
@@ -250,6 +303,9 @@ async fn main() {
         config: config_arc,
         effects_engine,
         pattern_engine,
+        device_manager,
+        audio_engine,
+        audio_thread,
         programs,
         program_engine,
         connected_ips: connected_ips.clone(),

@@ -44,17 +44,19 @@ export const currentlyPlayingProgram: Writable<Program | null> = writable(null);
 export const lastActiveProgramId: Writable<string | null> = writable(null);
 
 // Loopy Pro settings store
+export type AudioSource = 'audio_engine' | 'loopy_pro';
+
 export interface LoopyProSettings {
 	ip: string;
 	port: number;
-	mute_audio: boolean;
+	audio_source: AudioSource;
 	audio_sync_delay_ms: number;
 }
 
 export const loopyProSettings: Writable<LoopyProSettings> = writable({
 	ip: '192.168.1.100',
 	port: 7000,
-	mute_audio: false,
+	audio_source: 'audio_engine',
 	audio_sync_delay_ms: 0
 });
 export const loopyProSettingsLoading: Writable<boolean> = writable(false);

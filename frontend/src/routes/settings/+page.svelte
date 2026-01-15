@@ -6,9 +6,11 @@
 	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
 	import { API_URL } from '$lib/api';
 
+	import type { AudioSource } from '$lib/store';
+
 	let ip = $state($loopyProSettings.ip);
 	let port = $state($loopyProSettings.port);
-	let muteAudio = $state($loopyProSettings.mute_audio);
+	let audioSource: AudioSource = $state($loopyProSettings.audio_source);
 	let audioSyncDelay = $state($loopyProSettings.audio_sync_delay_ms ?? 0);
 	let saved = $state(false);
 
@@ -22,10 +24,20 @@
 		audio_count: number;
 	}
 
+	interface AudioDevice {
+		id: string;
+		name: string;
+		output_channels: number;
+		is_default: boolean;
+	}
+
 	let storageStatus = $state<StorageStatus | null>(null);
 	let storageLoading = $state(true);
 	let restarting = $state(false);
 	let reloadingPrograms = $state(false);
+	let audioDevices: AudioDevice[] = $state([]);
+	let audioDevicesLoading = $state(true);
+	let selectedDeviceId: string | null = $state(null);
 
 	async function fetchStorageStatus() {
 		try {
@@ -71,20 +83,61 @@
 		}
 	}
 
+	async function fetchAudioSettings() {
+		try {
+			const res = await fetch(`${API_URL}/audio/settings`);
+			if (res.ok) {
+				const settings = await res.json();
+				selectedDeviceId = settings.preferred_device_id;
+			}
+		} catch (e) {
+			console.error('Failed to fetch audio settings:', e);
+		}
+	}
+
+	async function selectDevice(deviceId: string | null) {
+		try {
+			const res = await fetch(`${API_URL}/audio/device/select`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ device_id: deviceId })
+			});
+			if (res.ok) {
+				selectedDeviceId = deviceId;
+			}
+		} catch (e) {
+			console.error('Failed to select device:', e);
+		}
+	}
+
+	async function fetchAudioDevices() {
+		audioDevicesLoading = true;
+		try {
+			const res = await fetch(`${API_URL}/audio/devices`);
+			if (res.ok) {
+				audioDevices = await res.json();
+			}
+		} catch (e) {
+			console.error('Failed to fetch audio devices:', e);
+		}
+		audioDevicesLoading = false;
+	}
+
 	onMount(() => {
 		fetchStorageStatus();
+		fetchAudioSettings();
+		fetchAudioDevices();
 	});
-
 	$effect(() => {
 		ip = $loopyProSettings.ip;
 		port = $loopyProSettings.port;
-		muteAudio = $loopyProSettings.mute_audio;
+		audioSource = $loopyProSettings.audio_source;
 		audioSyncDelay = $loopyProSettings.audio_sync_delay_ms ?? 0;
 	});
 
 	async function saveSettings() {
 		try {
-			await updateLoopyProSettings({ ip, port, mute_audio: muteAudio, audio_sync_delay_ms: audioSyncDelay });
+			await updateLoopyProSettings({ ip, port, audio_source: audioSource, audio_sync_delay_ms: audioSyncDelay });
 			saved = true;
 			setTimeout(() => {
 				saved = false;
@@ -94,16 +147,40 @@
 			alert('Failed to save settings');
 		}
 	}
+
+	function setAudioSource(source: AudioSource) {
+		audioSource = source;
+		saveSettings();
+	}
 </script>
 
 <div class="settings-page">
 	<div class="settings-container">
 		<div class="card">
-			<h2>Loopy Pro</h2>
+			<h2>Audio Source</h2>
 
 			{#if $loopyProSettingsLoading}
 				<p>Loading settings...</p>
 			{:else}
+			<div class="audio-source-row">
+				<button
+					class="source-button"
+					class:active={audioSource === 'audio_engine'}
+					onclick={() => setAudioSource('audio_engine')}
+				>
+					Audio Engine
+				</button>
+				<button
+					class="source-button"
+					class:active={audioSource === 'loopy_pro'}
+					onclick={() => setAudioSource('loopy_pro')}
+				>
+					Loopy Pro
+				</button>
+			</div>
+
+			{#if audioSource === 'loopy_pro'}
+			<p class="help-text">Loopy Pro IP address</p>
 			<div class="input-row">
 				<input
 					id="ip"
@@ -120,20 +197,7 @@
 					class="text-input port-input"
 				/>
 			</div>
-
-			<div class="toggle-row">
-				<label for="mute-toggle" class="toggle-label">
-					Mute App Audio
-				</label>
-				<label class="toggle-switch">
-					<input
-						id="mute-toggle"
-						type="checkbox"
-						bind:checked={muteAudio}
-					/>
-					<span class="toggle-slider"></span>
-				</label>
-			</div>
+			{/if}
 
 			<div class="delay-row">
 				<label for="audio-sync-delay" class="delay-label">
@@ -153,6 +217,39 @@
 			<button onclick={saveSettings} class="save-button">
 				{saved ? 'Saved' : 'Save'}
 			</button>
+			{/if}
+
+			{#if audioSource === 'audio_engine'}
+			<div class="section-divider"></div>
+			<h2>Audio Devices</h2>
+
+			{#if audioDevicesLoading}
+				<p class="help-text" style="text-align: center;">Loading devices...</p>
+			{:else}
+				<div class="device-list">
+					{#each audioDevices as device}
+						<div
+							class="device-card"
+							class:is-selected={selectedDeviceId === device.id}
+							onclick={() => selectDevice(device.id)}
+						>
+							<div class="device-info">
+								<span class="device-name">{device.name}</span>
+								<span class="device-channels">{device.output_channels} channels</span>
+							</div>
+							{#if selectedDeviceId === device.id}
+								<span class="selected-badge">Selected</span>
+							{:else if device.is_default}
+								<span class="default-badge">Default</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<button onclick={fetchAudioDevices} class="save-button">
+					Refresh Devices
+				</button>
+			{/if}
 			{/if}
 		</div>
 
@@ -250,6 +347,12 @@
 		gap: 1rem;
 	}
 
+	.section-divider {
+		height: 1px;
+		background: rgba(255, 255, 255, 0.05);
+		margin: 0.5rem 0;
+	}
+
 	h2 {
 		font-size: 0.875rem;
 		margin: 0;
@@ -339,6 +442,36 @@
 
 	.save-button:active {
 		background: #0a0a0a;
+	}
+
+	.audio-source-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+	}
+
+	.source-button {
+		padding: 0.75rem 1rem;
+		background: #0c0c0c;
+		color: #666;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 8px;
+		font-size: 0.875rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.source-button:hover {
+		background: #111;
+		color: #888;
+		border-color: rgba(255, 255, 255, 0.08);
+	}
+
+	.source-button.active {
+		background: rgba(168, 85, 247, 0.1);
+		color: #a855f7;
+		border-color: rgba(168, 85, 247, 0.3);
 	}
 
 	.toggle-row {
@@ -516,5 +649,72 @@
 	.restart-button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.device-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.device-card {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.75rem 1rem;
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 8px;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.device-card:hover {
+		background: #111;
+		border-color: rgba(255, 255, 255, 0.08);
+	}
+
+	.device-card.is-selected {
+		border-color: rgba(34, 197, 94, 0.5);
+		background: rgba(34, 197, 94, 0.05);
+	}
+
+	.device-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+	}
+
+	.device-name {
+		color: #e5e5e5;
+		font-size: 0.85rem;
+		font-weight: 500;
+	}
+
+	.device-channels {
+		color: #6b7280;
+		font-size: 0.7rem;
+	}
+
+	.default-badge {
+		font-size: 0.65rem;
+		color: #a855f7;
+		background: rgba(168, 85, 247, 0.1);
+		padding: 0.2rem 0.4rem;
+		border-radius: 4px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-weight: 500;
+	}
+
+	.selected-badge {
+		font-size: 0.65rem;
+		color: #22c55e;
+		background: rgba(34, 197, 94, 0.1);
+		padding: 0.2rem 0.4rem;
+		border-radius: 4px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-weight: 500;
 	}
 </style>

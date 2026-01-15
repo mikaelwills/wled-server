@@ -42,13 +42,7 @@ pub async fn register_board(
         }
     });
 
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
     config.boards.push(config::BoardConfig {
         id: payload.id,
         ip: payload.ip,
@@ -76,13 +70,7 @@ pub async fn delete_board(
 
     let tx = sender.ok_or(StatusCode::NOT_FOUND)?;
 
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
     config.boards.retain(|b| b.id != board_id);
 
     for group in config.groups.iter_mut() {
@@ -122,13 +110,7 @@ pub async fn update_board(
 
     let tx = old_sender.ok_or(StatusCode::NOT_FOUND)?;
 
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
 
     let board_index = config
         .boards
@@ -196,13 +178,7 @@ pub async fn update_board(
 }
 
 async fn save_board_transition(board_id: &str, transition: u8) -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
 
     if let Some(board_config) = config.boards.iter_mut().find(|b| b.id == board_id) {
         board_config.transition = Some(transition);

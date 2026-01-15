@@ -22,13 +22,7 @@ pub async fn reconfigure_group_universe(
         return;
     }
 
-    let config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let config = Config::load().unwrap_or_default();
     let group_index = config.groups.iter().position(|g| g.id == group_id).unwrap_or(0);
     let universe = new_universe.unwrap_or((group_index + 1) as u16);
 
@@ -172,13 +166,7 @@ pub async fn create_group(
         }
     }
 
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
 
     if config.groups.iter().any(|g| g.id == payload.id) {
         return Err(StatusCode::CONFLICT);
@@ -211,13 +199,7 @@ pub async fn delete_group(
     State(_state): State<SharedState>,
     Path(group_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
 
     if !config.groups.iter().any(|g| g.id == group_id) {
         return Err(StatusCode::NOT_FOUND);
@@ -250,13 +232,7 @@ pub async fn update_group(
         }
     }
 
-    let mut config = Config::load().unwrap_or(Config {
-        loopy_pro: config::LoopyProConfig::default(),
-        boards: vec![],
-        groups: vec![],
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let mut config = Config::load().unwrap_or_default();
 
     if req.id != group_id {
         if config.groups.iter().any(|g| g.id == req.id) {

@@ -31,15 +31,24 @@ pub fn build_api_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(hello))
         .route("/boards", get(list_boards).post(boards::register_board))
-        .route("/boards/:id", put(boards::update_board).delete(boards::delete_board))
+        .route(
+            "/boards/:id",
+            put(boards::update_board).delete(boards::delete_board),
+        )
         .route("/groups", post(groups::create_group))
-        .route("/groups/:id", put(groups::update_group).delete(groups::delete_group))
+        .route(
+            "/groups/:id",
+            put(groups::update_group).delete(groups::delete_group),
+        )
         .route("/group/:id/power", post(groups::set_group_power))
         .route("/group/:id/brightness", post(groups::set_group_brightness))
         .route("/group/:id/color", post(groups::set_group_color))
         .route("/group/:id/effect", post(groups::set_group_effect))
         .route("/group/:id/preset", post(groups::set_group_preset))
-        .route("/group/:id/presets/sync", post(groups::sync_presets_to_group))
+        .route(
+            "/group/:id/presets/sync",
+            post(groups::sync_presets_to_group),
+        )
         .route("/board/:id/power", post(boards::set_board_power))
         .route("/board/:id/brightness", post(boards::set_brightness))
         .route("/board/:id/color", post(boards::set_color))
@@ -48,11 +57,17 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/board/:id/intensity", post(boards::set_intensity))
         .route("/board/:id/preset", post(boards::set_preset))
         .route("/board/:id/presets", get(boards::get_board_presets))
-        .route("/board/:id/presets/:slot", delete(boards::delete_board_preset))
+        .route(
+            "/board/:id/presets/:slot",
+            delete(boards::delete_board_preset),
+        )
         .route("/board/:id/led-count", post(boards::set_led_count))
         .route("/board/:id/transition", post(boards::set_transition))
         .route("/board/:id/reset-segment", post(boards::reset_segment))
-        .route("/board/:id/presets/sync", post(boards::replace_presets_on_board))
+        .route(
+            "/board/:id/presets/sync",
+            post(boards::replace_presets_on_board),
+        )
         .route("/events", get(sse_handler))
         .route("/programs", post(programs::save_program))
         .route("/programs", get(programs::list_programs))
@@ -77,11 +92,34 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/patterns/start", post(patterns::start_pattern))
         .route("/patterns/stop", post(patterns::stop_pattern))
         .route("/timing/snapshot", get(timing::get_timing_snapshot))
-        .route("/timing/events", get(timing::get_timing_events).delete(timing::clear_timing_events))
+        .route(
+            "/timing/events",
+            get(timing::get_timing_events).delete(timing::clear_timing_events),
+        )
         .route("/timing/reset", post(timing::reset_timing_metrics))
-        .route("/timing/threshold", get(timing::get_timing_threshold).put(timing::update_timing_threshold))
-        .route("/history", get(history::get_history).delete(history::clear_history))
-        .route("/history/:id", get(history::get_session).delete(history::delete_session))
+        .route(
+            "/timing/threshold",
+            get(timing::get_timing_threshold).put(timing::update_timing_threshold),
+        )
+        .route(
+            "/history",
+            get(history::get_history).delete(history::clear_history),
+        )
+        .route(
+            "/history/:id",
+            get(history::get_session).delete(history::delete_session),
+        )
+        .route("/audio/devices", get(audio::list_devices))
+        .route("/audio/settings", get(audio::get_audio_settings))
+        .route("/audio/device/select", post(audio::select_device))
+        .route("/audio/test-decode/:id", get(audio::test_decode))
+        .route("/audio/engine/load/:id", post(audio::load_track))
+        .route("/audio/engine/play/:id", post(audio::play_track))
+        .route("/audio/engine/stop", post(audio::stop_playback))
+        .route("/audio/engine/pause", post(audio::pause_playback))
+        .route("/audio/engine/resume", post(audio::resume_playback))
+        .route("/audio/engine/seek", post(audio::seek_playback))
+        .route("/audio/engine/status", get(audio::get_playback_status))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state)
 }
@@ -95,17 +133,14 @@ async fn sse_handler(
     State(state): State<SharedState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.broadcast_tx.subscribe();
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| {
-        match result {
-            Ok(event) => {
-                match serde_json::to_string(&event) {
-                    Ok(data) => Some(Ok(Event::default().data(data))),
-                    Err(_) => None,
-                }
-            }
+    let stream =
+        tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(data) => Some(Ok(Event::default().data(data))),
+                Err(_) => None,
+            },
             Err(_) => None,
-        }
-    });
+        });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -171,13 +206,7 @@ pub async fn list_boards(
         }
     }
 
-    let config = Config::load().unwrap_or(Config {
-        boards: vec![],
-        groups: vec![],
-        loopy_pro: crate::config::LoopyProConfig::default(),
-        effect_presets: vec![],
-        pattern_presets: vec![],
-    });
+    let config = Config::load().unwrap_or_default();
 
     let groups: Vec<GroupResponse> = config
         .groups
@@ -190,12 +219,17 @@ pub async fn list_boards(
                 .collect();
 
             let all_on = !member_states.is_empty()
-                && member_states.iter().all(|s| s.state.on && s.state.connected);
+                && member_states
+                    .iter()
+                    .all(|s| s.state.on && s.state.connected);
             let avg_brightness = if member_states.is_empty() {
                 None
             } else {
                 Some(
-                    (member_states.iter().map(|s| s.state.brightness as u32).sum::<u32>()
+                    (member_states
+                        .iter()
+                        .map(|s| s.state.brightness as u32)
+                        .sum::<u32>()
                         / member_states.len() as u32) as u8,
                 )
             };

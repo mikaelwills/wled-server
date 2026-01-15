@@ -1,0 +1,18 @@
+{
+  "id": "e684ee6a-739a-467a-b5bd-9a7ffd517393",
+  "program_id": "test db11-1768429831600",
+  "program_name": "test db11",
+  "started_at": 1768429850531,
+  "ended_at": 1768429850532,
+  "duration_ms": 1,
+  "cue_count": 0,
+  "cues_drifted": 0,
+  "cue_drift_avg_ms": 0.0,
+  "cue_drift_max_ms": 0.0,
+  "packets_ok": 0,
+  "packets_wouldblock": 0,
+  "packets_err": 0,
+  "frame_count": 0,
+  "frame_avg_ms": 0.0,
+  "completed": true
+}

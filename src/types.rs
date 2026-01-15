@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
+use crate::audio::{AudioEngine, AudioThread, DeviceManager};
 use crate::board::{BoardCommand, BoardState};
 use crate::sse::SseEvent;
 
@@ -106,7 +107,9 @@ pub struct EffectsEngineStartRequest {
     pub target: String,
 }
 
-fn default_transition() -> u8 { 0 }
+fn default_transition() -> u8 {
+    0
+}
 
 // Audio request/response structs
 #[derive(Deserialize)]
@@ -124,7 +127,7 @@ pub struct UploadAudioResponse {
 pub struct SavePresetRequest {
     pub name: String,
     pub wled_slot: u8,
-    pub board_id: Option<String>,  // Optional board ID to sync preset to
+    pub board_id: Option<String>, // Optional board ID to sync preset to
     pub description: Option<String>,
     pub state: Option<PresetState>,
 }
@@ -173,6 +176,9 @@ pub struct AppState {
     pub performance_mode: Arc<AtomicBool>,
     pub timing_metrics: Arc<crate::timing_metrics::TimingMetrics>,
     pub playback_history: Arc<crate::playback_history::PlaybackHistory>,
+    pub device_manager: Arc<DeviceManager>,
+    pub audio_engine: Arc<Mutex<AudioEngine>>,
+    pub audio_thread: Option<Arc<AudioThread>>,
 }
 
 pub type SharedState = Arc<AppState>;

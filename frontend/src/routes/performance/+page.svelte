@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings, audioElements } from '$lib/store';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings } from '$lib/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/playback-db';
 	import { updateProgram, reorderPrograms } from '$lib/programs-db';
 	import { setBoardBrightness } from '$lib/boards-db';
@@ -98,30 +98,17 @@
 	async function playProgram(program: Program) {
 		console.log('▶️ Playing program:', program.songName);
 
-		// Get mute status from store (loaded once on app init)
-		const muteAudio = $loopyProSettings.mute_audio;
+		const audioSource = $loopyProSettings.audio_source;
 
-		// Get audio element from store (only if not muted)
-		let audio = muteAudio ? null : $audioElements[program.id];
-
-		// Only error if we need audio but don't have it
-		if (!muteAudio && !audio) {
-			console.error('No audio available for this program - audio may not be loaded yet');
-			return;
-		}
-
-		// Shared ended handler for both muted and unmuted playback
 		const handleEnded = async () => {
 			console.log('🏁 Program ended:', program.songName);
 
-			// Reset progress
 			playbackProgress[program.id] = 0;
 			if (animationFrameId) {
 				cancelAnimationFrame(animationFrameId);
 				animationFrameId = null;
 			}
 
-			// Check for manual stop (breaks chain)
 			if (manualStop) {
 				console.log('⛔ Manual stop - chain broken');
 				manualStop = false;
@@ -129,48 +116,63 @@
 				return;
 			}
 
-			// Auto-play chain logic
 			if (program.nextProgramId) {
 				console.log(`⛓️  Chain detected - next program: ${program.nextProgramId}`);
 				const nextProgram = $programs.find(p => p.id === program.nextProgramId);
 
 				if (nextProgram) {
-					// Apply transition before playing next program
 					await applyTransition(program);
-
-					// Play next program in chain
 					await playProgram(nextProgram);
 				} else {
 					console.warn(`⚠️  Next program "${program.nextProgramId}" not found`);
 					stopPlaybackService();
 				}
 			} else {
-				// No chain - stop playback completely
 				stopPlaybackService();
 			}
 		};
 
 		const playbackStartTime = performance.now();
 
-		if (!muteAudio && audio) {
-			audio.onended = handleEnded;
-			audio.currentTime = 0;
-			await audio.play();
-			console.log('🔊 Audio playing');
+		if (audioSource === 'audio_engine') {
+			console.log('🔊 Using Audio Engine (backend)');
 		} else {
-			console.log('🔇 Audio muted - using Loopy Pro audio');
+			console.log('🎵 Using Loopy Pro (OSC)');
 		}
 
 		currentPlayingId = program.id;
 		playbackProgress[program.id] = 0;
 
-		const updateProgress = () => {
+		let lastStatusCheck = 0;
+
+		const updateProgress = async () => {
 			if (currentPlayingId !== program.id) return;
 
-			if (!muteAudio && audio && audio.duration) {
-				playbackProgress[program.id] = (audio.currentTime / audio.duration) * 100;
+			if (audioSource === 'audio_engine') {
+				const now = performance.now();
+				if (now - lastStatusCheck > 100) {
+					lastStatusCheck = now;
+					try {
+						const res = await fetch(`${API_URL}/audio/engine/status`);
+						if (res.ok) {
+							const status = await res.json();
+							if (status.state === 'stopped' && playbackProgress[program.id] > 5) {
+								handleEnded();
+								return;
+							}
+							if (program.audioDuration && status.position > 0) {
+								const positionSecs = status.position / 44100 / 2;
+								playbackProgress[program.id] = Math.min((positionSecs / program.audioDuration) * 100, 100);
+								if (positionSecs >= program.audioDuration) {
+									handleEnded();
+									return;
+								}
+							}
+						}
+					} catch (e) {}
+				}
 				animationFrameId = requestAnimationFrame(updateProgress);
-			} else if (muteAudio && program.audioDuration) {
+			} else if (program.audioDuration) {
 				const elapsed = (performance.now() - playbackStartTime) / 1000;
 				playbackProgress[program.id] = Math.min((elapsed / program.audioDuration) * 100, 100);
 
@@ -190,12 +192,6 @@
 		console.log('⏹ Stopping program:', program.songName);
 
 		manualStop = true;
-
-		const audio = $audioElements[program.id];
-		if (audio) {
-			audio.pause();
-			audio.currentTime = 0;
-		}
 
 		if (animationFrameId) {
 			cancelAnimationFrame(animationFrameId);

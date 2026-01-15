@@ -1,4 +1,8 @@
-use axum::{extract::{Path, State}, http::StatusCode, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tracing::{error, info};
@@ -10,6 +14,70 @@ use crate::types::{SharedState, UploadAudioRequest, UploadAudioResponse};
 pub struct PeaksData {
     pub peaks: Vec<Vec<f32>>,
     pub duration: f64,
+}
+
+#[derive(Deserialize)]
+pub struct SelectDeviceRequest {
+    pub device_id: Option<String>,
+}
+
+pub async fn select_device(
+    State(state): State<SharedState>,
+    Json(payload): Json<SelectDeviceRequest>,
+) -> StatusCode {
+    state
+        .device_manager
+        .select_device(payload.device_id.clone());
+
+    let mut config = state.config.lock().await;
+    config.set_preferred_audio_device(payload.device_id);
+    let _ = config.save();
+
+    if let Some(ref audio_thread) = state.audio_thread {
+        audio_thread.rebuild_stream();
+        info!("Audio device changed, stream rebuilt");
+    }
+
+    StatusCode::OK
+}
+
+pub async fn list_devices(
+    State(state): State<SharedState>,
+) -> Json<Vec<crate::audio::AudioDevice>> {
+    let devices = state.device_manager.list_devices();
+    Json(devices)
+}
+
+pub async fn get_audio_settings(
+    State(state): State<SharedState>,
+) -> Json<crate::config::AudioConfig> {
+    let config = state.config.lock().await;
+    Json(config.audio.clone())
+}
+
+#[derive(Serialize)]
+pub struct DecodeTestResponse {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub duration_secs: f64,
+    pub total_samples: usize,
+}
+
+pub async fn test_decode(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<DecodeTestResponse>, (StatusCode, String)> {
+    let audio_path = state.storage_paths.audio.join(format!("{}.mp3", id));
+
+    let track = audio::decode_file(&audio_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(DecodeTestResponse {
+        sample_rate: track.sample_rate,
+        channels: track.channels,
+        duration_secs: track.duration_secs,
+        total_samples: track.samples.len(),
+    }))
 }
 
 pub async fn upload_audio(
@@ -28,6 +96,18 @@ pub async fn upload_audio(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     info!("Uploaded audio file: {}", filename);
+
+    let audio_path = state.storage_paths.audio.join(&filename);
+    match audio::decode_file(&audio_path) {
+        Ok(track) => {
+            let mut engine = state.audio_engine.lock().await;
+            engine.load_track(id.clone(), track);
+            info!("Loaded track into audio engine: {}", id);
+        }
+        Err(e) => {
+            error!("Failed to decode uploaded audio for engine: {}", e);
+        }
+    }
 
     Ok(Json(UploadAudioResponse {
         audio_file: filename,
@@ -89,7 +169,10 @@ pub async fn get_peaks(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(([(axum::http::header::CONTENT_TYPE, "application/json")], data))
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        data,
+    ))
 }
 
 pub async fn save_peaks(
@@ -116,4 +199,109 @@ pub async fn save_peaks(
     info!("Saved peaks for: {}", id);
 
     Ok(StatusCode::CREATED)
+}
+
+pub async fn load_track(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mp3_path = state.storage_paths.audio.join(format!("{}.mp3", id));
+    let wav_path = state.storage_paths.audio.join(format!("{}.wav", id));
+
+    let audio_path = if mp3_path.exists() {
+        mp3_path
+    } else if wav_path.exists() {
+        wav_path
+    } else {
+        return Err((StatusCode::NOT_FOUND, format!("Audio file not found: {}", id)));
+    };
+
+    let track = audio::decode_file(&audio_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let mut engine = state.audio_engine.lock().await;
+    engine.load_track(id.clone(), track);
+
+    info!("Loaded track into audio engine: {}", id);
+    Ok(StatusCode::OK)
+}
+
+pub async fn play_track(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut engine = state.audio_engine.lock().await;
+
+    if engine.play(&id, None).await {
+        info!("Playing track: {}", id);
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("Track not loaded: {}", id)))
+    }
+}
+
+pub async fn stop_playback(
+    State(state): State<SharedState>,
+) -> StatusCode {
+    let mut engine = state.audio_engine.lock().await;
+    engine.stop().await;
+    info!("Stopped playback");
+    StatusCode::OK
+}
+
+#[derive(Deserialize)]
+pub struct SeekRequest {
+    pub position: u64,
+}
+
+pub async fn seek_playback(
+    State(state): State<SharedState>,
+    Json(payload): Json<SeekRequest>,
+) -> StatusCode {
+    let engine = state.audio_engine.lock().await;
+    engine.seek(payload.position).await;
+    StatusCode::OK
+}
+
+pub async fn pause_playback(
+    State(state): State<SharedState>,
+) -> StatusCode {
+    let engine = state.audio_engine.lock().await;
+    engine.pause().await;
+    info!("Paused playback");
+    StatusCode::OK
+}
+
+pub async fn resume_playback(
+    State(state): State<SharedState>,
+) -> StatusCode {
+    let engine = state.audio_engine.lock().await;
+    engine.resume().await;
+    info!("Resumed playback");
+    StatusCode::OK
+}
+
+#[derive(Serialize)]
+pub struct PlaybackStatusResponse {
+    pub position: u64,
+    pub state: String,
+    pub loaded_tracks: Vec<String>,
+}
+
+pub async fn get_playback_status(
+    State(state): State<SharedState>,
+) -> Json<PlaybackStatusResponse> {
+    let engine = state.audio_engine.lock().await;
+
+    let state_str = match engine.get_state() {
+        audio::PlaybackState::Stopped => "stopped",
+        audio::PlaybackState::Playing => "playing",
+        audio::PlaybackState::Paused => "paused",
+    };
+
+    Json(PlaybackStatusResponse {
+        position: engine.get_position(),
+        state: state_str.to_string(),
+        loaded_tracks: engine.loaded_track_ids(),
+    })
 }
