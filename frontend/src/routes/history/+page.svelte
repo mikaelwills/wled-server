@@ -23,9 +23,7 @@
 
 	async function handleDelete(id: string, e: Event) {
 		e.stopPropagation();
-		if (confirm('Delete this session?')) {
-			await deleteSession(id);
-		}
+		await deleteSession(id);
 	}
 
 	async function handleClearAll() {

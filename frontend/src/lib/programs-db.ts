@@ -15,14 +15,19 @@ export async function initPrograms(): Promise<void> {
   programsLoading.set(true);
   programsError.set(null);
 
+  const url = `${API_URL}/programs`;
+  console.log(`[programs-db] Fetching from: ${url}`);
+
   try {
-    const response = await fetch(`${API_URL}/programs`);
+    const response = await fetch(url);
+    console.log(`[programs-db] Response status: ${response.status} ${response.statusText}`);
 
     if (!response.ok) {
-      throw new Error('Failed to load programs from server');
+      throw new Error(`Failed to load programs from server: ${response.status}`);
     }
 
     const data = await response.json();
+    console.log('[programs-db] RAW API response:', JSON.stringify(data));
     console.log('[programs-db] API returned programs:', data.map((p: any) => ({
       id: p.id,
       audioDataLength: p.audio_data?.length || 0
@@ -43,8 +48,10 @@ export async function initPrograms(): Promise<void> {
     programs.set(loadedPrograms);
     programsLoading.set(false);
   } catch (error) {
-    console.error('Failed to load programs:', error);
-    programsError.set('Failed to load programs from server.');
+    console.error('[programs-db] FETCH ERROR:', error);
+    const errorMsg = `Failed to load programs: ${error}`;
+    console.error('[programs-db]', errorMsg);
+    programsError.set(errorMsg);
     programsLoading.set(false);
     programs.set([]);
   }

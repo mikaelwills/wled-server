@@ -84,6 +84,7 @@ export async function initAudio(): Promise<void> {
 
 						const blob = await audioResponse.blob();
 						const blobUrl = URL.createObjectURL(blob);
+					console.log(`[initAudio] Created blob URL for ${program.songName}: ${blobUrl.substring(0, 60)}...`);
 
 						const audio = new Audio();
 						audio.src = blobUrl;
@@ -138,6 +139,7 @@ export function getAudioElement(programId: string): HTMLAudioElement | undefined
  * Cleanup all audio elements and revoke blob URLs
  */
 export function cleanupAudio(): void {
+	console.log('[cleanupAudio] CALLED - revoking all blob URLs');
 	const elements = get(audioElements);
 	const blobUrls = get(audioBlobUrls);
 
@@ -165,6 +167,20 @@ export function getAudioBlobUrl(programId: string): string | undefined {
 }
 
 /**
+ * Check if a blob URL is still valid
+ */
+async function isBlobUrlValid(url: string): Promise<boolean> {
+	try {
+		const response = await fetch(url, { method: 'HEAD' });
+		console.log(`[isBlobUrlValid] ${url.substring(0, 50)}... -> ${response.ok}`);
+		return response.ok;
+	} catch (err) {
+		console.log(`[isBlobUrlValid] ${url.substring(0, 50)}... -> error:`, err);
+		return false;
+	}
+}
+
+/**
  * Load audio for a single program (for newly created programs)
  * Fetches peaks from backend first, computes and saves if missing
  * Guards against duplicate concurrent fetches
@@ -173,7 +189,19 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 	if (!browser) return undefined;
 
 	const existingUrl = get(audioBlobUrls)[programId];
-	if (existingUrl) return existingUrl;
+	if (existingUrl) {
+		console.log(`[loadAudioForProgram] ${programId} - checking existing URL`);
+		const isValid = await isBlobUrlValid(existingUrl);
+		if (isValid) {
+			console.log(`[loadAudioForProgram] ${programId} - existing URL valid, reusing`);
+			return existingUrl;
+		}
+		console.log(`[loadAudioForProgram] ${programId} - existing URL INVALID, will reload`);
+		audioBlobUrls.update(urls => {
+			const { [programId]: _, ...rest } = urls;
+			return rest;
+		});
+	}
 
 	if (loadingPrograms.has(programId)) return undefined;
 	loadingPrograms.add(programId);
@@ -190,6 +218,7 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 
 			const blob = await audioResponse.blob();
 			const blobUrl = URL.createObjectURL(blob);
+			console.log(`[loadAudioForProgram] ${programId} - created NEW blob URL: ${blobUrl.substring(0, 50)}...`);
 
 			const audio = new Audio();
 			audio.src = blobUrl;

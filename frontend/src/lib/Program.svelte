@@ -12,6 +12,8 @@
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
+	import PresetPicker from '$lib/PresetPicker.svelte';
+	import CueEditor from '$lib/CueEditor.svelte';
 
 	// Props
 	let {
@@ -40,96 +42,25 @@
 	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
 
 	// Preset picker modal state
-	let presetPicker = $state({
-		open: false,
-		markerId: null,
-		step: 'category', // 'category' or 'color'
-		selectedCategory: null
-	});
-
-	const quickPresets = ['Off', 'Flash'];
-
-	const allCategories = $derived(() => {
-		const categoryMap = new Map();
-		$performancePresets.forEach(p => {
-			if (quickPresets.includes(p.name)) return;
-			const parts = p.name.split(' ');
-			if (parts.length >= 2) {
-				const category = parts.slice(0, -1).join(' ');
-				categoryMap.set(category, false);
-			}
-		});
-		$patternPresets.forEach(p => {
-			const parts = p.name.split(' ');
-			if (parts.length >= 2) {
-				const category = parts.slice(0, -1).join(' ');
-				categoryMap.set(category, true);
-			}
-		});
-		return Array.from(categoryMap.entries())
-			.map(([name, isPattern]) => ({ name, isPattern }))
-			.sort((a, b) => a.name.localeCompare(b.name));
-	});
-
-	const categoryColors = $derived(() => {
-		if (!presetPicker.selectedCategory) return [];
-		const categoryInfo = allCategories().find(c => c.name === presetPicker.selectedCategory);
-		const isPattern = categoryInfo?.isPattern ?? false;
-		const presets = isPattern ? $patternPresets : $performancePresets;
-		return presets
-			.filter(p => p.name.startsWith(presetPicker.selectedCategory + ' '))
-			.map(p => ({
-				name: p.name,
-				color: p.name.split(' ').pop(),
-				isPattern
-			}));
-	});
+	let presetPickerOpen = $state(false);
+	let presetPickerMarkerId = $state(null);
 
 	function openPresetPicker(markerId) {
-		presetPicker = {
-			open: true,
-			markerId,
-			step: 'category',
-			selectedCategory: null
-		};
+		presetPickerMarkerId = markerId;
+		presetPickerOpen = true;
 	}
 
-	function selectCategory(category) {
-		presetPicker.selectedCategory = category;
-		presetPicker.step = 'color';
-	}
-
-	function selectPreset(presetName) {
-		if (presetPicker.markerId) {
-			updateMarkerPreset(presetPicker.markerId, presetName);
+	function handlePresetSelect(presetName) {
+		if (presetPickerMarkerId) {
+			updateMarkerPreset(presetPickerMarkerId, presetName);
 		}
-		closePresetPicker();
+		presetPickerOpen = false;
+		presetPickerMarkerId = null;
 	}
 
 	function closePresetPicker() {
-		presetPicker = {
-			open: false,
-			markerId: null,
-			step: 'category',
-			selectedCategory: null
-		};
-	}
-
-	function getColorStyle(colorName) {
-		const colorMap = {
-			'Red': '#ef4444',
-			'Orange': '#f97316',
-			'Yellow': '#eab308',
-			'Green': '#22c55e',
-			'Cyan': '#06b6d4',
-			'Blue': '#3b82f6',
-			'Purple': '#a855f7',
-			'Pink': '#ec4899',
-			'White': '#ffffff',
-			'Warm': '#fbbf24',
-			'Cool': '#93c5fd'
-		};
-		return colorMap[colorName] || '#e5e5e5';
+		presetPickerOpen = false;
+		presetPickerMarkerId = null;
 	}
 
 	// Snap time to nearest grid line based on BPM and offset (only if within 10px)
@@ -230,8 +161,6 @@
 		console.log('📐 Grid:', { bpm, offset: gridOffset.toFixed(2), mult: $gridMultiplier, lines: gridRegionIds.length });
 	}
 
-	// Dropdown state
-	let openDropdownId = $state(null);
 
 	// Currently selected marker
 	let currentlySelectedMarker = $state(null);
@@ -278,14 +207,6 @@
 			}
 			// Modern programs: audio loading handled by reactive $effect below
 		}
-
-		// Close dropdown when clicking outside
-		const handleClickOutside = (e) => {
-			if (!e.target.closest('.boards-dropdown-wrapper')) {
-				openDropdownId = null;
-			}
-		};
-		document.addEventListener('click', handleClickOutside);
 
 		// Keyboard handler for play/pause (Space) and add cue (C)
 		function handleKeyPress(event) {
@@ -338,7 +259,6 @@
 			if (wavesurfer) {
 				wavesurfer.destroy();
 			}
-			document.removeEventListener('click', handleClickOutside);
 			document.removeEventListener('keydown', handleKeyPress);
 		};
 	});
@@ -816,31 +736,12 @@
 		}
 	}
 
-	function toggleDropdown(markerId) {
-		openDropdownId = openDropdownId === markerId ? null : markerId;
-	}
-
-	function getBoardsLabel(selectedBoards) {
-		if (selectedBoards.length === 0) return 'Select boards...';
-		if (selectedBoards.length === 1) {
-			const board = $boards.find(b => b.id === selectedBoards[0]);
-			return board ? board.id : '1 selected';
-		}
-		return `${selectedBoards.length} selected`;
-	}
-
 	function deleteMarker(markerId) {
 		const allRegions = regions.getRegions();
 		const region = allRegions.find(r => r.id === markerId);
 		if (region) {
 			region.remove();
 		}
-	}
-
-	function formatTime(seconds) {
-		const mins = Math.floor(seconds / 60);
-		const secs = (seconds % 60).toFixed(2);
-		return `${mins}:${secs.padStart(5, '0')}`;
 	}
 
 	function zoomIn() {
@@ -1341,164 +1242,23 @@ function playFullProgram() {
 		{#if markers.length > 0 && currentlySelectedMarker}
 			{@const marker = markers.find(m => m.id === currentlySelectedMarker)}
 			{#if marker}
-			<div class="markers-section">
-				<div class="markers-list">
-						<div class="marker-item">
-							<div class="marker-info">
-								<span class="marker-time">{formatTime(marker.time)}</span>
-								<span class="marker-label">{marker.label}</span>
-							</div>
-							<div class="marker-controls">
-								<div class="boards-dropdown-wrapper">
-									<button
-										class="boards-select-button"
-										onclick={(e) => {
-											e.stopPropagation();
-											toggleDropdown(marker.id);
-										}}
-									>
-										{getBoardsLabel(marker.boards)}
-										<span class="dropdown-arrow">▼</span>
-									</button>
-									{#if openDropdownId === marker.id}
-										{@const regularBoards = $boards.filter(b => !b.isGroup)}
-										{@const groups = $boards.filter(b => b.isGroup)}
-
-										<div class="boards-dropdown-menu">
-											{#if groups.length > 0}
-												<div class="dropdown-section">
-													<div class="dropdown-section-label">Groups</div>
-													{#each groups as group}
-														<label class="dropdown-option">
-															<input
-																type="checkbox"
-																checked={marker.boards.includes(group.id)}
-																onchange={() => toggleBoardSelection(marker.id, group.id)}
-															/>
-															<span>{group.id}</span>
-														</label>
-													{/each}
-												</div>
-											{/if}
-
-											{#if regularBoards.length > 0}
-												<div class="dropdown-section">
-													<div class="dropdown-section-label">Boards</div>
-													{#each regularBoards as board}
-														<label class="dropdown-option">
-															<input
-																type="checkbox"
-																checked={marker.boards.includes(board.id)}
-																onchange={() => toggleBoardSelection(marker.id, board.id)}
-															/>
-															<span>{board.id}</span>
-														</label>
-													{/each}
-												</div>
-											{/if}
-										</div>
-									{/if}
-								</div>
-
-								<button
-									class="preset-picker-button"
-									class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
-									onclick={() => openPresetPicker(marker.id)}
-								>
-									{marker.presetName || 'Select Preset'}
-									<span class="dropdown-arrow">▼</span>
-								</button>
-								<div class="sync-rate-group" title="BPM sync rate">
-									<button
-										class="sync-rate-btn"
-										class:active={marker.syncRate === 0.25}
-										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 0.25)}
-									>¼</button>
-									<button
-										class="sync-rate-btn"
-										class:active={marker.syncRate === 0.5}
-										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 0.5)}
-									>½</button>
-									<button
-										class="sync-rate-btn"
-										class:active={(marker.syncRate ?? 1) === 1}
-										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 1)}
-									>1</button>
-									<button
-										class="sync-rate-btn"
-										class:active={marker.syncRate === 2}
-										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 2)}
-									>2</button>
-									<button
-										class="sync-rate-btn"
-										class:active={marker.syncRate === 4}
-										onclick={() => updateMarkerProperty(marker.id, 'syncRate', 4)}
-									>4</button>
-								</div>
-
-								<button class="btn-delete" onclick={() => deleteMarker(marker.id)}>
-									✕
-								</button>
-							</div>
-						</div>
-				</div>
-			</div>
+				<CueEditor
+					{marker}
+					onToggleBoardSelection={toggleBoardSelection}
+					onOpenPresetPicker={openPresetPicker}
+					onUpdateSyncRate={(markerId, rate) => updateMarkerProperty(markerId, 'syncRate', rate)}
+					onDelete={deleteMarker}
+				/>
 			{/if}
 		{/if}
 	</div>
 </div>
 
-{#if presetPicker.open}
-	<div class="preset-picker-overlay" onclick={closePresetPicker}>
-		<div class="preset-picker-modal" onclick={(e) => e.stopPropagation()}>
-			{#if presetPicker.step === 'category'}
-				<div class="preset-picker-header">
-					<h3>Select Effect Type</h3>
-					<button class="preset-picker-close" onclick={closePresetPicker}>✕</button>
-				</div>
-				<div class="preset-picker-quick">
-					{#each quickPresets as preset}
-						<button
-							class="preset-quick-btn"
-							onclick={() => selectPreset(preset)}
-						>
-							{preset}
-						</button>
-					{/each}
-				</div>
-				<div class="preset-picker-grid">
-					{#each allCategories() as category}
-						<button
-							class="preset-category-btn"
-							onclick={() => selectCategory(category.name)}
-						>
-							{category.name}
-						</button>
-					{/each}
-				</div>
-			{:else}
-				<div class="preset-picker-header">
-					<button class="preset-picker-back" onclick={() => { presetPicker.step = 'category'; presetPicker.selectedCategory = null; }}>
-						←
-					</button>
-					<h3>{presetPicker.selectedCategory}</h3>
-					<button class="preset-picker-close" onclick={closePresetPicker}>✕</button>
-				</div>
-				<div class="preset-picker-grid colors">
-					{#each categoryColors() as preset}
-						<button
-							class="preset-color-btn"
-							style="color: {getColorStyle(preset.color)}"
-							onclick={() => selectPreset(preset.name)}
-						>
-							{preset.color}
-						</button>
-					{/each}
-				</div>
-			{/if}
-		</div>
-	</div>
-{/if}
+<PresetPicker
+	open={presetPickerOpen}
+	onSelect={handlePresetSelect}
+	onClose={closePresetPicker}
+/>
 
 <style>
 	/* Force all WaveSurfer region labels to be centered - overrides plugin's default CSS */
@@ -1980,11 +1740,6 @@ function playFullProgram() {
 		font-size: 0.8rem !important;
 	}
 
-	.markers-section {
-		padding: 0.5rem 1rem;
-		overflow: visible;
-	}
-
 	.default-board-dropdown-wrapper {
 		position: relative;
 	}
@@ -2119,380 +1874,4 @@ function playFullProgram() {
 		cursor: not-allowed;
 	}
 
-	.markers-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		overflow: visible;
-	}
-
-	.marker-item {
-		padding: 0.35rem 0;
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		overflow: visible;
-	}
-
-	.marker-info {
-		display: flex;
-		gap: 1rem;
-		align-items: center;
-		flex: 1;
-	}
-
-	.marker-controls {
-		display: flex;
-		gap: 0.75rem;
-		align-items: center;
-		overflow: visible;
-	}
-
-	.boards-dropdown-wrapper {
-		position: relative;
-		overflow: visible;
-	}
-
-	.boards-select-button {
-		background-color: transparent;
-		border: 1px solid #1a1a1a;
-		color: #888;
-		padding: 0.5rem 2rem 0.5rem 0.75rem;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		cursor: pointer;
-		width: 140px;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		position: relative;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.boards-select-button:hover {
-		border-color: #333;
-		background: #111;
-	}
-
-	.dropdown-arrow {
-		position: absolute;
-		right: 0.75rem;
-		font-size: 0.7rem;
-		color: #555;
-	}
-
-	.boards-dropdown-menu {
-		position: absolute;
-		top: calc(100% + 4px);
-		left: 0;
-		background-color: #0f0f0f;
-		border: 1px solid #1a1a1a;
-		border-radius: 6px;
-		min-width: 200px;
-		max-height: 300px;
-		overflow-y: auto;
-		scrollbar-width: none;
-		-ms-overflow-style: none;
-		z-index: 1000;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-	}
-
-	.boards-dropdown-menu::-webkit-scrollbar {
-		display: none;
-	}
-
-	.dropdown-section {
-		padding: 0.5rem 0;
-	}
-
-	.dropdown-section:not(:last-child) {
-		border-bottom: 1px solid #1a1a1a;
-	}
-
-	.dropdown-section-label {
-		padding: 0.5rem 0.75rem;
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: #444;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.dropdown-option {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		cursor: pointer;
-		transition: background-color 0.2s;
-		user-select: none;
-	}
-
-	.dropdown-option:hover {
-		background-color: #111;
-	}
-
-	.dropdown-option input[type="checkbox"] {
-		cursor: pointer;
-	}
-
-	.dropdown-option span {
-		font-size: 0.875rem;
-		color: #888;
-	}
-
-	.sync-rate-group {
-		display: flex;
-		background-color: transparent;
-		border: 1px solid #1a1a1a;
-		border-radius: 6px;
-		overflow: hidden;
-	}
-
-	.sync-rate-btn {
-		background: transparent;
-		border: none;
-		color: #444;
-		padding: 0.5rem 0.6rem;
-		font-size: 0.875rem;
-		cursor: pointer;
-		border-right: 1px solid #1a1a1a;
-		transition: all 0.15s;
-	}
-
-	.sync-rate-btn:last-child {
-		border-right: none;
-	}
-
-	.sync-rate-btn:hover {
-		background-color: #111;
-		color: #888;
-	}
-
-	.sync-rate-btn.active {
-		background-color: #1a1a1a;
-		color: #fff;
-	}
-
-	.marker-time {
-		font-family: 'Courier New', monospace;
-		font-size: 1.1rem;
-		color: #888;
-		font-weight: bold;
-		min-width: 80px;
-	}
-
-	.marker-label {
-		color: #888;
-		font-size: 1rem;
-		min-width: 120px;
-	}
-
-	.btn-delete {
-		background-color: transparent;
-		border: 1px solid #1a1a1a;
-		color: #555;
-		font-size: 1rem;
-		font-weight: 600;
-		cursor: pointer;
-		padding: 0.375rem 0.625rem;
-		border-radius: 6px;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 32px;
-	}
-
-	.btn-delete:hover {
-		background-color: #1a1212;
-		color: #c44;
-		border-color: #331a1a;
-	}
-
-	.preset-picker-button {
-		background-color: transparent;
-		border: 1px solid #1a1a1a;
-		color: #888;
-		padding: 0.5rem 2rem 0.5rem 0.75rem;
-		border-radius: 6px;
-		font-size: 0.875rem;
-		cursor: pointer;
-		min-width: 140px;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		position: relative;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.preset-picker-button:hover {
-		border-color: #333;
-		background: #111;
-	}
-
-	.preset-picker-button.broken-preset {
-		border-color: #331a1a;
-		background-color: #1a1212;
-	}
-
-	.preset-picker-overlay {
-		position: fixed;
-		top: 0;
-		left: 0;
-		right: 0;
-		bottom: 0;
-		background-color: rgba(0, 0, 0, 0.8);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 10000;
-	}
-
-	.preset-picker-modal {
-		background: #0c0c0c;
-		border: 1px solid rgba(255, 255, 255, 0.03);
-		border-radius: 12px;
-		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
-		min-width: 320px;
-		max-width: 400px;
-		max-height: 80vh;
-		overflow: hidden;
-	}
-
-	.preset-picker-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 1rem;
-		background: transparent;
-	}
-
-	.preset-picker-header h3 {
-		margin: 0;
-		font-size: 1rem;
-		font-weight: 600;
-		color: #fff;
-		flex: 1;
-		text-align: center;
-	}
-
-	.preset-picker-back {
-		background: transparent;
-		border: none;
-		color: #888;
-		font-size: 0.875rem;
-		cursor: pointer;
-		padding: 0.25rem 0.5rem;
-		border-radius: 4px;
-		transition: all 0.2s;
-	}
-
-	.preset-picker-back:hover {
-		background-color: #1a1a1a;
-		color: #fff;
-	}
-
-	.preset-picker-close {
-		background: transparent;
-		border: none;
-		color: #444;
-		font-size: 1rem;
-		cursor: pointer;
-		padding: 0.25rem 0.5rem;
-		border-radius: 4px;
-		transition: all 0.2s;
-	}
-
-	.preset-picker-close:hover {
-		background-color: #1a1212;
-		color: #c44;
-	}
-
-	.preset-picker-quick {
-		display: flex;
-		gap: 0.75rem;
-		padding: 1rem 1rem 0 1rem;
-	}
-
-	.preset-quick-btn {
-		flex: 1;
-		background-color: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.03);
-		color: #888;
-		padding: 0.75rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.2s;
-		text-align: center;
-	}
-
-	.preset-quick-btn:hover {
-		background-color: rgba(255, 255, 255, 0.02);
-		border-color: rgba(255, 255, 255, 0.05);
-		color: #fff;
-	}
-
-	.preset-picker-grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: 0.75rem;
-		padding: 1rem;
-		max-height: 60vh;
-		overflow-y: auto;
-		scrollbar-width: none;
-		-ms-overflow-style: none;
-	}
-
-	.preset-picker-grid::-webkit-scrollbar {
-		display: none;
-	}
-
-	.preset-picker-grid.colors {
-		grid-template-columns: repeat(3, 1fr);
-	}
-
-	.preset-category-btn {
-		background-color: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.03);
-		color: #888;
-		padding: 1rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.2s;
-		text-align: center;
-	}
-
-	.preset-category-btn:hover {
-		background-color: rgba(255, 255, 255, 0.02);
-		border-color: rgba(255, 255, 255, 0.05);
-		color: #fff;
-	}
-
-	.preset-color-btn {
-		background-color: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.03);
-		padding: 0.75rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.2s;
-		text-align: center;
-	}
-
-	.preset-color-btn:hover {
-		background-color: rgba(255, 255, 255, 0.02);
-		border-color: rgba(255, 255, 255, 0.05);
-	}
 </style>

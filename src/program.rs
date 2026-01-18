@@ -63,11 +63,17 @@ impl Program {
     pub fn load_all(programs_path: &Path) -> Result<Vec<Program>, Box<dyn std::error::Error>> {
         let mut programs = Vec::new();
 
+        info!("Loading programs from: {:?}", programs_path);
+
         if !programs_path.exists() {
+            warn!("Programs path does not exist: {:?}", programs_path);
             return Ok(programs);
         }
 
-        for entry in fs::read_dir(programs_path)? {
+        let entries: Vec<_> = fs::read_dir(programs_path)?.collect();
+        info!("Found {} entries in programs directory", entries.len());
+
+        for entry in entries {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {

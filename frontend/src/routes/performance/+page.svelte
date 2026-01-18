@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
 	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings, audioElements } from '$lib/store';
@@ -6,12 +6,13 @@
 	import { updateProgram, reorderPrograms } from '$lib/programs-db';
 	import { setBoardBrightness } from '$lib/boards-db';
 	import { API_URL } from '$lib/api';
+	import { Program, type TransitionType } from '$lib/models/Program';
 
 	// Track playback progress for each program (0-100)
-	let playbackProgress = $state({});
+	let playbackProgress = $state<Record<string, number>>({});
 
 	// Track animation frame ID for smooth progress updates
-	let animationFrameId = null;
+	let animationFrameId: number | null = null;
 
 	// Flag to indicate manual stop (breaks chain)
 	let manualStop = false;
@@ -20,7 +21,16 @@
 	let currentPlayingId = $derived($currentlyPlayingProgram?.id || null);
 
 	// Context menu state
-	let contextMenu = $state({
+	let contextMenu = $state<{
+		visible: boolean;
+		x: number;
+		y: number;
+		programId: string | null;
+		showChainSubmenu: boolean;
+		showTransitionSubmenu: boolean;
+		submenuX: number;
+		submenuY: number;
+	}>({
 		visible: false,
 		x: 0,
 		y: 0,
@@ -32,7 +42,19 @@
 	});
 
 	// Drag-and-drop state
-	let dragState = $state({
+	let dragState = $state<{
+		isDragging: boolean;
+		draggedIndex: number | null;
+		dragOverIndex: number | null;
+		longPressTimer: ReturnType<typeof setTimeout> | null;
+		longPressActive: boolean;
+		initialX: number;
+		initialY: number;
+		currentX: number;
+		currentY: number;
+		programIdForLongPress: string | null;
+		draggedElement: HTMLElement | null;
+	}>({
 		isDragging: false,
 		draggedIndex: null,
 		dragOverIndex: null,
@@ -56,7 +78,7 @@
 		};
 	});
 
-	async function toggleProgram(program) {
+	async function toggleProgram(program: Program) {
 		if (currentPlayingId === program.id) {
 			// Stop the current program
 			await stopProgram(program);
@@ -73,7 +95,7 @@
 		}
 	}
 
-	async function playProgram(program) {
+	async function playProgram(program: Program) {
 		console.log('▶️ Playing program:', program.songName);
 
 		// Get mute status from store (loaded once on app init)
@@ -164,7 +186,7 @@
 		playProgramService(program, 0);
 	}
 
-	async function stopProgram(program) {
+	async function stopProgram(program: Program) {
 		console.log('⏹ Stopping program:', program.songName);
 
 		manualStop = true;
@@ -188,7 +210,7 @@
 	}
 
 	// Drag-and-drop functions (desktop only - using pointer + HTML5 drag API)
-	function handlePointerDown(event, programId, index) {
+	function handlePointerDown(event: PointerEvent, programId: string, index: number) {
 		// Don't allow dragging if a program is currently playing
 		if (currentPlayingId !== null) return;
 
@@ -206,7 +228,7 @@
 		}, 500);
 	}
 
-	function handlePointerMove(event) {
+	function handlePointerMove(event: PointerEvent) {
 		// Cancel long-press if pointer moves too much (more than 10px)
 		if (dragState.longPressTimer && !dragState.isDragging) {
 			const clientX = event.clientX;
@@ -231,7 +253,7 @@
 		dragState.longPressActive = false;
 	}
 
-	function handleDragStart(event, index) {
+	function handleDragStart(event: DragEvent, index: number) {
 		// Only allow drag if long-press was activated and no program is playing
 		if (!dragState.longPressActive || currentPlayingId !== null) {
 			event.preventDefault();
@@ -240,11 +262,13 @@
 
 		dragState.isDragging = true;
 		dragState.draggedIndex = index;
-		event.dataTransfer.effectAllowed = 'move';
-		event.dataTransfer.setData('text/plain', index.toString());
+		if (event.dataTransfer) {
+			event.dataTransfer.effectAllowed = 'move';
+			event.dataTransfer.setData('text/plain', index.toString());
+		}
 	}
 
-	function handleDragOver(event, index) {
+	function handleDragOver(event: DragEvent, index: number) {
 		if (!dragState.isDragging) return;
 		event.preventDefault();
 		dragState.dragOverIndex = index;
@@ -257,7 +281,7 @@
 		dragState.longPressActive = false;
 	}
 
-	async function handleDrop(event, dropIndex) {
+	async function handleDrop(event: DragEvent, dropIndex: number) {
 		event.preventDefault();
 
 		if (dragState.draggedIndex === null || dragState.draggedIndex === dropIndex) {
@@ -281,7 +305,7 @@
 	}
 
 	// Transition implementations
-	async function applyTransition(program) {
+	async function applyTransition(program: Program) {
 		console.log(`🔄 Applying ${program.transitionType} transition (${program.transitionDuration}ms)`);
 
 		if (program.transitionType === 'blackout') {
@@ -303,7 +327,7 @@
 	}
 
 	// Context menu functions
-	function showContextMenu(event, programId) {
+	function showContextMenu(event: MouseEvent, programId: string) {
 		event.preventDefault();
 		event.stopPropagation();
 
@@ -316,7 +340,7 @@
 	}
 
 	// Get submenu position
-	function getSubmenuPosition(parentElement) {
+	function getSubmenuPosition(parentElement: HTMLElement | null) {
 		if (!parentElement) return { left: 0, top: 0 };
 		const rect = parentElement.getBoundingClientRect();
 		return {
@@ -331,7 +355,7 @@
 		contextMenu.showTransitionSubmenu = false;
 	}
 
-	async function setNextProgram(targetProgramId) {
+	async function setNextProgram(targetProgramId: string | undefined) {
 		const program = $programs.find(p => p.id === contextMenu.programId);
 		if (!program) return;
 
@@ -346,7 +370,7 @@
 		// Don't hide menu - let user see the selection and make more changes
 	}
 
-	async function setTransitionType(type) {
+	async function setTransitionType(type: TransitionType) {
 		const program = $programs.find(p => p.id === contextMenu.programId);
 		if (!program) return;
 
@@ -354,7 +378,7 @@
 		await updateProgram(program);
 	}
 
-	async function setTransitionDuration(duration) {
+	async function setTransitionDuration(duration: number) {
 		const program = $programs.find(p => p.id === contextMenu.programId);
 		if (!program) return;
 
@@ -372,7 +396,7 @@
 	}
 
 	// Close context menu on click outside
-	function handleClickOutside(event) {
+	function handleClickOutside(event: MouseEvent) {
 		if (contextMenu.visible) {
 			hideContextMenu();
 		}
@@ -529,7 +553,7 @@
 							max="5000"
 							step="100"
 							value={currentProgram?.transitionDuration || 0}
-							oninput={(e) => setTransitionDuration(parseInt(e.target.value))}
+							oninput={(e) => setTransitionDuration(parseInt((e.target as HTMLInputElement).value))}
 							style="flex: 1;"
 						/>
 						<span style="flex-shrink: 0; min-width: 3rem;">{currentProgram?.transitionDuration || 0}ms</span>

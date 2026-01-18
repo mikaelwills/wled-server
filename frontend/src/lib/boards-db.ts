@@ -16,11 +16,11 @@ import type { BoardState } from './types';
 
 let sseConnection: EventSource | null = null;
 
-function getMajorityColor(members: BoardState[]): number[] | undefined {
+function getMajorityColor(members: BoardState[]): [number, number, number] | undefined {
   const connected = members.filter(m => m.connected);
   const source = connected.length > 0 ? connected : members;
   if (source.length === 0) return undefined;
-  const counts = new Map<string, { color: number[]; count: number }>();
+  const counts = new Map<string, { color: [number, number, number]; count: number }>();
   for (const m of source) {
     if (m.color) {
       const key = JSON.stringify(m.color);
@@ -28,11 +28,11 @@ function getMajorityColor(members: BoardState[]): number[] | undefined {
       if (existing) {
         existing.count++;
       } else {
-        counts.set(key, { color: m.color, count: 1 });
+        counts.set(key, { color: m.color as [number, number, number], count: 1 });
       }
     }
   }
-  let majority: { color: number[]; count: number } | undefined;
+  let majority: { color: [number, number, number]; count: number } | undefined;
   for (const entry of counts.values()) {
     if (!majority || entry.count > majority.count) {
       majority = entry;
@@ -138,7 +138,7 @@ export async function initBoardsListener(): Promise<void> {
                 color: getMajorityColor(members) ?? board.color,
                 brightness: members.length > 0 ? members[0].brightness : board.brightness,
                 effect: members.length > 0 ? members[0].effect : board.effect,
-                on: newOn,
+                on: members.length > 0 ? members.some((m) => m.on) : board.on,
               };
             }
 

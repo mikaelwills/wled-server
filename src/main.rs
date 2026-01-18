@@ -43,6 +43,64 @@ async fn main() {
     info!("Starting WLED Rust Server");
 
     let storage_paths = config::StoragePaths::default();
+
+    let usb_programs_path = &storage_paths.programs;
+    let max_usb_wait_secs = 30;
+    let mut usb_waited = 0;
+
+    fn count_json_files(path: &std::path::Path) -> usize {
+        match std::fs::read_dir(path) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+                .count(),
+            Err(_) => 0,
+        }
+    }
+
+    let mut file_count = count_json_files(usb_programs_path);
+    while file_count == 0 && usb_waited < max_usb_wait_secs {
+        if usb_waited == 0 {
+            warn!("USB programs directory empty or not ready at {:?}, waiting...", usb_programs_path);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        usb_waited += 1;
+        file_count = count_json_files(usb_programs_path);
+        if usb_waited % 5 == 0 {
+            info!("Still waiting for USB programs... ({}/{}s, found {} files)", usb_waited, max_usb_wait_secs, file_count);
+        }
+    }
+
+    if file_count > 0 {
+        if usb_waited > 0 {
+            info!("✅ USB programs ready after {}s ({} files found)", usb_waited, file_count);
+        } else {
+            info!("✅ USB programs detected ({} files), waiting for stability...", file_count);
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+
+        if count_json_files(usb_programs_path) == 0 {
+            warn!("USB disappeared after initial detection! Waiting for remount...");
+            let mut remount_wait = 0;
+            let max_remount_wait = 30;
+            while count_json_files(usb_programs_path) == 0 && remount_wait < max_remount_wait {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                remount_wait += 1;
+                if remount_wait % 5 == 0 {
+                    info!("Still waiting for USB remount... ({}/{}s)", remount_wait, max_remount_wait);
+                }
+            }
+            let final_count = count_json_files(usb_programs_path);
+            if final_count > 0 {
+                info!("✅ USB remounted after {}s ({} files)", remount_wait, final_count);
+            } else {
+                warn!("⚠️ USB did not remount after {}s", max_remount_wait);
+            }
+        }
+    } else {
+        warn!("⚠️ No program files found after {}s - directory may be empty or USB not mounted", max_usb_wait_secs);
+    }
+
     if let Err(e) = storage_paths.init() {
         error!("Failed to initialize storage paths: {}", e);
         error!("Program storage will be unavailable");
@@ -144,7 +202,7 @@ async fn main() {
     let programs_map: HashMap<String, program::Program> =
         match program::Program::load_all(&storage_paths.programs) {
             Ok(programs) => {
-                info!("Loaded {} program(s) into memory", programs.len());
+                info!("✅ Loaded {} program(s) into memory", programs.len());
                 programs.into_iter().map(|p| (p.id.clone(), p)).collect()
             }
             Err(e) => {

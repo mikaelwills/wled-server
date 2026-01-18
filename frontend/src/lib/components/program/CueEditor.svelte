@@ -1,0 +1,379 @@
+<script lang="ts">
+	import { boards, performancePresets } from '$lib/store';
+	import { formatTime } from '$lib/utils/program-utils';
+	import type { Marker } from './types';
+
+	let {
+		marker,
+		onUpdateProperty,
+		onUpdatePreset,
+		onToggleBoardSelection,
+		onDelete,
+		onOpenPresetPicker
+	}: {
+		marker: Marker;
+		onUpdateProperty: (markerId: string, property: string, value: unknown) => void;
+		onUpdatePreset: (markerId: string, presetName: string) => void;
+		onToggleBoardSelection: (markerId: string, boardId: string) => void;
+		onDelete: (markerId: string) => void;
+		onOpenPresetPicker: (markerId: string) => void;
+	} = $props();
+
+	let openDropdownId = $state<string | null>(null);
+
+	function toggleDropdown(markerId: string) {
+		openDropdownId = openDropdownId === markerId ? null : markerId;
+	}
+
+	function getBoardsLabel(selectedBoards: string[]): string {
+		if (selectedBoards.length === 0) return 'Select boards...';
+		if (selectedBoards.length === 1) {
+			const board = $boards.find(b => b.id === selectedBoards[0]);
+			return board ? board.id : '1 selected';
+		}
+		return `${selectedBoards.length} selected`;
+	}
+
+	$effect(() => {
+		const handleClickOutside = (e: MouseEvent) => {
+			if (!(e.target as Element).closest('.boards-dropdown-wrapper')) {
+				openDropdownId = null;
+			}
+		};
+		document.addEventListener('click', handleClickOutside);
+		return () => document.removeEventListener('click', handleClickOutside);
+	});
+</script>
+
+<div class="markers-section">
+	<div class="markers-list">
+		<div class="marker-item">
+			<div class="marker-info">
+				<span class="marker-time">{formatTime(marker.time)}</span>
+				<span class="marker-label">{marker.label}</span>
+			</div>
+			<div class="marker-controls">
+				<div class="boards-dropdown-wrapper">
+					<button
+						class="boards-select-button"
+						onclick={(e) => {
+							e.stopPropagation();
+							toggleDropdown(marker.id);
+						}}
+					>
+						{getBoardsLabel(marker.boards)}
+						<span class="dropdown-arrow">▼</span>
+					</button>
+					{#if openDropdownId === marker.id}
+						{@const regularBoards = $boards.filter(b => !b.isGroup)}
+						{@const groups = $boards.filter(b => b.isGroup)}
+
+						<div class="boards-dropdown-menu">
+							{#if groups.length > 0}
+								<div class="dropdown-section">
+									<div class="dropdown-section-label">Groups</div>
+									{#each groups as group}
+										<label class="dropdown-option">
+											<input
+												type="checkbox"
+												checked={marker.boards.includes(group.id)}
+												onchange={() => onToggleBoardSelection(marker.id, group.id)}
+											/>
+											<span>{group.id}</span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+
+							{#if regularBoards.length > 0}
+								<div class="dropdown-section">
+									<div class="dropdown-section-label">Boards</div>
+									{#each regularBoards as board}
+										<label class="dropdown-option">
+											<input
+												type="checkbox"
+												checked={marker.boards.includes(board.id)}
+												onchange={() => onToggleBoardSelection(marker.id, board.id)}
+											/>
+											<span>{board.id}</span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<button
+					class="preset-picker-button"
+					class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
+					onclick={() => onOpenPresetPicker(marker.id)}
+				>
+					{marker.presetName || 'Select Preset'}
+					<span class="dropdown-arrow">▼</span>
+				</button>
+				<div class="sync-rate-group" title="BPM sync rate">
+					<button
+						class="sync-rate-btn"
+						class:active={marker.syncRate === 0.25}
+						onclick={() => onUpdateProperty(marker.id, 'syncRate', 0.25)}
+					>¼</button>
+					<button
+						class="sync-rate-btn"
+						class:active={marker.syncRate === 0.5}
+						onclick={() => onUpdateProperty(marker.id, 'syncRate', 0.5)}
+					>½</button>
+					<button
+						class="sync-rate-btn"
+						class:active={(marker.syncRate ?? 1) === 1}
+						onclick={() => onUpdateProperty(marker.id, 'syncRate', 1)}
+					>1</button>
+					<button
+						class="sync-rate-btn"
+						class:active={marker.syncRate === 2}
+						onclick={() => onUpdateProperty(marker.id, 'syncRate', 2)}
+					>2</button>
+					<button
+						class="sync-rate-btn"
+						class:active={marker.syncRate === 4}
+						onclick={() => onUpdateProperty(marker.id, 'syncRate', 4)}
+					>4</button>
+				</div>
+
+				<button class="btn-delete" onclick={() => onDelete(marker.id)}>
+					✕
+				</button>
+			</div>
+		</div>
+	</div>
+</div>
+
+<style>
+	.markers-section {
+		padding: 0.5rem 1rem;
+		overflow: visible;
+	}
+
+	.markers-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		overflow: visible;
+	}
+
+	.marker-item {
+		padding: 0.35rem 0;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		overflow: visible;
+	}
+
+	.marker-info {
+		display: flex;
+		gap: 1rem;
+		align-items: center;
+		flex: 1;
+	}
+
+	.marker-controls {
+		display: flex;
+		gap: 0.75rem;
+		align-items: center;
+		overflow: visible;
+	}
+
+	.boards-dropdown-wrapper {
+		position: relative;
+		overflow: visible;
+	}
+
+	.boards-select-button {
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #888;
+		padding: 0.5rem 2rem 0.5rem 0.75rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		width: 140px;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		position: relative;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.boards-select-button:hover {
+		border-color: #333;
+		background: #111;
+	}
+
+	.dropdown-arrow {
+		position: absolute;
+		right: 0.75rem;
+		font-size: 0.7rem;
+		color: #555;
+	}
+
+	.boards-dropdown-menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		background-color: #0f0f0f;
+		border: 1px solid #1a1a1a;
+		border-radius: 6px;
+		min-width: 200px;
+		max-height: 300px;
+		overflow-y: auto;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
+		z-index: 1000;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+	}
+
+	.boards-dropdown-menu::-webkit-scrollbar {
+		display: none;
+	}
+
+	.dropdown-section {
+		padding: 0.5rem 0;
+	}
+
+	.dropdown-section:not(:last-child) {
+		border-bottom: 1px solid #1a1a1a;
+	}
+
+	.dropdown-section-label {
+		padding: 0.5rem 0.75rem;
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: #444;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.dropdown-option {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		cursor: pointer;
+		transition: background-color 0.2s;
+		user-select: none;
+	}
+
+	.dropdown-option:hover {
+		background-color: #111;
+	}
+
+	.dropdown-option input[type="checkbox"] {
+		cursor: pointer;
+	}
+
+	.dropdown-option span {
+		font-size: 0.875rem;
+		color: #888;
+	}
+
+	.sync-rate-group {
+		display: flex;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		border-radius: 6px;
+		overflow: hidden;
+	}
+
+	.sync-rate-btn {
+		background: transparent;
+		border: none;
+		color: #444;
+		padding: 0.5rem 0.6rem;
+		font-size: 0.875rem;
+		cursor: pointer;
+		border-right: 1px solid #1a1a1a;
+		transition: all 0.15s;
+	}
+
+	.sync-rate-btn:last-child {
+		border-right: none;
+	}
+
+	.sync-rate-btn:hover {
+		background-color: #111;
+		color: #888;
+	}
+
+	.sync-rate-btn.active {
+		background-color: #1a1a1a;
+		color: #fff;
+	}
+
+	.marker-time {
+		font-family: 'Courier New', monospace;
+		font-size: 1.1rem;
+		color: #888;
+		font-weight: bold;
+		min-width: 80px;
+	}
+
+	.marker-label {
+		color: #888;
+		font-size: 1rem;
+		min-width: 120px;
+	}
+
+	.btn-delete {
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #555;
+		font-size: 1rem;
+		font-weight: 600;
+		cursor: pointer;
+		padding: 0.375rem 0.625rem;
+		border-radius: 6px;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 32px;
+	}
+
+	.btn-delete:hover {
+		background-color: #1a1212;
+		color: #c44;
+		border-color: #331a1a;
+	}
+
+	.preset-picker-button {
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		color: #888;
+		padding: 0.5rem 2rem 0.5rem 0.75rem;
+		border-radius: 6px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		min-width: 140px;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		position: relative;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.preset-picker-button:hover {
+		border-color: #333;
+		background: #111;
+	}
+
+	.preset-picker-button.broken-preset {
+		border-color: #331a1a;
+		background-color: #1a1212;
+	}
+</style>

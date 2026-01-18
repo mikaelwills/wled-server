@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 
 use crate::config::{Config, PatternType};
+use crate::routes::send_osc_sync;
 use crate::cue_scheduler::{CueScheduler, CueType, PatternCueConfig, ScheduledCue};
 use crate::effects::EffectType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
@@ -382,10 +383,24 @@ impl ProgramEngine {
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
                     println!("  ✓ Stop sent to pattern engine");
 
-                    let (active_targets, session_id) = {
+                    let (active_targets, session_id, audio_track) = {
                         let s = state.read().await;
-                        (s.active_targets.clone(), s.current_session_id.clone())
+                        (s.active_targets.clone(), s.current_session_id.clone(), s.audio_track.clone())
                     };
+
+                    println!("  🔍 audio_track from state: {:?}", audio_track);
+                    if let Some(track) = &audio_track {
+                        let cfg = config.lock().await;
+                        let address = format!("/Stop/0:{}", track);
+                        println!("  🎵 Sending OSC stop to Loopy Pro: {} -> {}:{}", address, cfg.loopy_pro.ip, cfg.loopy_pro.port);
+                        if let Err(e) = send_osc_sync(&cfg.loopy_pro.ip, cfg.loopy_pro.port, &address) {
+                            eprintln!("  ❌ Failed to send OSC stop: {}", e);
+                        } else {
+                            println!("  ✅ OSC stop sent successfully to Loopy Pro");
+                        }
+                    } else {
+                        println!("  ⚠️ No audio_track in state - nothing was playing, skipping OSC stop");
+                    }
 
                     if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {
                         let snapshot = metrics.snapshot();
@@ -442,7 +457,6 @@ impl ProgramEngine {
 
                     {
                         let mut s = state.write().await;
-                        s.audio_track = None;
                         s.active_targets.clear();
                         s.current_session_id = None;
                     }

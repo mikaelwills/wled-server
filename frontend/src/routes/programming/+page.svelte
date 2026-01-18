@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import Program from '$lib/Program.svelte';
 	import { API_URL } from '$lib/api';
 	import { programs, programsLoading, programsError } from '$lib/store';
@@ -8,7 +8,7 @@
 	let isDragging = $state(false);
 	let isLoading = $state(false);
 
-	function handleDragOver(event) {
+	function handleDragOver(event: DragEvent) {
 		event.preventDefault();
 		isDragging = true;
 	}
@@ -17,24 +17,24 @@
 		isDragging = false;
 	}
 
-	function handleDrop(event) {
+	function handleDrop(event: DragEvent) {
 		event.preventDefault();
 		isDragging = false;
 
-		const files = event.dataTransfer.files;
-		if (files.length > 0) {
+		const files = event.dataTransfer?.files;
+		if (files && files.length > 0) {
 			createNewProgram(files[0]);
 		}
 	}
 
-	function handleFileSelect(event) {
-		const files = event.target.files;
-		if (files.length > 0) {
+	function handleFileSelect(event: Event) {
+		const files = (event.target as HTMLInputElement).files;
+		if (files && files.length > 0) {
 			createNewProgram(files[0]);
 		}
 	}
 
-	async function compressAudio(file) {
+	async function compressAudio(file: File): Promise<string> {
 		console.log('Compressing audio file to MP3...');
 
 		try {
@@ -110,8 +110,8 @@
 
 			// Convert to base64 data URL
 			const reader = new FileReader();
-			return new Promise((resolve, reject) => {
-				reader.onloadend = () => resolve(reader.result);
+			return new Promise<string>((resolve, reject) => {
+				reader.onloadend = () => resolve(reader.result as string);
 				reader.onerror = reject;
 				reader.readAsDataURL(mp3Blob);
 			});
@@ -124,9 +124,9 @@
 	/**
 	 * Convert base64 data URL to Blob
 	 */
-	function dataURLToBlob(dataURL) {
+	function dataURLToBlob(dataURL: string): Blob {
 		const parts = dataURL.split(',');
-		const mime = parts[0].match(/:(.*?);/)[1];
+		const mime = parts[0].match(/:(.*?);/)?.[1] || 'application/octet-stream';
 		const bstr = atob(parts[1]);
 		let n = bstr.length;
 		const u8arr = new Uint8Array(n);
@@ -139,7 +139,7 @@
 	/**
 	 * Import program from downloaded JSON file (with embedded audio)
 	 */
-	async function importProgramFromJSON(file) {
+	async function importProgramFromJSON(file: File) {
 		console.log('Importing program from JSON:', file.name);
 		isLoading = true;
 
@@ -160,9 +160,9 @@
 			console.log('Extracted audio blob:', audioBlob.size, 'bytes');
 
 			// Upload audio to backend
-			const audioDataURL = await new Promise((resolve, reject) => {
+			const audioDataURL = await new Promise<string>((resolve, reject) => {
 				const reader = new FileReader();
-				reader.onload = (e) => resolve(e.target.result);
+				reader.onload = (e) => resolve(e.target?.result as string);
 				reader.onerror = reject;
 				reader.readAsDataURL(audioBlob);
 			});
@@ -195,13 +195,13 @@
 			}
 		} catch (err) {
 			console.error('Failed to import program:', err);
-			alert(`Failed to import program: ${err.message}`);
+			alert(`Failed to import program: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
 			isLoading = false;
 		}
 	}
 
-	async function createNewProgram(file) {
+	async function createNewProgram(file: File) {
 		// Detect file type and route appropriately
 		if (file.name.endsWith('.json')) {
 			return importProgramFromJSON(file);
@@ -286,7 +286,7 @@
 		ondragover={handleDragOver}
 		ondragleave={handleDragLeave}
 		ondrop={handleDrop}
-		onclick={() => document.getElementById('file-input-thin').click()}
+		onclick={() => document.getElementById('file-input-thin')?.click()}
 	>
 		<p class="drop-text">Drop WAV file or JSON program here or click to browse</p>
 		<input

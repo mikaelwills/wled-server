@@ -1,6 +1,7 @@
 use axum::{extract::State, http::StatusCode, Json};
+use serde::Serialize;
 use std::net::UdpSocket;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config;
 use crate::types::{OscRequest, SharedState};
@@ -61,5 +62,84 @@ pub async fn update_loopy_pro_settings(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     info!("Loopy Pro settings updated: {}:{}", config.loopy_pro.ip, config.loopy_pro.port);
+    Ok(StatusCode::OK)
+}
+
+#[derive(Serialize)]
+pub struct StorageStatus {
+    pub usb_mounted: bool,
+    pub programs_path: String,
+    pub programs_available: bool,
+    pub programs_count: usize,
+    pub audio_path: String,
+    pub audio_available: bool,
+    pub audio_count: usize,
+}
+
+pub async fn get_storage_status(
+    State(state): State<SharedState>,
+) -> Json<StorageStatus> {
+    let storage = &state.storage_paths;
+
+    let usb_base = std::path::Path::new("/tmp/mountd/disk1_part1");
+    let usb_mounted = usb_base.exists() && usb_base.is_dir();
+
+    let programs_available = storage.programs.exists() && storage.programs.is_dir();
+    let programs_count = if programs_available {
+        std::fs::read_dir(&storage.programs)
+            .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| {
+                e.path().extension().map(|ext| ext == "json").unwrap_or(false)
+            }).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let audio_available = storage.audio.exists() && storage.audio.is_dir();
+    let audio_count = if audio_available {
+        std::fs::read_dir(&storage.audio)
+            .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| {
+                e.path().extension().map(|ext| ext == "mp3").unwrap_or(false)
+            }).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Json(StorageStatus {
+        usb_mounted,
+        programs_path: storage.programs.display().to_string(),
+        programs_available,
+        programs_count,
+        audio_path: storage.audio.display().to_string(),
+        audio_available,
+        audio_count,
+    })
+}
+
+pub async fn restart_server() -> Result<StatusCode, (StatusCode, String)> {
+    info!("🔄 Server restart requested via API");
+
+    tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        info!("🔄 Executing server restart...");
+
+        let result = std::process::Command::new("/etc/init.d/wled-server")
+            .arg("restart")
+            .spawn();
+
+        match result {
+            Ok(_) => info!("🔄 Server restart command executed"),
+            Err(e) => {
+                warn!("Failed to restart via init.d, trying alternative: {}", e);
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("sleep 1 && /etc/init.d/wled-server restart &")
+                    .spawn();
+            }
+        }
+    });
+
     Ok(StatusCode::OK)
 }
