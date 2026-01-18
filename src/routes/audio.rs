@@ -33,9 +33,8 @@ pub async fn select_device(
     config.set_preferred_audio_device(payload.device_id);
     let _ = config.save();
 
-    if let Some(ref audio_thread) = state.audio_thread {
-        audio_thread.rebuild_stream();
-        info!("Audio device changed, stream rebuilt");
+    if let Some(ref _audio_thread) = state.audio_thread {
+        info!("Audio device selection saved. Restart required for device change to take effect.");
     }
 
     StatusCode::OK
@@ -266,7 +265,7 @@ pub async fn seek_playback(
 pub async fn pause_playback(
     State(state): State<SharedState>,
 ) -> StatusCode {
-    let engine = state.audio_engine.lock().await;
+    let mut engine = state.audio_engine.lock().await;
     engine.pause().await;
     info!("Paused playback");
     StatusCode::OK
@@ -275,7 +274,7 @@ pub async fn pause_playback(
 pub async fn resume_playback(
     State(state): State<SharedState>,
 ) -> StatusCode {
-    let engine = state.audio_engine.lock().await;
+    let mut engine = state.audio_engine.lock().await;
     engine.resume().await;
     info!("Resumed playback");
     StatusCode::OK

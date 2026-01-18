@@ -45,9 +45,9 @@ test_udp.py
 .claude/settings.local.json
 
 # User data - don't commit personal files
-audio/
-programs/
-presets/
+/audio/
+/programs/
+/presets/
 presets-backup/
 presets_backup/
 plans/
