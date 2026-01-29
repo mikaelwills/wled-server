@@ -38,6 +38,7 @@
 	let audioDevices: AudioDevice[] = $state([]);
 	let audioDevicesLoading = $state(true);
 	let selectedDeviceId: string | null = $state(null);
+	let switchingDevice = $state(false);
 
 	async function fetchStorageStatus() {
 		try {
@@ -96,6 +97,8 @@
 	}
 
 	async function selectDevice(deviceId: string | null) {
+		if (switchingDevice) return;
+		switchingDevice = true;
 		try {
 			const res = await fetch(`${API_URL}/audio/device/select`, {
 				method: 'POST',
@@ -107,6 +110,8 @@
 			}
 		} catch (e) {
 			console.error('Failed to select device:', e);
+		} finally {
+			switchingDevice = false;
 		}
 	}
 
@@ -226,7 +231,7 @@
 			{#if audioDevicesLoading}
 				<p class="help-text" style="text-align: center;">Loading devices...</p>
 			{:else}
-				<div class="device-list">
+				<div class="device-list" class:disabled={switchingDevice}>
 					{#each audioDevices as device}
 						<div
 							class="device-card"
@@ -235,10 +240,10 @@
 						>
 							<div class="device-info">
 								<span class="device-name">{device.name}</span>
-								<span class="device-channels">{device.output_channels} channels</span>
+								<span class="device-channels">{device.output_channels} channels{device.sample_rate ? ` @ ${device.sample_rate/1000}kHz` : ''}</span>
 							</div>
 							{#if selectedDeviceId === device.id}
-								<span class="selected-badge">Selected</span>
+								<span class="selected-badge">{switchingDevice ? 'Switching...' : 'Selected'}</span>
 							{:else if device.is_default}
 								<span class="default-badge">Default</span>
 							{/if}
@@ -655,6 +660,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+	}
+
+	.device-list.disabled {
+		pointer-events: none;
+		opacity: 0.6;
 	}
 
 	.device-card {

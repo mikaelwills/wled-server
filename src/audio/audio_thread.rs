@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -16,8 +16,10 @@ pub struct InternalPlaybackState {
     pub playing: AtomicBool,
     pub sample_index: AtomicUsize,
     pub track: ArcSwapOption<LoadedTrack>,
+    pub active_samples: ArcSwapOption<Vec<f32>>,
     pub track_channels: AtomicUsize,
     pub track_sample_count: AtomicUsize,
+    pub device_sample_rate: AtomicU32,
 }
 
 impl InternalPlaybackState {
@@ -26,20 +28,37 @@ impl InternalPlaybackState {
             playing: AtomicBool::new(false),
             sample_index: AtomicUsize::new(0),
             track: ArcSwapOption::new(None),
+            active_samples: ArcSwapOption::new(None),
             track_channels: AtomicUsize::new(2),
             track_sample_count: AtomicUsize::new(0),
+            device_sample_rate: AtomicU32::new(0),
         })
     }
 
     pub fn load_track(&self, track: Arc<LoadedTrack>) {
-        self.track_channels.store(track.channels as usize, Ordering::Release);
-        self.track_sample_count.store(track.samples.len(), Ordering::Release);
+        let device_rate = self.device_sample_rate.load(Ordering::Acquire);
+        let samples = track.get_samples_for_rate(device_rate);
+        let sample_len = samples.len();
+
+        self.track_channels.store(track.channels as usize, Ordering::Relaxed);
         self.track.store(Some(track));
+        self.active_samples.store(Some(samples));
+        std::sync::atomic::fence(Ordering::Release);
+        self.track_sample_count.store(sample_len, Ordering::Release);
     }
 
     pub fn clear_track(&self) {
         self.track_sample_count.store(0, Ordering::Release);
+        self.active_samples.store(None);
         self.track.store(None);
+    }
+
+    pub fn set_device_sample_rate(&self, rate: u32) {
+        self.device_sample_rate.store(rate, Ordering::Release);
+    }
+
+    pub fn get_device_sample_rate(&self) -> u32 {
+        self.device_sample_rate.load(Ordering::Acquire)
     }
 }
 
@@ -99,6 +118,10 @@ fn build_stream(
         .default_output_config()
         .map_err(|e| format!("Failed to get output config: {}", e))?;
 
+    let sample_rate = config.sample_rate().0;
+    state.set_device_sample_rate(sample_rate);
+    eprintln!("[AudioThread] Device sample rate: {}Hz", sample_rate);
+
     let output_channels = config.channels() as usize;
     let config: cpal::StreamConfig = config.into();
 
@@ -111,18 +134,17 @@ fn build_stream(
                     return;
                 }
 
-                let guard = state.track.load();
-                let track = match guard.as_ref() {
-                    Some(t) => t,
+                let guard = state.active_samples.load();
+                let samples = match guard.as_ref() {
+                    Some(s) => s,
                     None => {
                         data.fill(0.0);
                         return;
                     }
                 };
 
-                let samples = &track.samples;
+                let sample_count = state.track_sample_count.load(Ordering::Acquire);
                 let track_channels = state.track_channels.load(Ordering::Relaxed);
-                let sample_count = state.track_sample_count.load(Ordering::Relaxed);
 
                 if track_channels == 0 || sample_count == 0 {
                     data.fill(0.0);
@@ -293,6 +315,7 @@ impl AudioThread {
         while let Some(cmd) = command_rx.recv().await {
             match cmd {
                 PlaybackCommand::Play(track) => {
+                    state.playing.store(false, Ordering::Release);
                     state.sample_index.store(0, Ordering::Release);
                     state.load_track(track);
                     state.playing.store(true, Ordering::Release);

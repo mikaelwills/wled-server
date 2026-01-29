@@ -3,6 +3,7 @@ mod device_manager;
 mod engine;
 mod file;
 mod loader;
+mod resampler;
 mod track;
 
 pub use audio_thread::AudioThread;

@@ -28,6 +28,7 @@ pub struct AudioEngine {
     position: Arc<AtomicU64>,
     command_tx: mpsc::Sender<PlaybackCommand>,
     command_rx: Option<mpsc::Receiver<PlaybackCommand>>,
+    device_sample_rate: u32,
 }
 
 impl AudioEngine {
@@ -40,6 +41,7 @@ impl AudioEngine {
             position: Arc::new(AtomicU64::new(0)),
             command_tx: tx,
             command_rx: Some(rx),
+            device_sample_rate: 0,
         }
     }
 
@@ -51,8 +53,68 @@ impl AudioEngine {
         self.position.clone()
     }
 
-    pub fn load_track(&mut self, id: String, track: LoadedTrack) {
-        self.tracks.insert(id, Arc::new(track));
+    pub fn set_device_sample_rate(&mut self, rate: u32) {
+        if rate != self.device_sample_rate {
+            eprintln!("[AudioEngine] Device sample rate changed: {}Hz -> {}Hz", self.device_sample_rate, rate);
+            self.device_sample_rate = rate;
+        }
+    }
+
+    pub fn get_device_sample_rate(&self) -> u32 {
+        self.device_sample_rate
+    }
+
+    pub async fn load_track(&mut self, id: String, track: LoadedTrack) {
+        let track = Arc::new(track);
+        let device_rate = self.device_sample_rate;
+
+        if device_rate > 0 && track.original_rate != device_rate {
+            let track_clone = Arc::clone(&track);
+            let id_clone = id.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                track_clone.ensure_resampled(device_rate)
+            }).await;
+
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("[AudioEngine] Failed to resample track '{}': {}", id_clone, e),
+                Err(e) => eprintln!("[AudioEngine] Resample task failed for '{}': {}", id_clone, e),
+            }
+        }
+
+        self.tracks.insert(id, track);
+    }
+
+    pub async fn resample_all_tracks(&self, new_rate: u32) -> Result<(), String> {
+        if new_rate == 0 {
+            return Ok(());
+        }
+
+        let tracks_to_resample: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|(_, track)| track.original_rate != new_rate)
+            .map(|(id, track)| (id.clone(), Arc::clone(track)))
+            .collect();
+
+        let mut errors = Vec::new();
+        for (id, track) in tracks_to_resample {
+            let result = tokio::task::spawn_blocking(move || {
+                track.ensure_resampled(new_rate)
+            })
+            .await
+            .map_err(|e| format!("Task failed: {}", e))?;
+
+            if let Err(e) = result {
+                errors.push(format!("{}: {}", id, e));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("Failed to resample some tracks: {}", errors.join(", ")))
+        }
     }
 
     pub fn get_track(&self, id: &str) -> Option<Arc<LoadedTrack>> {
@@ -71,9 +133,21 @@ impl AudioEngine {
         let total_bytes: usize = self
             .tracks
             .values()
-            .map(|t| t.samples.len() * std::mem::size_of::<f32>())
+            .map(|t| t.memory_usage())
             .sum();
         (self.tracks.len(), total_bytes)
+    }
+
+    pub fn detailed_memory_usage(&self) -> Vec<TrackMemoryInfo> {
+        self.tracks
+            .iter()
+            .map(|(id, track)| TrackMemoryInfo {
+                id: id.clone(),
+                original_rate: track.original_rate,
+                cached_rates: track.cached_rates(),
+                total_bytes: track.memory_usage(),
+            })
+            .collect()
     }
 
     pub async fn play(&mut self, track_id: &str, start_sample: Option<u64>) -> bool {
@@ -121,7 +195,13 @@ impl AudioEngine {
         let _ = self.command_tx.send(PlaybackCommand::Seek(position)).await;
     }
 
-    pub async fn set_device(&self, device_id: String) {
+    pub async fn set_device(&mut self, device_id: String, new_sample_rate: u32) {
+        if new_sample_rate != self.device_sample_rate {
+            self.set_device_sample_rate(new_sample_rate);
+            if let Err(e) = self.resample_all_tracks(new_sample_rate).await {
+                eprintln!("[AudioEngine] Warning: {}", e);
+            }
+        }
         let _ = self.command_tx.send(PlaybackCommand::SetDevice(device_id)).await;
     }
 
@@ -146,4 +226,12 @@ impl Default for AudioEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackMemoryInfo {
+    pub id: String,
+    pub original_rate: u32,
+    pub cached_rates: Vec<u32>,
+    pub total_bytes: usize,
 }

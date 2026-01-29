@@ -34,6 +34,8 @@ impl AudioFile {
 
     pub fn load(id: &str, audio_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let extensions = ["mp3", "wav", "ogg", "flac"];
+        let id = extensions.iter()
+            .fold(id, |s, ext| s.strip_suffix(&format!(".{}", ext)).unwrap_or(s));
 
         for ext in &extensions {
             let file_path = audio_path.join(format!("{}.{}", id, ext));
@@ -47,6 +49,8 @@ impl AudioFile {
 
     pub fn delete(id: &str, audio_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let extensions = ["mp3", "wav", "ogg", "flac"];
+        let id = extensions.iter()
+            .fold(id, |s, ext| s.strip_suffix(&format!(".{}", ext)).unwrap_or(s));
 
         for ext in &extensions {
             let file_path = audio_path.join(format!("{}.{}", id, ext));

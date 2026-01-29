@@ -203,6 +203,7 @@ async fn main() {
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
     let device_manager = Arc::new(audio::DeviceManager::new());
     let mut audio_engine = audio::AudioEngine::new();
+    audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
 
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
         let position = audio_engine.get_position_arc();
@@ -230,13 +231,22 @@ async fn main() {
                 });
                 if is_audio {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        match audio::decode_file(&path) {
-                            Ok(track) => {
-                                audio_engine.load_track(stem.to_string(), track);
+                        let stem = stem.to_string();
+                        let path_clone = path.clone();
+                        let decode_result = tokio::task::spawn_blocking(move || {
+                            audio::decode_file(&path_clone)
+                        }).await;
+
+                        match decode_result {
+                            Ok(Ok(track)) => {
+                                audio_engine.load_track(stem, track).await;
                                 loaded_count += 1;
                             }
+                            Ok(Err(e)) => {
+                                warn!("Failed to preload audio '{}': {}", path.display(), e);
+                            }
                             Err(e) => {
-                                warn!("Failed to preload audio '{}': {}", stem, e);
+                                warn!("Decode task failed for '{}': {}", path.display(), e);
                             }
                         }
                     }

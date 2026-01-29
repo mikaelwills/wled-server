@@ -32,5 +32,6 @@ base64 = "0.22"
 rand = "0.9"
 cpal = "0.15"
 symphonia = { version = "0.5", features = ["mp3", "wav", "pcm"] }
+rubato = "0.15"
 arc-swap = "1.7"
 parking_lot = "0.12"

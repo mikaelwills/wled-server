@@ -9,6 +9,7 @@
 	import { initAudio, cleanupAudio } from '$lib/audio-db';
 	import TimingMonitor from '$lib/TimingMonitor.svelte';
 	import { toggleTimingMonitor } from '$lib/timing-store';
+	import { API_URL } from '$lib/api';
 
 	let { children } = $props();
 
@@ -21,6 +22,26 @@
 
 	// Mobile menu state
 	let mobileMenuOpen = $state(false);
+
+	// Memory stats
+	interface MemoryStats {
+		track_count: number;
+		memory_bytes: number;
+		memory_mb: number;
+	}
+	let memoryStats = $state<MemoryStats | null>(null);
+	let memoryPollInterval: ReturnType<typeof setInterval> | null = null;
+
+	async function fetchMemoryStats() {
+		try {
+			const res = await fetch(`${API_URL}/audio/engine/memory`);
+			if (res.ok) {
+				memoryStats = await res.json();
+			}
+		} catch {
+			memoryStats = null;
+		}
+	}
 
 	// Toggle mobile menu
 	function toggleMobileMenu() {
@@ -53,6 +74,10 @@
 			// Initialize audio (always loads - mute only affects playback, not loading)
 			// Must run after programs are loaded
 			await initAudio();
+
+			// Start memory stats polling
+			await fetchMemoryStats();
+			memoryPollInterval = setInterval(fetchMemoryStats, 5000);
 		}
 	});
 
@@ -62,6 +87,9 @@
 			cleanupBoardsListener();
 			cleanupPrograms();
 			cleanupAudio();
+			if (memoryPollInterval) {
+				clearInterval(memoryPollInterval);
+			}
 		}
 	});
 </script>
@@ -90,6 +118,13 @@
 			<a href="/history" class:active={$page.url.pathname === '/history'}>History</a>
 			<a href="/settings" class:active={$page.url.pathname === '/settings'}>Settings</a>
 		</div>
+
+		{#if memoryStats}
+			<div class="memory-stats">
+				<span class="memory-value">{memoryStats.memory_mb.toFixed(1)} MB</span>
+				<span class="memory-label">{memoryStats.track_count} tracks</span>
+			</div>
+		{/if}
 	</nav>
 
 	<main>
@@ -175,6 +210,28 @@
 
 	main {
 		flex: 1;
+	}
+
+	.memory-stats {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		justify-content: center;
+		padding: 0.5rem 1rem;
+		margin-left: auto;
+		gap: 0.125rem;
+	}
+
+	.memory-value {
+		font-size: 0.8rem;
+		font-weight: 500;
+		color: #888;
+		font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+	}
+
+	.memory-label {
+		font-size: 0.65rem;
+		color: #555;
 	}
 
 	/* Mobile styles */

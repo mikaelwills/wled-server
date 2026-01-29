@@ -7,6 +7,7 @@ pub struct AudioDevice {
     pub id: String,
     pub name: String,
     pub output_channels: u16,
+    pub sample_rate: u32,
     pub is_default: bool,
 }
 
@@ -34,13 +35,15 @@ impl DeviceManager {
             for device in output_devices {
                 if let Ok(name) = device.name() {
                     let config = device.default_output_config().ok();
-                    let channels = config.map(|c| c.channels()).unwrap_or(2);
+                    let channels = config.as_ref().map(|c| c.channels()).unwrap_or(2);
+                    let sample_rate = config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
                     let is_default = default_name.as_ref() == Some(&name);
 
                     devices.push(AudioDevice {
                         id: name.clone(),
                         name: name.clone(),
                         output_channels: channels,
+                        sample_rate,
                         is_default,
                     });
                 }
@@ -76,6 +79,31 @@ impl DeviceManager {
         }
 
         host.default_output_device()
+    }
+
+    pub fn get_selected_sample_rate(&self) -> u32 {
+        if let Some(device) = self.get_output_device() {
+            if let Ok(config) = device.default_output_config() {
+                return config.sample_rate().0;
+            }
+        }
+        48000
+    }
+
+    pub fn get_device_sample_rate(&self, device_id: &str) -> Option<u32> {
+        let host = cpal::default_host();
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    if name == device_id {
+                        if let Ok(config) = device.default_output_config() {
+                            return Some(config.sample_rate().0);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

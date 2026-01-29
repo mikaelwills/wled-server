@@ -34,9 +34,17 @@ pub async fn select_device(
     let _ = config.save();
 
     if let Some(ref device_id) = payload.device_id {
-        let engine = state.audio_engine.lock().await;
-        engine.set_device(device_id.clone()).await;
-        info!("Audio device switched to: {}", device_id);
+        let sample_rate = state.device_manager
+            .get_device_sample_rate(device_id)
+            .unwrap_or(48000);
+        let device_id = device_id.clone();
+        let engine = state.audio_engine.clone();
+
+        tokio::spawn(async move {
+            let mut engine = engine.lock().await;
+            engine.set_device(device_id.clone(), sample_rate).await;
+            info!("Audio device switched to: {} ({}Hz)", device_id, sample_rate);
+        });
     }
 
     StatusCode::OK
@@ -68,16 +76,23 @@ pub async fn test_decode(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<Json<DecodeTestResponse>, (StatusCode, String)> {
+    let id = id
+        .strip_suffix(".mp3")
+        .or_else(|| id.strip_suffix(".wav"))
+        .unwrap_or(&id);
+
     let audio_path = state.storage_paths.audio.join(format!("{}.mp3", id));
 
-    let track = audio::decode_file(&audio_path)
+    let track = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(DecodeTestResponse {
-        sample_rate: track.sample_rate,
+        sample_rate: track.original_rate,
         channels: track.channels,
         duration_secs: track.duration_secs,
-        total_samples: track.samples.len(),
+        total_samples: track.original_samples.len(),
     }))
 }
 
@@ -99,14 +114,18 @@ pub async fn upload_audio(
     info!("Uploaded audio file: {}", filename);
 
     let audio_path = state.storage_paths.audio.join(&filename);
-    match audio::decode_file(&audio_path) {
-        Ok(track) => {
+    let decode_result = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path)).await;
+    match decode_result {
+        Ok(Ok(track)) => {
             let mut engine = state.audio_engine.lock().await;
-            engine.load_track(id.clone(), track);
+            engine.load_track(id.clone(), track).await;
             info!("Loaded track into audio engine: {}", id);
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("Failed to decode uploaded audio for engine: {}", e);
+        }
+        Err(e) => {
+            error!("Decode task failed: {}", e);
         }
     }
 
@@ -206,6 +225,12 @@ pub async fn load_track(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let id = id
+        .strip_suffix(".mp3")
+        .or_else(|| id.strip_suffix(".wav"))
+        .unwrap_or(&id)
+        .to_string();
+
     let mp3_path = state.storage_paths.audio.join(format!("{}.mp3", id));
     let wav_path = state.storage_paths.audio.join(format!("{}.wav", id));
 
@@ -217,11 +242,13 @@ pub async fn load_track(
         return Err((StatusCode::NOT_FOUND, format!("Audio file not found: {}", id)));
     };
 
-    let track = audio::decode_file(&audio_path)
+    let track = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let mut engine = state.audio_engine.lock().await;
-    engine.load_track(id.clone(), track);
+    engine.load_track(id.clone(), track).await;
 
     info!("Loaded track into audio engine: {}", id);
     Ok(StatusCode::OK)
@@ -309,12 +336,17 @@ pub async fn get_playback_status(
     let current_track = engine.get_current_track();
     let current_track_id = engine.get_current_track_id().map(|s| s.to_string());
 
+    let device_rate = engine.get_device_sample_rate();
     let (sample_rate, channels, duration_secs, position_secs) = match &current_track {
         Some(track) => {
-            let sr = track.sample_rate;
+            let playback_rate = if device_rate > 0 { device_rate } else { track.original_rate };
             let ch = track.channels;
-            let pos_secs = position as f64 / (sr as f64 * ch as f64);
-            (Some(sr), Some(ch), Some(track.duration_secs), pos_secs)
+            let pos_secs = if playback_rate > 0 && ch > 0 {
+                position as f64 / (playback_rate as f64 * ch as f64)
+            } else {
+                0.0
+            };
+            (Some(track.original_rate), Some(ch), Some(track.duration_secs), pos_secs)
         }
         None => (None, None, None, 0.0),
     };
