@@ -9,6 +9,8 @@
 	import { initAudio, cleanupAudio } from '$lib/audio-db';
 	import TimingMonitor from '$lib/TimingMonitor.svelte';
 	import { toggleTimingMonitor } from '$lib/timing-store';
+	import AudioHealthMonitor from '$lib/AudioHealthMonitor.svelte';
+	import { toggleAudioHealthMonitor } from '$lib/audio-health-store';
 	import { API_URL } from '$lib/api';
 
 	let { children } = $props();
@@ -17,6 +19,10 @@
 		if (e.key === 't' && e.ctrlKey) {
 			e.preventDefault();
 			toggleTimingMonitor();
+		}
+		if (e.key === 'a' && e.metaKey && e.shiftKey) {
+			e.preventDefault();
+			toggleAudioHealthMonitor();
 		}
 	}
 
@@ -101,6 +107,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <TimingMonitor />
+<AudioHealthMonitor />
 
 <div class="app">
 	<nav class="nav">
@@ -192,7 +199,7 @@
 	.nav a {
 		color: #666;
 		text-decoration: none;
-		padding: 1rem 1.5rem;
+		padding: 1rem 1rem;
 		font-weight: 500;
 		transition: all 0.2s;
 		border-bottom: 2px solid transparent;

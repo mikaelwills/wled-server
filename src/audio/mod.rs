@@ -6,7 +6,7 @@ mod loader;
 mod resampler;
 mod track;
 
-pub use audio_thread::AudioThread;
+pub use audio_thread::{AudioThread, PlaybackHealth};
 pub use device_manager::{AudioDevice, DeviceManager};
 pub use engine::{AudioEngine, PlaybackCommand, PlaybackState};
 pub use file::AudioFile;

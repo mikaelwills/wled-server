@@ -121,6 +121,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/engine/seek", post(audio::seek_playback))
         .route("/audio/engine/status", get(audio::get_playback_status))
         .route("/audio/engine/memory", get(audio::get_memory_stats))
+        .route("/audio/engine/health", get(audio::get_engine_health).delete(audio::reset_engine_health))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state)
 }

@@ -12,6 +12,49 @@ use super::{DeviceManager, LoadedTrack, PlaybackCommand};
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 
+pub struct PlaybackHealth {
+    pub callback_count: AtomicU64,
+    pub underrun_count: AtomicU64,
+    pub last_buffer_size: AtomicU32,
+    pub samples_delivered: AtomicU64,
+    pub silence_frames: AtomicU64,
+    pub last_callback_us: AtomicU64,
+    pub max_callback_interval_us: AtomicU64,
+    pub late_callbacks: AtomicU64,
+    start_time: std::time::Instant,
+}
+
+impl PlaybackHealth {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            callback_count: AtomicU64::new(0),
+            underrun_count: AtomicU64::new(0),
+            last_buffer_size: AtomicU32::new(0),
+            samples_delivered: AtomicU64::new(0),
+            silence_frames: AtomicU64::new(0),
+            last_callback_us: AtomicU64::new(0),
+            max_callback_interval_us: AtomicU64::new(0),
+            late_callbacks: AtomicU64::new(0),
+            start_time: std::time::Instant::now(),
+        })
+    }
+
+    pub fn now_us(&self) -> u64 {
+        self.start_time.elapsed().as_micros() as u64
+    }
+
+    pub fn reset_all(&self) {
+        self.callback_count.store(0, Ordering::Relaxed);
+        self.underrun_count.store(0, Ordering::Relaxed);
+        self.last_buffer_size.store(0, Ordering::Relaxed);
+        self.samples_delivered.store(0, Ordering::Relaxed);
+        self.silence_frames.store(0, Ordering::Relaxed);
+        self.last_callback_us.store(0, Ordering::Relaxed);
+        self.max_callback_interval_us.store(0, Ordering::Relaxed);
+        self.late_callbacks.store(0, Ordering::Relaxed);
+    }
+}
+
 pub struct InternalPlaybackState {
     pub playing: AtomicBool,
     pub sample_index: AtomicUsize,
@@ -113,6 +156,7 @@ fn build_stream(
     device: &cpal::Device,
     state: Arc<InternalPlaybackState>,
     position: Arc<AtomicU64>,
+    health: Arc<PlaybackHealth>,
 ) -> Result<Stream, String> {
     let config = device
         .default_output_config()
@@ -129,6 +173,29 @@ fn build_stream(
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let now_us = health.now_us();
+                let last_us = health.last_callback_us.swap(now_us, Ordering::Relaxed);
+
+                if last_us > 0 {
+                    let interval = now_us.saturating_sub(last_us);
+                    let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
+                    while interval > max {
+                        match health.max_callback_interval_us.compare_exchange_weak(
+                            max, interval, Ordering::Relaxed, Ordering::Relaxed
+                        ) {
+                            Ok(_) => break,
+                            Err(current) => max = current,
+                        }
+                    }
+                    let expected_interval_us = (data.len() as u64 * 1_000_000) / (sample_rate as u64 * output_channels as u64);
+                    if interval > expected_interval_us * 2 {
+                        health.late_callbacks.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                health.callback_count.fetch_add(1, Ordering::Relaxed);
+                health.last_buffer_size.store(data.len() as u32, Ordering::Relaxed);
+
                 if !state.playing.load(Ordering::Relaxed) {
                     data.fill(0.0);
                     return;
@@ -138,6 +205,7 @@ fn build_stream(
                 let samples = match guard.as_ref() {
                     Some(s) => s,
                     None => {
+                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
                         data.fill(0.0);
                         return;
                     }
@@ -147,15 +215,19 @@ fn build_stream(
                 let track_channels = state.track_channels.load(Ordering::Relaxed);
 
                 if track_channels == 0 || sample_count == 0 {
+                    health.underrun_count.fetch_add(1, Ordering::Relaxed);
                     data.fill(0.0);
                     return;
                 }
 
                 let mut idx = state.sample_index.load(Ordering::Relaxed);
+                let mut samples_written = 0u64;
+                let mut silence_written = 0u64;
 
                 for frame in data.chunks_mut(output_channels) {
                     if idx >= sample_count {
                         frame.fill(0.0);
+                        silence_written += 1;
                         continue;
                     }
 
@@ -165,11 +237,16 @@ fn build_stream(
                         *out_sample = samples.get(src_idx).copied().unwrap_or(0.0);
                     }
 
+                    samples_written += output_channels as u64;
                     idx += track_channels;
                 }
 
                 state.sample_index.store(idx, Ordering::Relaxed);
                 position.store(idx as u64, Ordering::Relaxed);
+                health.samples_delivered.fetch_add(samples_written, Ordering::Relaxed);
+                if silence_written > 0 {
+                    health.silence_frames.fetch_add(silence_written, Ordering::Relaxed);
+                }
             },
             |err| {
                 eprintln!("Audio stream error: {}", err);
@@ -189,6 +266,7 @@ impl AudioThread {
     pub fn new(
         command_rx: mpsc::Receiver<PlaybackCommand>,
         position: Arc<AtomicU64>,
+        health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
     ) -> Result<Self, String> {
         let handle = thread::Builder::new()
@@ -199,7 +277,7 @@ impl AudioThread {
                     .build()
                     .expect("Failed to create tokio runtime");
 
-                rt.block_on(Self::run_audio_loop(command_rx, position, device_manager));
+                rt.block_on(Self::run_audio_loop(command_rx, position, health, device_manager));
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
@@ -211,6 +289,7 @@ impl AudioThread {
     async fn run_audio_loop(
         mut command_rx: mpsc::Receiver<PlaybackCommand>,
         position: Arc<AtomicU64>,
+        health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
     ) {
         let state = InternalPlaybackState::new();
@@ -262,7 +341,7 @@ impl AudioThread {
             let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
             eprintln!("Audio output device: {}", device_name);
 
-            let stream = match build_stream(&device, Arc::clone(&state), Arc::clone(&position)) {
+            let stream = match build_stream(&device, Arc::clone(&state), Arc::clone(&position), Arc::clone(&health)) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to build audio stream: {}", e);

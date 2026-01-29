@@ -202,12 +202,17 @@ async fn main() {
     )));
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
     let device_manager = Arc::new(audio::DeviceManager::new());
+    if let Some(ref preferred_device) = loaded_config.audio.preferred_device_id {
+        device_manager.select_device(Some(preferred_device.clone()));
+        info!("Restored preferred audio device: {}", preferred_device);
+    }
     let mut audio_engine = audio::AudioEngine::new();
     audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
 
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
         let position = audio_engine.get_position_arc();
-        match audio::AudioThread::new(command_rx, position, device_manager.clone()) {
+        let health = audio_engine.get_health_arc();
+        match audio::AudioThread::new(command_rx, position, health, device_manager.clone()) {
             Ok(thread) => {
                 info!("Audio playback thread started");
                 Some(Arc::new(thread))

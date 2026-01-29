@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::LoadedTrack;
+use super::{LoadedTrack, PlaybackHealth};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlaybackState {
@@ -26,6 +26,7 @@ pub struct AudioEngine {
     tracks: HashMap<String, Arc<LoadedTrack>>,
     current_track_id: Option<String>,
     position: Arc<AtomicU64>,
+    health: Arc<PlaybackHealth>,
     command_tx: mpsc::Sender<PlaybackCommand>,
     command_rx: Option<mpsc::Receiver<PlaybackCommand>>,
     device_sample_rate: u32,
@@ -39,6 +40,7 @@ impl AudioEngine {
             tracks: HashMap::new(),
             current_track_id: None,
             position: Arc::new(AtomicU64::new(0)),
+            health: PlaybackHealth::new(),
             command_tx: tx,
             command_rx: Some(rx),
             device_sample_rate: 0,
@@ -51,6 +53,26 @@ impl AudioEngine {
 
     pub fn get_position_arc(&self) -> Arc<AtomicU64> {
         self.position.clone()
+    }
+
+    pub fn get_health_arc(&self) -> Arc<PlaybackHealth> {
+        self.health.clone()
+    }
+
+    pub fn get_health_stats(&self) -> HealthStats {
+        HealthStats {
+            callback_count: self.health.callback_count.load(Ordering::Relaxed),
+            underrun_count: self.health.underrun_count.load(Ordering::Relaxed),
+            buffer_size: self.health.last_buffer_size.load(Ordering::Relaxed),
+            samples_delivered: self.health.samples_delivered.load(Ordering::Relaxed),
+            silence_frames: self.health.silence_frames.load(Ordering::Relaxed),
+            max_callback_interval_us: self.health.max_callback_interval_us.load(Ordering::Relaxed),
+            late_callbacks: self.health.late_callbacks.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset_health_stats(&self) {
+        self.health.reset_all();
     }
 
     pub fn set_device_sample_rate(&mut self, rate: u32) {
@@ -234,4 +256,15 @@ pub struct TrackMemoryInfo {
     pub original_rate: u32,
     pub cached_rates: Vec<u32>,
     pub total_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct HealthStats {
+    pub callback_count: u64,
+    pub underrun_count: u64,
+    pub buffer_size: u32,
+    pub samples_delivered: u64,
+    pub silence_frames: u64,
+    pub max_callback_interval_us: u64,
+    pub late_callbacks: u64,
 }

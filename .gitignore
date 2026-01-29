@@ -48,6 +48,7 @@ test_udp.py
 /audio/
 /programs/
 /presets/
+/history/
 presets-backup/
 presets_backup/
 plans/
