@@ -1,4 +1,4 @@
-use rubato::{FftFixedIn, Resampler};
+use rubato::{SincFixedIn, SincInterpolationType, SincInterpolationParameters, WindowFunction, Resampler};
 
 pub fn resample(
     samples: &[f32],
@@ -20,12 +20,20 @@ pub fn resample(
         return Ok(Vec::new());
     }
 
+    let params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Cubic,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+
     let chunk_size = 1024;
-    let mut resampler = FftFixedIn::<f32>::new(
-        from_rate as usize,
-        to_rate as usize,
+    let mut resampler = SincFixedIn::<f32>::new(
+        to_rate as f64 / from_rate as f64,
+        2.0,
+        params,
         chunk_size,
-        2,
         channels,
     )
     .map_err(|e| format!("Failed to create resampler: {}", e))?;

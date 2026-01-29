@@ -8,4 +8,6 @@ pub enum SseEvent {
     StateUpdate { board_id: String, state: BoardState },
     #[serde(rename = "connection_status")]
     ConnectionStatus { board_id: String, connected: bool },
+    #[serde(rename = "resampling_progress")]
+    ResamplingProgress { current: u32, total: u32, active: bool },
 }

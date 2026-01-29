@@ -399,6 +399,27 @@ pub struct HealthResponse {
     pub expected_interval_ms: f64,
 }
 
+#[derive(Serialize)]
+pub struct ResamplingStatusResponse {
+    pub active: bool,
+    pub current: u32,
+    pub total: u32,
+}
+
+pub async fn get_resampling_status(
+    State(state): State<SharedState>,
+) -> Json<ResamplingStatusResponse> {
+    let engine = state.audio_engine.lock().await;
+    let progress = engine.get_resampling_progress();
+    let (current, total) = progress.get();
+
+    Json(ResamplingStatusResponse {
+        active: progress.is_active(),
+        current,
+        total,
+    })
+}
+
 pub async fn reset_engine_health(
     State(state): State<SharedState>,
 ) -> StatusCode {

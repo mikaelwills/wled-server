@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
-use super::{LoadedTrack, PlaybackHealth};
+use super::{LoadedTrack, PlaybackHealth, ResamplingProgress};
+use crate::sse::SseEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlaybackState {
@@ -27,9 +28,11 @@ pub struct AudioEngine {
     current_track_id: Option<String>,
     position: Arc<AtomicU64>,
     health: Arc<PlaybackHealth>,
+    resampling_progress: Arc<ResamplingProgress>,
     command_tx: mpsc::Sender<PlaybackCommand>,
     command_rx: Option<mpsc::Receiver<PlaybackCommand>>,
     device_sample_rate: u32,
+    broadcast_tx: Option<Arc<broadcast::Sender<SseEvent>>>,
 }
 
 impl AudioEngine {
@@ -41,10 +44,26 @@ impl AudioEngine {
             current_track_id: None,
             position: Arc::new(AtomicU64::new(0)),
             health: PlaybackHealth::new(),
+            resampling_progress: ResamplingProgress::new(),
             command_tx: tx,
             command_rx: Some(rx),
             device_sample_rate: 0,
+            broadcast_tx: None,
         }
+    }
+
+    pub fn set_broadcast_tx(&mut self, tx: Arc<broadcast::Sender<SseEvent>>) {
+        self.broadcast_tx = Some(tx);
+    }
+
+    fn broadcast_resampling_progress(&self, current: u32, total: u32, active: bool) {
+        if let Some(ref tx) = self.broadcast_tx {
+            let _ = tx.send(SseEvent::ResamplingProgress { current, total, active });
+        }
+    }
+
+    pub fn get_resampling_progress(&self) -> Arc<ResamplingProgress> {
+        self.resampling_progress.clone()
     }
 
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<PlaybackCommand>> {
@@ -119,6 +138,14 @@ impl AudioEngine {
             .map(|(id, track)| (id.clone(), Arc::clone(track)))
             .collect();
 
+        if tracks_to_resample.is_empty() {
+            return Ok(());
+        }
+
+        let total = tracks_to_resample.len() as u32;
+        self.resampling_progress.start(total);
+        self.broadcast_resampling_progress(0, total, true);
+
         let mut errors = Vec::new();
         for (id, track) in tracks_to_resample {
             let result = tokio::task::spawn_blocking(move || {
@@ -127,10 +154,17 @@ impl AudioEngine {
             .await
             .map_err(|e| format!("Task failed: {}", e))?;
 
+            self.resampling_progress.increment();
+            let (current, _) = self.resampling_progress.get();
+            self.broadcast_resampling_progress(current, total, true);
+
             if let Err(e) = result {
                 errors.push(format!("{}: {}", id, e));
             }
         }
+
+        self.resampling_progress.finish();
+        self.broadcast_resampling_progress(total, total, false);
 
         if errors.is_empty() {
             Ok(())

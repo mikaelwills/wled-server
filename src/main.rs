@@ -107,6 +107,7 @@ async fn main() {
     }
 
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
+    let broadcast_tx = Arc::new(broadcast_tx);
 
     let loaded_config = Config::load().unwrap_or_default();
 
@@ -208,6 +209,7 @@ async fn main() {
     }
     let mut audio_engine = audio::AudioEngine::new();
     audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
+    audio_engine.set_broadcast_tx(broadcast_tx.clone());
 
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
         let position = audio_engine.get_position_arc();
@@ -312,7 +314,7 @@ async fn main() {
 
     let state: SharedState = Arc::new(AppState {
         boards: Arc::new(RwLock::new(HashMap::new())),
-        broadcast_tx: Arc::new(broadcast_tx),
+        broadcast_tx: broadcast_tx.clone(),
         storage_paths: Arc::new(storage_paths),
         group_e131_transports: Arc::new(RwLock::new(group_e131_transports)),
         config: config_arc,

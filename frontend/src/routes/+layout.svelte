@@ -11,6 +11,7 @@
 	import { toggleTimingMonitor } from '$lib/timing-store';
 	import AudioHealthMonitor from '$lib/AudioHealthMonitor.svelte';
 	import { toggleAudioHealthMonitor } from '$lib/audio-health-store';
+	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 	import { API_URL } from '$lib/api';
 
 	let { children } = $props();
@@ -37,6 +38,10 @@
 	}
 	let memoryStats = $state<MemoryStats | null>(null);
 	let memoryPollInterval: ReturnType<typeof setInterval> | null = null;
+
+	// Resampling progress (via SSE)
+	let resamplingStatus = $state<ResamplingProgress | null>(null);
+	let unsubscribeResampling: (() => void) | null = null;
 
 	async function fetchMemoryStats() {
 		try {
@@ -81,9 +86,16 @@
 			// Must run after programs are loaded
 			await initAudio();
 
-			// Start memory stats polling
+			// Subscribe to resampling progress via SSE
+			unsubscribeResampling = onResamplingProgress((progress) => {
+				resamplingStatus = progress.active ? progress : null;
+			});
+
+			// Start memory stats polling (only memory, resampling comes via SSE)
 			await fetchMemoryStats();
-			memoryPollInterval = setInterval(fetchMemoryStats, 5000);
+			memoryPollInterval = setInterval(() => {
+				fetchMemoryStats();
+			}, 1000);
 		}
 	});
 
@@ -95,6 +107,9 @@
 			cleanupAudio();
 			if (memoryPollInterval) {
 				clearInterval(memoryPollInterval);
+			}
+			if (unsubscribeResampling) {
+				unsubscribeResampling();
 			}
 		}
 	});
@@ -126,12 +141,21 @@
 			<a href="/settings" class:active={$page.url.pathname === '/settings'}>Settings</a>
 		</div>
 
-		{#if memoryStats}
-			<div class="memory-stats">
-				<span class="memory-value">{memoryStats.memory_mb.toFixed(1)} MB</span>
-				<span class="memory-label">{memoryStats.track_count} tracks</span>
-			</div>
-		{/if}
+		<div class="nav-status">
+			{#if resamplingStatus?.active}
+				<div class="resampling-status">
+					<span class="resampling-label">Resampling</span>
+					<span class="resampling-value">{resamplingStatus.current}/{resamplingStatus.total}</span>
+				</div>
+			{/if}
+
+			{#if memoryStats}
+				<div class="memory-stats">
+					<span class="memory-value">{memoryStats.memory_mb.toFixed(1)} MB</span>
+					<span class="memory-label">{memoryStats.track_count} tracks</span>
+				</div>
+			{/if}
+		</div>
 	</nav>
 
 	<main>
@@ -219,13 +243,44 @@
 		flex: 1;
 	}
 
+	.nav-status {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-left: auto;
+	}
+
+	.resampling-status {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 0.5rem 1rem;
+		gap: 0.125rem;
+		background: rgba(251, 191, 36, 0.1);
+		border-radius: 4px;
+	}
+
+	.resampling-label {
+		font-size: 0.65rem;
+		color: #fbbf24;
+		text-transform: uppercase;
+		font-weight: 600;
+	}
+
+	.resampling-value {
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: #fbbf24;
+		font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+	}
+
 	.memory-stats {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-end;
 		justify-content: center;
 		padding: 0.5rem 1rem;
-		margin-left: auto;
 		gap: 0.125rem;
 	}
 
