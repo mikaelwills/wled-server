@@ -8,7 +8,7 @@
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/playback-db';
 	import { loadAudioForProgram, getCachedPeaks } from '$lib/audio-db';
-	import { audioBlobUrls, audioLoading } from '$lib/store';
+	import { audioBlobUrls, audioLoading, loopyProSettings } from '$lib/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
@@ -805,9 +805,12 @@ function playFullProgram() {
 		console.log('▶️ PLAY pressed - starting from position:', currentTime);
 
 		// Play from current position (or from start if at beginning)
+		const audioSource = get(loopyProSettings).audio_source;
 		if (wavesurfer) {
 			wavesurfer.setTime(currentTime);
-			wavesurfer.play();
+			if (audioSource !== 'audio_engine') {
+				wavesurfer.play();
+			}
 		}
 
 		playProgramService(currentProgram, currentTime);

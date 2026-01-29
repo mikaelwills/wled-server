@@ -18,6 +18,7 @@ pub enum PlaybackCommand {
     Pause,
     Resume,
     Seek(u64),
+    SetDevice(String),
 }
 
 pub struct AudioEngine {
@@ -60,6 +61,19 @@ impl AudioEngine {
 
     pub fn loaded_track_ids(&self) -> Vec<String> {
         self.tracks.keys().cloned().collect()
+    }
+
+    pub fn unload_track(&mut self, id: &str) -> bool {
+        self.tracks.remove(id).is_some()
+    }
+
+    pub fn memory_usage(&self) -> (usize, usize) {
+        let total_bytes: usize = self
+            .tracks
+            .values()
+            .map(|t| t.samples.len() * std::mem::size_of::<f32>())
+            .sum();
+        (self.tracks.len(), total_bytes)
     }
 
     pub async fn play(&mut self, track_id: &str, start_sample: Option<u64>) -> bool {
@@ -105,6 +119,10 @@ impl AudioEngine {
 
     pub async fn seek(&self, position: u64) {
         let _ = self.command_tx.send(PlaybackCommand::Seek(position)).await;
+    }
+
+    pub async fn set_device(&self, device_id: String) {
+        let _ = self.command_tx.send(PlaybackCommand::SetDevice(device_id)).await;
     }
 
     pub fn get_state(&self) -> PlaybackState {

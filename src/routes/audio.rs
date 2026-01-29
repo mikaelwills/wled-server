@@ -30,11 +30,13 @@ pub async fn select_device(
         .select_device(payload.device_id.clone());
 
     let mut config = state.config.lock().await;
-    config.set_preferred_audio_device(payload.device_id);
+    config.set_preferred_audio_device(payload.device_id.clone());
     let _ = config.save();
 
-    if let Some(ref _audio_thread) = state.audio_thread {
-        info!("Audio device selection saved. Restart required for device change to take effect.");
+    if let Some(ref device_id) = payload.device_id {
+        let engine = state.audio_engine.lock().await;
+        engine.set_device(device_id.clone()).await;
+        info!("Audio device switched to: {}", device_id);
     }
 
     StatusCode::OK
@@ -283,7 +285,12 @@ pub async fn resume_playback(
 #[derive(Serialize)]
 pub struct PlaybackStatusResponse {
     pub position: u64,
+    pub position_secs: f64,
     pub state: String,
+    pub current_track_id: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u16>,
+    pub duration_secs: Option<f64>,
     pub loaded_tracks: Vec<String>,
 }
 
@@ -298,9 +305,48 @@ pub async fn get_playback_status(
         audio::PlaybackState::Paused => "paused",
     };
 
+    let position = engine.get_position();
+    let current_track = engine.get_current_track();
+    let current_track_id = engine.get_current_track_id().map(|s| s.to_string());
+
+    let (sample_rate, channels, duration_secs, position_secs) = match &current_track {
+        Some(track) => {
+            let sr = track.sample_rate;
+            let ch = track.channels;
+            let pos_secs = position as f64 / (sr as f64 * ch as f64);
+            (Some(sr), Some(ch), Some(track.duration_secs), pos_secs)
+        }
+        None => (None, None, None, 0.0),
+    };
+
     Json(PlaybackStatusResponse {
-        position: engine.get_position(),
+        position,
+        position_secs,
         state: state_str.to_string(),
+        current_track_id,
+        sample_rate,
+        channels,
+        duration_secs,
         loaded_tracks: engine.loaded_track_ids(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct MemoryStatsResponse {
+    pub track_count: usize,
+    pub memory_bytes: usize,
+    pub memory_mb: f64,
+}
+
+pub async fn get_memory_stats(
+    State(state): State<SharedState>,
+) -> Json<MemoryStatsResponse> {
+    let engine = state.audio_engine.lock().await;
+    let (track_count, memory_bytes) = engine.memory_usage();
+
+    Json(MemoryStatsResponse {
+        track_count,
+        memory_bytes,
+        memory_mb: memory_bytes as f64 / (1024.0 * 1024.0),
     })
 }

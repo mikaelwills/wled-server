@@ -160,10 +160,10 @@
 								handleEnded();
 								return;
 							}
-							if (program.audioDuration && status.position > 0) {
-								const positionSecs = status.position / 44100 / 2;
-								playbackProgress[program.id] = Math.min((positionSecs / program.audioDuration) * 100, 100);
-								if (positionSecs >= program.audioDuration) {
+							const duration = status.duration_secs || program.audioDuration;
+							if (duration && status.position_secs > 0) {
+								playbackProgress[program.id] = Math.min((status.position_secs / duration) * 100, 100);
+								if (status.position_secs >= duration) {
 									handleEnded();
 									return;
 								}
