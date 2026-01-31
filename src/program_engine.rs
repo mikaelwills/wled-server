@@ -387,9 +387,29 @@ impl ProgramEngine {
                         AudioSource::AudioEngine => {
                             if let Some(ref engine) = audio_engine {
                                 let track_id = &program.id;
+                                let guide_id = program.guide_audio_file.as_ref().and_then(|f| {
+                                    std::path::Path::new(f)
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .map(|s| s.to_string())
+                                });
                                 let mut eng = engine.lock().await;
-                                if eng.play(track_id, None).await {
-                                    println!("🔊 Playing audio via local engine: {}", track_id);
+                                let start_sample = if start_time > 0.0 {
+                                    eng.get_track(track_id).map(|track| {
+                                        let device_rate = eng.get_device_sample_rate();
+                                        let playback_rate = if device_rate > 0 { device_rate } else { track.original_rate };
+                                        let channels = track.channels as u32;
+                                        (start_time * playback_rate as f64 * channels as f64) as u64
+                                    })
+                                } else {
+                                    None
+                                };
+                                if eng.play_with_guide(track_id, guide_id.as_deref(), start_sample).await {
+                                    if guide_id.is_some() {
+                                        println!("🔊 Playing audio + guide via local engine: {} @ {:?} samples", track_id, start_sample);
+                                    } else {
+                                        println!("🔊 Playing audio via local engine: {} @ {:?} samples", track_id, start_sample);
+                                    }
                                 } else {
                                     println!("⚠️ Track not loaded in audio engine: {}", track_id);
                                 }

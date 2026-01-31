@@ -90,7 +90,7 @@ pub async fn delete_program(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or(guide_file);
-            if engine.unload_track(track_id) {
+            if engine.unload_guide_track(track_id) {
                 info!("Unloaded guide audio track from engine: {}", track_id);
             }
         }

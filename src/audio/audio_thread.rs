@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use tokio::sync::mpsc;
 
-use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingSnapshot, TrackType};
+use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingConfig, SlotId, SLOT_COUNT};
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 
@@ -55,15 +55,47 @@ impl PlaybackHealth {
     }
 }
 
+pub struct TrackSlot {
+    pub samples: ArcSwapOption<Vec<f32>>,
+    pub channels: AtomicUsize,
+    pub sample_count: AtomicUsize,
+}
+
+impl TrackSlot {
+    pub fn new() -> Self {
+        Self {
+            samples: ArcSwapOption::new(None),
+            channels: AtomicUsize::new(2),
+            sample_count: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn load(&self, samples: Arc<Vec<f32>>, channels: usize) {
+        let sample_len = samples.len();
+        self.channels.store(channels, Ordering::Relaxed);
+        self.samples.store(Some(samples));
+        std::sync::atomic::fence(Ordering::Release);
+        self.sample_count.store(sample_len, Ordering::Release);
+    }
+
+    pub fn clear(&self) {
+        self.sample_count.store(0, Ordering::Release);
+        self.samples.store(None);
+    }
+}
+
+impl Default for TrackSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct InternalPlaybackState {
     pub playing: AtomicBool,
     pub sample_index: AtomicUsize,
-    pub track: ArcSwapOption<LoadedTrack>,
-    pub active_samples: ArcSwapOption<Vec<f32>>,
-    pub track_channels: AtomicUsize,
-    pub track_sample_count: AtomicUsize,
     pub device_sample_rate: AtomicU32,
-    pub routing: ArcSwap<RoutingSnapshot>,
+    pub routing: ArcSwap<RoutingConfig>,
+    pub slots: [TrackSlot; SLOT_COUNT],
 }
 
 impl InternalPlaybackState {
@@ -71,54 +103,40 @@ impl InternalPlaybackState {
         Arc::new(Self {
             playing: AtomicBool::new(false),
             sample_index: AtomicUsize::new(0),
-            track: ArcSwapOption::new(None),
-            active_samples: ArcSwapOption::new(None),
-            track_channels: AtomicUsize::new(2),
-            track_sample_count: AtomicUsize::new(0),
             device_sample_rate: AtomicU32::new(0),
-            routing: ArcSwap::from_pointee(RoutingSnapshot::default()),
+            routing: ArcSwap::from_pointee(RoutingConfig::default()),
+            slots: Default::default(),
         })
     }
 
-    pub fn update_routing(&self, routing: RoutingSnapshot) {
+    pub fn update_routing(&self, routing: RoutingConfig) {
         self.routing.store(Arc::new(routing));
     }
 
-    pub fn set_mute(&self, track: TrackType, muted: bool) {
+    pub fn set_mute(&self, slot: SlotId, muted: bool) {
         let mut current = (**self.routing.load()).clone();
-        match track {
-            TrackType::Backing => current.backing_muted = muted,
-            TrackType::Guide => current.guide_muted = muted,
-            TrackType::Click => current.click_muted = muted,
-        }
+        current.set_mute(slot, muted);
         self.routing.store(Arc::new(current));
     }
 
-    pub fn load_track(&self, track: Arc<LoadedTrack>) {
+    pub fn load_slot(&self, slot: SlotId, track: Arc<LoadedTrack>) {
         let device_rate = self.device_sample_rate.load(Ordering::Acquire);
         let samples = track.get_samples_for_rate(device_rate);
-        let sample_len = samples.len();
-
-        self.track_channels
-            .store(track.channels as usize, Ordering::Relaxed);
-        self.track.store(Some(track));
-        self.active_samples.store(Some(samples));
-        std::sync::atomic::fence(Ordering::Release);
-        self.track_sample_count.store(sample_len, Ordering::Release);
+        self.slots[slot as usize].load(samples, track.channels as usize);
     }
 
-    pub fn clear_track(&self) {
-        self.track_sample_count.store(0, Ordering::Release);
-        self.active_samples.store(None);
-        self.track.store(None);
+    pub fn clear_slot(&self, slot: SlotId) {
+        self.slots[slot as usize].clear();
+    }
+
+    pub fn clear_all_slots(&self) {
+        for slot in &self.slots {
+            slot.clear();
+        }
     }
 
     pub fn set_device_sample_rate(&self, rate: u32) {
         self.device_sample_rate.store(rate, Ordering::Release);
-    }
-
-    pub fn get_device_sample_rate(&self) -> u32 {
-        self.device_sample_rate.load(Ordering::Acquire)
     }
 }
 
@@ -235,20 +253,18 @@ fn build_stream(
                     return;
                 }
 
-                let guard = state.active_samples.load();
-                let samples = match guard.as_ref() {
-                    Some(s) => s,
-                    None => {
-                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
-                        data.fill(0.0);
-                        return;
-                    }
-                };
+                let backing_slot = &state.slots[SlotId::Backing as usize];
+                let backing_guard = backing_slot.samples.load();
+                if backing_guard.is_none() {
+                    health.underrun_count.fetch_add(1, Ordering::Relaxed);
+                    data.fill(0.0);
+                    return;
+                }
 
-                let sample_count = state.track_sample_count.load(Ordering::Acquire);
-                let track_channels = state.track_channels.load(Ordering::Relaxed);
+                let backing_sample_count = backing_slot.sample_count.load(Ordering::Acquire);
+                let backing_channels = backing_slot.channels.load(Ordering::Relaxed);
 
-                if track_channels == 0 || sample_count == 0 {
+                if backing_channels == 0 || backing_sample_count == 0 {
                     health.underrun_count.fetch_add(1, Ordering::Relaxed);
                     data.fill(0.0);
                     return;
@@ -260,8 +276,18 @@ fn build_stream(
 
                 let routing = state.routing.load();
 
+                let slot_guards: [_; SLOT_COUNT] = std::array::from_fn(|i| {
+                    state.slots[i].samples.load()
+                });
+                let slot_sample_counts: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                    state.slots[i].sample_count.load(Ordering::Acquire)
+                });
+                let slot_channels: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                    state.slots[i].channels.load(Ordering::Relaxed)
+                });
+
                 for frame in data.chunks_mut(output_channels) {
-                    if idx >= sample_count {
+                    if idx >= backing_sample_count {
                         frame.fill(0.0);
                         silence_written += 1;
                         continue;
@@ -269,25 +295,42 @@ fn build_stream(
 
                     frame.fill(0.0);
 
-                    let left = samples.get(idx).copied().unwrap_or(0.0);
-                    let right = samples.get(idx + 1).copied().unwrap_or(0.0);
+                    for (slot_idx, slot_routing) in routing.slots.iter().enumerate() {
+                        if slot_routing.muted {
+                            continue;
+                        }
 
-                    if !routing.backing_muted {
-                        if routing.is_stereo_mode() {
-                            frame[0] = left;
-                            frame[1] = right;
-                        } else {
-                            if routing.backing_left < output_channels {
-                                frame[routing.backing_left] = left;
-                            }
-                            if routing.backing_right < output_channels {
-                                frame[routing.backing_right] = right;
+                        let sample_count = slot_sample_counts[slot_idx];
+                        let channels = slot_channels[slot_idx];
+                        if channels == 0 || idx >= sample_count {
+                            continue;
+                        }
+
+                        if let Some(samples) = slot_guards[slot_idx].as_ref() {
+                            let left = samples.get(idx).copied().unwrap_or(0.0);
+                            let right = samples.get(idx + 1).copied().unwrap_or(0.0);
+
+                            if routing.is_stereo_mode() {
+                                frame[0] += left;
+                                frame[1] += right;
+                            } else if slot_routing.is_stereo {
+                                if slot_routing.left_channel < output_channels {
+                                    frame[slot_routing.left_channel] += left;
+                                }
+                                if slot_routing.right_channel < output_channels {
+                                    frame[slot_routing.right_channel] += right;
+                                }
+                            } else {
+                                let mono = (left + right) * 0.5;
+                                if slot_routing.left_channel < output_channels {
+                                    frame[slot_routing.left_channel] += mono;
+                                }
                             }
                         }
                     }
 
                     samples_written += output_channels as u64;
-                    idx += track_channels;
+                    idx += backing_channels;
                 }
 
                 state.sample_index.store(idx, Ordering::Relaxed);
@@ -423,7 +466,7 @@ impl AudioThread {
                         );
                     }
 
-                    state.clear_track();
+                    state.clear_all_slots();
                     state.playing.store(false, Ordering::SeqCst);
 
                     thread::sleep(Duration::from_millis(STREAM_SWITCH_DELAY_MS));
@@ -443,7 +486,7 @@ impl AudioThread {
                         );
                     }
 
-                    state.clear_track();
+                    state.clear_all_slots();
                     state.playing.store(false, Ordering::SeqCst);
 
                     thread::sleep(Duration::from_millis(STREAM_SWITCH_DELAY_MS));
@@ -465,12 +508,13 @@ impl AudioThread {
                 PlaybackCommand::Play(track) => {
                     state.playing.store(false, Ordering::Release);
                     state.sample_index.store(0, Ordering::Release);
-                    state.load_track(track);
+                    state.load_slot(SlotId::Backing, track);
                     state.playing.store(true, Ordering::Release);
                 }
                 PlaybackCommand::Stop => {
                     state.playing.store(false, Ordering::Release);
                     state.sample_index.store(0, Ordering::Release);
+                    state.clear_all_slots();
                 }
                 PlaybackCommand::Pause => {
                     state.playing.store(false, Ordering::Release);
@@ -488,8 +532,14 @@ impl AudioThread {
                 PlaybackCommand::UpdateRouting(routing) => {
                     state.update_routing(routing);
                 }
-                PlaybackCommand::SetMute { track, muted } => {
-                    state.set_mute(track, muted);
+                PlaybackCommand::SetMute { slot, muted } => {
+                    state.set_mute(slot, muted);
+                }
+                PlaybackCommand::LoadSlot { slot, track } => {
+                    state.load_slot(slot, track);
+                }
+                PlaybackCommand::ClearSlot(slot) => {
+                    state.clear_slot(slot);
                 }
             }
         }

@@ -73,10 +73,10 @@ pub async fn update_routing(
             .get_device_output_channels(&device_id)
             .unwrap_or(DEFAULT_CHANNELS) as usize;
 
-        let snapshot = audio::RoutingSnapshot::from_config(&routing, output_channels);
+        let routing_config = audio::RoutingConfig::from_device_routing(&routing, output_channels);
 
         let engine = state.audio_engine.lock().await;
-        engine.update_routing(snapshot).await;
+        engine.update_routing(routing_config).await;
     }
 
     info!("Updated routing for device: {}", device_id);
@@ -93,15 +93,16 @@ pub async fn set_mute(
     State(state): State<SharedState>,
     Json(payload): Json<SetMuteRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let track_type = match payload.track.as_str() {
-        "backing" => audio::TrackType::Backing,
-        "guide" => audio::TrackType::Guide,
-        "click" => audio::TrackType::Click,
+    let slot = match payload.track.as_str() {
+        "backing" => audio::SlotId::Backing,
+        "guide" => audio::SlotId::Guide,
+        "click" => audio::SlotId::Click,
+        "aux" => audio::SlotId::Aux,
         _ => return Err((StatusCode::BAD_REQUEST, format!("Invalid track: {}", payload.track))),
     };
 
     let engine = state.audio_engine.lock().await;
-    engine.set_mute(track_type, payload.muted).await;
+    engine.set_mute(slot, payload.muted).await;
 
     info!("Set {} muted: {}", payload.track, payload.muted);
     Ok(StatusCode::OK)

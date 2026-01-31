@@ -92,22 +92,23 @@ impl LoadedTrack {
         F: Fn(u32, u32) -> bool,
     {
         if target_rate == self.original_rate {
+            eprintln!("[Resampler] Using original {}Hz samples", target_rate);
             return Ok(());
         }
 
         {
             let cache = self.resampled_cache.read();
             if cache.contains_key(&target_rate) {
+                eprintln!("[Resampler] CACHE HIT for {}Hz", target_rate);
                 return Ok(());
             }
         }
 
         eprintln!(
-            "[Resampler] Resampling from {}Hz to {}Hz ({} samples, {} channels, quality: {:?})",
+            "[Resampler] CACHE MISS {}Hz -> {}Hz ({} samples, {:?})",
             self.original_rate,
             target_rate,
             self.original_samples.len(),
-            self.channels,
             quality
         );
 

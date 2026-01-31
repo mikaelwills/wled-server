@@ -374,7 +374,8 @@ async fn main() {
             Ok(e) => e.flatten().collect(),
             Err(_) => return,
         };
-        let mut loaded_count = 0;
+        let mut backing_count = 0;
+        let mut guide_count = 0;
         for entry in entries {
             let path = entry.path();
             let is_audio = path.extension().map_or(false, |ext| {
@@ -383,6 +384,7 @@ async fn main() {
             if is_audio {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     let stem = stem.to_string();
+                    let is_guide = stem.contains("_guide");
                     let path_clone = path.clone();
                     let decode_result = tokio::task::spawn_blocking(move || {
                         audio::decode_file(&path_clone)
@@ -391,8 +393,13 @@ async fn main() {
                     match decode_result {
                         Ok(Ok(track)) => {
                             let mut engine = audio_engine_bg.lock().await;
-                            engine.load_track(stem, track).await;
-                            loaded_count += 1;
+                            if is_guide {
+                                engine.load_guide_track(stem, track).await;
+                                guide_count += 1;
+                            } else {
+                                engine.load_track(stem, track).await;
+                                backing_count += 1;
+                            }
                         }
                         Ok(Err(e)) => {
                             warn!("Failed to preload audio '{}': {}", path.display(), e);
@@ -404,8 +411,8 @@ async fn main() {
                 }
             }
         }
-        if loaded_count > 0 {
-            info!("Background: preloaded {} audio track(s) into engine", loaded_count);
+        if backing_count > 0 || guide_count > 0 {
+            info!("Background: preloaded {} backing + {} guide track(s) into engine", backing_count, guide_count);
         }
     });
 

@@ -75,13 +75,19 @@ pub async fn upload_audio(
     let audio_path = state.storage_paths.audio.join(&filename);
     let audio_engine = state.audio_engine.clone();
     let id_clone = id.clone();
+    let is_guide = id.contains("_guide");
     tokio::spawn(async move {
         let decode_result = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path)).await;
         match decode_result {
             Ok(Ok(track)) => {
                 let mut engine = audio_engine.lock().await;
-                engine.load_track(id_clone.clone(), track).await;
-                info!("Loaded track into audio engine: {}", id_clone);
+                if is_guide {
+                    engine.load_guide_track(id_clone.clone(), track).await;
+                    info!("Loaded guide track into audio engine: {}", id_clone);
+                } else {
+                    engine.load_track(id_clone.clone(), track).await;
+                    info!("Loaded track into audio engine: {}", id_clone);
+                }
             }
             Ok(Err(e)) => {
                 error!("Failed to decode uploaded audio for engine: {}", e);
@@ -132,7 +138,14 @@ pub async fn delete_audio(
 
     {
         let mut engine = state.audio_engine.lock().await;
-        if engine.unload_track(track_id) {
+        let is_guide = track_id.contains("_guide");
+        if is_guide {
+            if engine.unload_guide_track(track_id) {
+                info!("[delete_audio] Unloaded guide track from audio engine: {}", track_id);
+            } else {
+                info!("[delete_audio] Guide track was not loaded in engine: {}", track_id);
+            }
+        } else if engine.unload_track(track_id) {
             info!("[delete_audio] Unloaded track from audio engine: {}", track_id);
         } else {
             info!("[delete_audio] Track was not loaded in engine: {}", track_id);

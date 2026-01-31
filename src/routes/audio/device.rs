@@ -48,7 +48,7 @@ pub async fn select_device(
         let routing_config = config.audio.get_routing_for_device(&device_id)
             .cloned()
             .unwrap_or_else(|| crate::config::DeviceRouting::new_default(device_id.clone()));
-        audio::RoutingSnapshot::from_config(&routing_config, output_channels)
+        audio::RoutingConfig::from_device_routing(&routing_config, output_channels)
     };
 
     let engine = state.audio_engine.clone();
