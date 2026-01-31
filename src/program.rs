@@ -31,6 +31,8 @@ pub struct Program {
     pub bpm: Option<u16>,  // BPM for speed-synced effects
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grid_offset: Option<f64>,  // Downbeat position for beat grid alignment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guide_audio_file: Option<String>,  // Guide track filename
 }
 
 fn default_transition_type() -> String {
@@ -103,18 +105,31 @@ impl Program {
     }
 
     pub fn delete(&self, programs_path: &Path, audio_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        // Delete program JSON
-        let program_file = programs_path.join(format!("{}.json", self.id));
-        if program_file.exists() {
-            fs::remove_file(program_file)?;
+        if let Some(guide_file) = &self.guide_audio_file {
+            let guide_file_path = audio_path.join(guide_file);
+            if guide_file_path.exists() {
+                fs::remove_file(&guide_file_path)?;
+            }
+            let guide_peaks_path = audio_path.join(format!("{}.peaks.json", guide_file));
+            if guide_peaks_path.exists() {
+                fs::remove_file(&guide_peaks_path)?;
+            }
         }
 
-        // Delete audio file if it exists
         if let Some(audio_file) = &self.audio_file {
             let audio_file_path = audio_path.join(audio_file);
             if audio_file_path.exists() {
-                fs::remove_file(audio_file_path)?;
+                fs::remove_file(&audio_file_path)?;
             }
+            let peaks_path = audio_path.join(format!("{}.peaks.json", audio_file));
+            if peaks_path.exists() {
+                fs::remove_file(&peaks_path)?;
+            }
+        }
+
+        let program_file = programs_path.join(format!("{}.json", self.id));
+        if program_file.exists() {
+            fs::remove_file(program_file)?;
         }
 
         Ok(())

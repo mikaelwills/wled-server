@@ -7,8 +7,8 @@
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/playback-db';
-	import { loadAudioForProgram, getCachedPeaks } from '$lib/audio-db';
-	import { audioBlobUrls, audioLoading, loopyProSettings } from '$lib/store';
+	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, getGuideBlobUrl, getGuideCachedPeaks, removeGuideAudioForProgram } from '$lib/audio-db';
+	import { audioBlobUrls, audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks } from '$lib/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
@@ -33,6 +33,12 @@
 	let isPlaying = $state(false);
 	let audioToUpload = $state(null);
 	let wavesurferInitialized = $state(false);
+
+	// Guide track state
+	let guideWavesurfer = $state(null);
+	let guideIsLoaded = $state(false);
+	let guideAudioToUpload = $state(null);
+	let guideWavesurferInitialized = $state(false);
 
 	// Program metadata
 	let songName = $state('');
@@ -367,6 +373,14 @@
 			isPlaying = false;
 		});
 
+		wavesurfer.on('timeupdate', () => {
+			syncGuidePlayhead();
+		});
+
+		wavesurfer.on('seeking', () => {
+			syncGuidePlayhead();
+		});
+
 		// Handle seeking during playback - reschedule cues from new position (debounced)
 		wavesurfer.on('seeking', (currentTime) => {
 			// Check if this program is currently playing
@@ -493,6 +507,97 @@
 		// Clear existing markers if not loading program
 		if (!program) {
 			markers = [];
+		}
+	}
+
+	function initializeGuideWaveSurfer(audioUrl) {
+		const cached = programId ? getGuideCachedPeaks(programId) : null;
+
+		guideWavesurfer = WaveSurfer.create({
+			container: `#guide-waveform-${sanitizedProgramId}`,
+			waveColor: 'rgba(34, 197, 94, 0.5)',
+			progressColor: 'rgba(34, 197, 94, 0.8)',
+			cursorColor: 'rgba(74, 222, 128, 0.9)',
+			barWidth: 2,
+			barRadius: 3,
+			height: 80,
+			interact: false
+		});
+
+		guideWavesurfer.on('decode', () => {
+			guideIsLoaded = true;
+		});
+
+		if (cached) {
+			guideWavesurfer.load(audioUrl, cached.peaks, cached.duration);
+		} else {
+			guideWavesurfer.load(audioUrl);
+		}
+	}
+
+	function syncGuidePlayhead() {
+		if (guideWavesurfer && wavesurfer && guideIsLoaded) {
+			const currentTime = wavesurfer.getCurrentTime();
+			const duration = guideWavesurfer.getDuration();
+			if (duration > 0) {
+				guideWavesurfer.seekTo(Math.min(currentTime / duration, 1));
+			}
+		}
+	}
+
+	async function handleGuideUpload(file) {
+		if (!programId) return;
+
+		const reader = new FileReader();
+		reader.onload = async (e) => {
+			guideAudioToUpload = e.target.result;
+
+			const guideId = `${programId}_guide`;
+			try {
+				const response = await fetch(`${API_URL}/audio/${guideId}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ data_url: guideAudioToUpload })
+				});
+
+				if (response.ok) {
+					const result = await response.json();
+					program.guideAudioId = result.audio_file;
+					await saveProgram();
+
+					const blobUrl = await loadGuideAudioForProgram(programId, program.guideAudioId);
+					if (blobUrl) {
+						setTimeout(() => initializeGuideWaveSurfer(blobUrl), 100);
+					}
+				} else {
+					console.error('Failed to upload guide track:', response.status, response.statusText);
+				}
+			} catch (err) {
+				console.error('Failed to upload guide track:', err);
+			}
+		};
+		reader.onerror = () => {
+			console.error('Failed to read guide audio file:', reader.error);
+		};
+		reader.readAsDataURL(file);
+	}
+
+	async function removeGuide() {
+		if (!programId || !program?.guideAudioId) return;
+
+		try {
+			await fetch(`${API_URL}/audio/${program.guideAudioId}`, { method: 'DELETE' });
+			removeGuideAudioForProgram(programId);
+
+			if (guideWavesurfer) {
+				guideWavesurfer.destroy();
+				guideWavesurfer = null;
+			}
+			guideIsLoaded = false;
+			program.guideAudioId = undefined;
+			await saveProgram();
+		} catch (err) {
+			console.error('Failed to remove guide track:', err);
 		}
 	}
 
@@ -1070,12 +1175,28 @@ function playFullProgram() {
 		}
 	});
 
+	// Reactive guide track loading
+	$effect(() => {
+		if (!program?.guideAudioId || guideWavesurferInitialized || !isLoaded) return;
+
+		const blobUrl = $guideBlobUrls[program.id];
+		if (blobUrl) {
+			guideWavesurferInitialized = true;
+			setTimeout(() => initializeGuideWaveSurfer(blobUrl), 100);
+		} else if (!$audioLoading) {
+			loadGuideAudioForProgram(program.id, program.guideAudioId);
+		}
+	});
+
 	// Cleanup on component destroy
 	onDestroy(() => {
-		// Clear seek debounce timeout to prevent memory leaks
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;
+		}
+		if (guideWavesurfer) {
+			guideWavesurfer.destroy();
+			guideWavesurfer = null;
 		}
 	});
 </script>
@@ -1146,6 +1267,46 @@ function playFullProgram() {
 			{/if}
 			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
+
+		{#if isLoaded}
+			<div class="guide-section">
+				{#if program?.guideAudioId || guideIsLoaded}
+					<div class="guide-waveform-wrapper">
+						<div class="guide-label">
+							<span>Guide Track</span>
+							<button class="btn-remove-guide" onclick={removeGuide} title="Remove guide track">×</button>
+						</div>
+						<div id="guide-waveform-{sanitizedProgramId}"></div>
+					</div>
+				{:else}
+					<div
+						class="guide-dropzone"
+						onclick={() => document.getElementById(`guide-input-${sanitizedProgramId}`)?.click()}
+						ondrop={(e) => {
+							e.preventDefault();
+							const file = e.dataTransfer?.files[0];
+							if (file && (file.type.startsWith('audio/') || file.name.endsWith('.wav') || file.name.endsWith('.mp3'))) {
+								handleGuideUpload(file);
+							}
+						}}
+						ondragover={(e) => e.preventDefault()}
+					>
+						<span>Drop or click to add guide track</span>
+						<input
+							id="guide-input-{sanitizedProgramId}"
+							type="file"
+							accept="audio/*"
+							style="display: none"
+							onchange={(e) => {
+								const file = e.target?.files?.[0];
+								if (file) handleGuideUpload(file);
+							}}
+						/>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<div class="waveform-footer" class:has-cues={isLoaded}>
 			{#if isLoaded}
 				{@const groups = $boards.filter(b => b.isGroup)}
@@ -1626,6 +1787,64 @@ function playFullProgram() {
 	.waveform-wrapper * {
 		scrollbar-width: thin;
 		scrollbar-color: rgba(168, 85, 247, 0.5) transparent;
+	}
+
+	.guide-section {
+		border-top: 1px solid rgba(255, 255, 255, 0.1);
+		margin-top: 0.5rem;
+	}
+
+	.guide-waveform-wrapper {
+		position: relative;
+	}
+
+	.guide-label {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.25rem 1rem;
+		font-size: 0.75rem;
+		color: rgba(34, 197, 94, 0.8);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.btn-remove-guide {
+		background: transparent;
+		border: none;
+		color: rgba(255, 255, 255, 0.5);
+		cursor: pointer;
+		font-size: 1rem;
+		padding: 0 0.25rem;
+		line-height: 1;
+	}
+
+	.btn-remove-guide:hover {
+		color: #ef4444;
+	}
+
+	div[id^="guide-waveform-"] {
+		padding: 0 2rem;
+		min-height: 80px;
+	}
+
+	.guide-dropzone {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: 50px;
+		margin: 0.5rem 1rem;
+		border: 1px dashed rgba(34, 197, 94, 0.3);
+		border-radius: 4px;
+		color: rgba(34, 197, 94, 0.6);
+		font-size: 0.8rem;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.guide-dropzone:hover {
+		border-color: rgba(34, 197, 94, 0.6);
+		background: rgba(34, 197, 94, 0.05);
 	}
 
 	div[id^="waveform-"] {

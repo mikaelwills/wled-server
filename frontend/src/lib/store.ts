@@ -77,5 +77,12 @@ export const cachedPeaks: Writable<Record<string, {
 	duration: number;
 }>> = writable({});
 
+// Guide track stores - maps program.id to guide audio data
+export const guideBlobUrls: Writable<Record<string, string>> = writable({});
+export const guideCachedPeaks: Writable<Record<string, {
+	peaks: Array<number[]>;
+	duration: number;
+}>> = writable({});
+
 // Grid multiplier for beat grid display (4 = "1" button default)
 export const gridMultiplier: Writable<number> = writable(4);

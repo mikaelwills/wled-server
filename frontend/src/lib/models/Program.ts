@@ -10,6 +10,7 @@ export interface ProgramData {
   fileName: string;
   audioId: string;
   audioData?: string; // Legacy field - for old programs with embedded audio
+  guideAudioId?: string; // Guide track filename
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
@@ -33,6 +34,7 @@ export class Program implements ProgramData {
   fileName: string;
   audioId: string;
   audioData?: string; // Legacy field - kept for backward compatibility
+  guideAudioId?: string; // Guide track filename
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
@@ -54,7 +56,8 @@ export class Program implements ProgramData {
     this.loopyProTrack = data.loopyProTrack;
     this.fileName = data.fileName;
     this.audioId = data.audioId;
-    this.audioData = data.audioData; // Preserve if present
+    this.audioData = data.audioData;
+    this.guideAudioId = data.guideAudioId;
     this.cues = data.cues;
     this.createdAt = data.createdAt;
     this.defaultTargetBoard = data.defaultTargetBoard;
@@ -96,13 +99,16 @@ export class Program implements ProgramData {
       console.log(`[Program.fromJson] Using audioId: ${audioId}`);
     }
 
+    const guideAudioId = data.guideAudioId || data.guide_audio_file;
+
     return new Program({
       id: data.id,
       songName: songName,
       loopyProTrack: data.loopyProTrack || data.loopy_pro_track || '',
       fileName: data.fileName || data.file_name || 'audio.wav',
       audioId,
-      audioData, // Preserve legacy audio if present
+      audioData,
+      guideAudioId,
       cues,
       createdAt: data.createdAt || data.created_at || new Date().toISOString(),
       defaultTargetBoard: data.defaultTargetBoard || data.default_target_board,
@@ -127,6 +133,7 @@ export class Program implements ProgramData {
       loopy_pro_track: this.loopyProTrack,
       file_name: this.fileName,
       audio_file: this.audioId,
+      guide_audio_file: this.guideAudioId,
       cues: this.cues.map(c => c.toJson()),
       created_at: this.createdAt,
       default_target_board: this.defaultTargetBoard,
