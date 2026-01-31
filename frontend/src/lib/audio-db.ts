@@ -2,7 +2,8 @@
 // Centralized audio loading and management
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs } from './store';
+import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs, resamplingQuality, resamplingQualityLoading } from './store';
+import type { ResamplingQuality } from './store';
 import { API_URL } from '$lib/api';
 
 // Track programs currently being loaded to prevent duplicate fetches
@@ -82,7 +83,10 @@ export async function initAudio(): Promise<void> {
 							fetch(`${API_URL}/audio/${program.audioId}`)
 						]);
 
-						if (!audioResponse.ok) return;
+						if (!audioResponse.ok) {
+						console.error(`[initAudio] Failed to fetch audio for ${program.songName}: ${audioResponse.status} ${audioResponse.statusText}`);
+						return;
+					}
 
 						const blob = await audioResponse.blob();
 						const blobUrl = URL.createObjectURL(blob);
@@ -449,4 +453,41 @@ export function getCachedPeaks(programId: string): { peaks: Array<number[]>; dur
 export async function reloadAudio(): Promise<void> {
 	cleanupAudio();
 	await initAudio();
+}
+
+/**
+ * Initialize resampling quality from API
+ */
+export async function initResamplingQuality(): Promise<void> {
+	if (!browser) return;
+
+	resamplingQualityLoading.set(true);
+	try {
+		const res = await fetch(`${API_URL}/audio/resampling-quality`);
+		if (res.ok) {
+			const data = await res.json();
+			resamplingQuality.set(data.quality);
+		}
+	} catch (e) {
+		console.error('Failed to fetch resampling quality:', e);
+	}
+	resamplingQualityLoading.set(false);
+}
+
+/**
+ * Update resampling quality
+ */
+export async function updateResamplingQuality(quality: ResamplingQuality): Promise<void> {
+	if (!browser) return;
+
+	resamplingQuality.set(quality);
+	try {
+		await fetch(`${API_URL}/audio/resampling-quality`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ quality })
+		});
+	} catch (e) {
+		console.error('Failed to set resampling quality:', e);
+	}
 }

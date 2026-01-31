@@ -4,7 +4,7 @@ import { get } from 'svelte/store';
 import { programs, programsLoading, programsError } from './store';
 import { Program } from './models/Program';
 import { API_URL } from '$lib/api';
-import { removeAudioForProgram } from './audio-db';
+import { removeAudioForProgram, removeGuideAudioForProgram } from './audio-db';
 
 /**
  * Initialize programs from API
@@ -176,7 +176,16 @@ export async function deleteProgram(programId: string): Promise<void> {
         console.log(`Deleted audio file: ${program.audioId}`);
       } catch (err) {
         console.warn('Failed to delete audio file:', err);
-        // Continue with program deletion even if audio deletion fails
+      }
+    }
+
+    // Delete guide audio from backend if it exists
+    if (program?.guideAudioId) {
+      try {
+        await fetch(`${API_URL}/audio/${program.guideAudioId}`, { method: 'DELETE' });
+        console.log(`Deleted guide audio file: ${program.guideAudioId}`);
+      } catch (err) {
+        console.warn('Failed to delete guide audio file:', err);
       }
     }
 
@@ -199,8 +208,9 @@ export async function deleteProgram(programId: string): Promise<void> {
       return filtered;
     });
 
-    // Clean up cached audio blob URL
+    // Clean up cached audio blob URLs
     removeAudioForProgram(programId);
+    removeGuideAudioForProgram(programId);
     console.log(`[programs-db] Program deleted: ${programId}`);
   } catch (error) {
     console.error('Failed to delete program:', error);

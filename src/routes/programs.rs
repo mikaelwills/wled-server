@@ -72,14 +72,27 @@ pub async fn delete_program(
 
     let program = program.ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
 
-    if let Some(ref audio_file) = program.audio_file {
-        let track_id = std::path::Path::new(audio_file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(audio_file);
+    {
         let mut engine = state.audio_engine.lock().await;
-        if engine.unload_track(track_id) {
-            info!("Unloaded audio track from engine: {}", track_id);
+
+        if let Some(ref audio_file) = program.audio_file {
+            let track_id = std::path::Path::new(audio_file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(audio_file);
+            if engine.unload_track(track_id) {
+                info!("Unloaded audio track from engine: {}", track_id);
+            }
+        }
+
+        if let Some(ref guide_file) = program.guide_audio_file {
+            let track_id = std::path::Path::new(guide_file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(guide_file);
+            if engine.unload_track(track_id) {
+                info!("Unloaded guide audio track from engine: {}", track_id);
+            }
         }
     }
 

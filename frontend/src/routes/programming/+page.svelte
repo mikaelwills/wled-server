@@ -50,10 +50,12 @@
 	}
 
 	function handleFileSelect(event: Event) {
-		const files = (event.target as HTMLInputElement).files;
+		const input = event.target as HTMLInputElement;
+		const files = input.files;
 		if (files && files.length > 0) {
 			createNewProgram(files[0]);
 		}
+		input.value = '';
 	}
 
 	async function compressAudio(file: File): Promise<string> {
