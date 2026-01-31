@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::resampler;
+use crate::config::ResamplingQuality;
 
 pub struct LoadedTrack {
     pub original_samples: Arc<Vec<f32>>,
@@ -76,10 +77,17 @@ impl LoadedTrack {
     }
 
     pub fn ensure_resampled(&self, target_rate: u32) -> Result<(), String> {
-        self.ensure_resampled_with_progress(target_rate, None::<fn(u32, u32) -> bool>)
+        self.ensure_resampled_with_options(target_rate, ResamplingQuality::default(), None::<fn(u32, u32) -> bool>)
     }
 
     pub fn ensure_resampled_with_progress<F>(&self, target_rate: u32, progress_callback: Option<F>) -> Result<(), String>
+    where
+        F: Fn(u32, u32) -> bool,
+    {
+        self.ensure_resampled_with_options(target_rate, ResamplingQuality::default(), progress_callback)
+    }
+
+    pub fn ensure_resampled_with_options<F>(&self, target_rate: u32, quality: ResamplingQuality, progress_callback: Option<F>) -> Result<(), String>
     where
         F: Fn(u32, u32) -> bool,
     {
@@ -95,19 +103,21 @@ impl LoadedTrack {
         }
 
         eprintln!(
-            "[Resampler] Resampling from {}Hz to {}Hz ({} samples, {} channels)",
+            "[Resampler] Resampling from {}Hz to {}Hz ({} samples, {} channels, quality: {:?})",
             self.original_rate,
             target_rate,
             self.original_samples.len(),
-            self.channels
+            self.channels,
+            quality
         );
 
         let start = std::time::Instant::now();
-        let resampled = resampler::resample_with_progress(
+        let resampled = resampler::resample_with_options(
             &self.original_samples,
             self.channels,
             self.original_rate,
             target_rate,
+            quality,
             progress_callback,
         )?;
         let elapsed = start.elapsed();

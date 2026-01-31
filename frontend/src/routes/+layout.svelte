@@ -6,7 +6,7 @@
 	import { initBoardsListener, cleanupBoardsListener, fetchPresets, fetchPerformancePresets, fetchPatternPresets } from '$lib/boards-db';
 	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
 	import { initLoopyProSettings } from '$lib/loopy-db';
-	import { initAudio, cleanupAudio } from '$lib/audio-db';
+	import { initAudio, cleanupAudio, initResamplingQuality } from '$lib/audio-db';
 	import TimingMonitor from '$lib/TimingMonitor.svelte';
 	import { toggleTimingMonitor } from '$lib/timing-store';
 	import AudioHealthMonitor from '$lib/AudioHealthMonitor.svelte';
@@ -77,8 +77,9 @@
 			// Initialize Loopy Pro settings
 			await initLoopyProSettings();
 
-			// Initialize audio (always loads - mute only affects playback, not loading)
+			// Initialize audio settings and audio files
 			// Must run after programs are loaded
+			await initResamplingQuality();
 			await initAudio();
 
 			// Start memory stats polling

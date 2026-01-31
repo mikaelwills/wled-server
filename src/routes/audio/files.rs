@@ -123,12 +123,28 @@ pub async fn delete_audio(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    info!("[delete_audio] Request to delete audio: {}", id);
+
+    let track_id = std::path::Path::new(&id)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&id);
+
+    {
+        let mut engine = state.audio_engine.lock().await;
+        if engine.unload_track(track_id) {
+            info!("[delete_audio] Unloaded track from audio engine: {}", track_id);
+        } else {
+            info!("[delete_audio] Track was not loaded in engine: {}", track_id);
+        }
+    }
+
     audio::AudioFile::delete(&id, &state.storage_paths.audio).map_err(|e| {
         error!("Failed to delete audio file '{}': {}", id, e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    info!("Deleted audio file: {}", id);
+    info!("[delete_audio] Deleted audio file from disk: {}", id);
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -4,7 +4,7 @@ mod health;
 mod playback;
 mod routing;
 
-pub use device::{get_audio_settings, get_device_outputs, list_devices, select_device};
+pub use device::{get_audio_settings, get_device_outputs, get_resampling_quality, list_devices, select_device, set_resampling_quality};
 pub use files::{delete_audio, get_audio, get_peaks, save_peaks, test_decode, upload_audio};
 pub use health::{get_engine_health, get_memory_stats, get_resampling_status, reset_engine_health};
 pub use playback::{

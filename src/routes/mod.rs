@@ -112,6 +112,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/devices", get(audio::list_devices))
         .route("/audio/settings", get(audio::get_audio_settings))
         .route("/audio/device/select", post(audio::select_device))
+        .route("/audio/resampling-quality", get(audio::get_resampling_quality).put(audio::set_resampling_quality))
         .route("/audio/test-decode/:id", get(audio::test_decode))
         .route("/audio/engine/load/:id", post(audio::load_track))
         .route("/audio/engine/play/:id", post(audio::play_track))

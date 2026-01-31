@@ -1,4 +1,5 @@
 use rubato::{SincFixedIn, SincInterpolationType, SincInterpolationParameters, WindowFunction, Resampler};
+use crate::config::ResamplingQuality;
 
 pub fn resample(
     samples: &[f32],
@@ -6,7 +7,7 @@ pub fn resample(
     from_rate: u32,
     to_rate: u32,
 ) -> Result<Vec<f32>, String> {
-    resample_with_progress(samples, channels, from_rate, to_rate, None::<fn(u32, u32) -> bool>)
+    resample_with_options(samples, channels, from_rate, to_rate, ResamplingQuality::default(), None::<fn(u32, u32) -> bool>)
 }
 
 pub fn resample_with_progress<F>(
@@ -14,6 +15,20 @@ pub fn resample_with_progress<F>(
     channels: u16,
     from_rate: u32,
     to_rate: u32,
+    progress_callback: Option<F>,
+) -> Result<Vec<f32>, String>
+where
+    F: Fn(u32, u32) -> bool,
+{
+    resample_with_options(samples, channels, from_rate, to_rate, ResamplingQuality::default(), progress_callback)
+}
+
+pub fn resample_with_options<F>(
+    samples: &[f32],
+    channels: u16,
+    from_rate: u32,
+    to_rate: u32,
+    quality: ResamplingQuality,
     progress_callback: Option<F>,
 ) -> Result<Vec<f32>, String>
 where
@@ -34,10 +49,10 @@ where
     }
 
     let params = SincInterpolationParameters {
-        sinc_len: 256,
+        sinc_len: quality.sinc_len(),
         f_cutoff: 0.95,
         interpolation: SincInterpolationType::Cubic,
-        oversampling_factor: 256,
+        oversampling_factor: quality.oversampling_factor(),
         window: WindowFunction::BlackmanHarris2,
     };
 

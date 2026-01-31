@@ -86,3 +86,8 @@ export const guideCachedPeaks: Writable<Record<string, {
 
 // Grid multiplier for beat grid display (4 = "1" button default)
 export const gridMultiplier: Writable<number> = writable(4);
+
+// Resampling quality store
+export type ResamplingQuality = 'fast' | 'balanced' | 'high';
+export const resamplingQuality: Writable<ResamplingQuality> = writable('balanced');
+export const resamplingQualityLoading: Writable<boolean> = writable(true);

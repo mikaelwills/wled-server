@@ -97,3 +97,42 @@ pub async fn get_device_outputs(
         output_channels: channels,
     }))
 }
+
+#[derive(serde::Serialize)]
+pub struct ResamplingQualityResponse {
+    pub quality: crate::config::ResamplingQuality,
+}
+
+pub async fn get_resampling_quality(
+    State(state): State<SharedState>,
+) -> Json<ResamplingQualityResponse> {
+    let engine = state.audio_engine.lock().await;
+    Json(ResamplingQualityResponse {
+        quality: engine.get_resampling_quality(),
+    })
+}
+
+#[derive(Deserialize)]
+pub struct SetResamplingQualityRequest {
+    pub quality: crate::config::ResamplingQuality,
+}
+
+pub async fn set_resampling_quality(
+    State(state): State<SharedState>,
+    Json(payload): Json<SetResamplingQualityRequest>,
+) -> StatusCode {
+    {
+        let mut engine = state.audio_engine.lock().await;
+        engine.set_resampling_quality(payload.quality);
+    }
+
+    {
+        let mut config = state.config.lock().await;
+        config.audio.resampling_quality = payload.quality;
+        if let Err(e) = config.save() {
+            tracing::error!("Failed to save config: {}", e);
+        }
+    }
+
+    StatusCode::OK
+}

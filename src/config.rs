@@ -258,12 +258,41 @@ impl DeviceRouting {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResamplingQuality {
+    Fast,
+    #[default]
+    Balanced,
+    High,
+}
+
+impl ResamplingQuality {
+    pub fn sinc_len(&self) -> usize {
+        match self {
+            ResamplingQuality::Fast => 16,
+            ResamplingQuality::Balanced => 128,
+            ResamplingQuality::High => 256,
+        }
+    }
+
+    pub fn oversampling_factor(&self) -> usize {
+        match self {
+            ResamplingQuality::Fast => 16,
+            ResamplingQuality::Balanced => 128,
+            ResamplingQuality::High => 256,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AudioConfig {
     #[serde(default)]
     pub preferred_device_id: Option<String>,
     #[serde(default)]
     pub device_routings: Vec<DeviceRouting>,
+    #[serde(default)]
+    pub resampling_quality: ResamplingQuality,
 }
 
 impl AudioConfig {

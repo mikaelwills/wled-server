@@ -216,6 +216,7 @@ async fn main() {
     }
     let mut audio_engine = audio::AudioEngine::new();
     audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
+    audio_engine.set_resampling_quality(loaded_config.audio.resampling_quality);
     audio_engine.set_broadcast_tx(broadcast_tx.clone());
 
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {

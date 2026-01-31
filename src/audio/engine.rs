@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use super::{LoadedTrack, PlaybackHealth, ResamplingProgress};
+use crate::config::ResamplingQuality;
 use crate::sse::SseEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,6 +90,7 @@ pub struct AudioEngine {
     command_rx: Option<mpsc::Receiver<PlaybackCommand>>,
     device_sample_rate: u32,
     broadcast_tx: Option<Arc<broadcast::Sender<SseEvent>>>,
+    resampling_quality: ResamplingQuality,
 }
 
 impl AudioEngine {
@@ -106,11 +108,21 @@ impl AudioEngine {
             command_rx: Some(rx),
             device_sample_rate: 0,
             broadcast_tx: None,
+            resampling_quality: ResamplingQuality::default(),
         }
     }
 
     pub fn set_broadcast_tx(&mut self, tx: Arc<broadcast::Sender<SseEvent>>) {
         self.broadcast_tx = Some(tx);
+    }
+
+    pub fn get_resampling_quality(&self) -> ResamplingQuality {
+        self.resampling_quality
+    }
+
+    pub fn set_resampling_quality(&mut self, quality: ResamplingQuality) {
+        self.resampling_quality = quality;
+        eprintln!("[AudioEngine] Resampling quality set to {:?}", quality);
     }
 
     fn broadcast_resampling_progress(&self, current: u32, total: u32, active: bool, track_name: &str, from_rate: u32, to_rate: u32) {
@@ -173,6 +185,7 @@ impl AudioEngine {
         let track = Arc::new(track);
         let device_rate = self.device_sample_rate;
         let original_rate = track.original_rate;
+        let quality = self.resampling_quality;
 
         self.tracks.insert(id.clone(), Arc::clone(&track));
 
@@ -190,6 +203,7 @@ impl AudioEngine {
 
                 let progress_forwarder = tokio::spawn(async move {
                     if let Some(tx) = broadcast_tx {
+                        let track_name_for_completion = track_name.clone();
                         while let Some((current, total)) = progress_rx.recv().await {
                             let _ = tx.send(SseEvent::ResamplingProgress {
                                 current,
@@ -204,7 +218,7 @@ impl AudioEngine {
                             current: 0,
                             total: 0,
                             active: false,
-                            track_name: String::new(),
+                            track_name: track_name_for_completion,
                             from_rate: 0,
                             to_rate: 0,
                         });
@@ -217,10 +231,10 @@ impl AudioEngine {
                         let _ = progress_tx.blocking_send((current, total));
                         !cancelled_clone.load(Ordering::Relaxed)
                     };
-                    track_clone.ensure_resampled_with_progress(device_rate, Some(callback))
+                    track_clone.ensure_resampled_with_options(device_rate, quality, Some(callback))
                 }).await;
 
-                drop(progress_forwarder);
+                let _ = progress_forwarder.await;
 
                 match result {
                     Ok(Ok(())) => eprintln!("[AudioEngine] Resampling complete for '{}'", id_clone),
@@ -309,7 +323,16 @@ impl AudioEngine {
             cancelled.store(true, Ordering::Relaxed);
             eprintln!("[AudioEngine] Cancelled resampling for '{}'", id);
         }
-        self.tracks.remove(id).is_some()
+        if let Some(track) = self.tracks.remove(id) {
+            let memory_mb = track.memory_usage() as f64 / 1024.0 / 1024.0;
+            eprintln!("[AudioEngine] Unloaded track '{}' - freed {:.2} MB", id, memory_mb);
+            let (count, total) = self.memory_usage();
+            eprintln!("[AudioEngine] Remaining: {} tracks, {:.2} MB total", count, total as f64 / 1024.0 / 1024.0);
+            true
+        } else {
+            eprintln!("[AudioEngine] Track '{}' not found in engine", id);
+            false
+        }
     }
 
     pub fn memory_usage(&self) -> (usize, usize) {

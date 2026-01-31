@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { loopyProSettings, loopyProSettingsLoading } from '$lib/store';
+	import { loopyProSettings, loopyProSettingsLoading, resamplingQuality, resamplingQualityLoading } from '$lib/store';
 	import { updateLoopyProSettings } from '$lib/loopy-db';
+	import { updateResamplingQuality } from '$lib/audio-db';
 	import { initPrograms } from '$lib/programs-db';
 	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
 	import { API_URL } from '$lib/api';
 
-	import type { AudioSource } from '$lib/store';
+	import type { AudioSource, ResamplingQuality } from '$lib/store';
 
 	let ip = $state($loopyProSettings.ip);
 	let port = $state($loopyProSettings.port);
@@ -254,6 +255,41 @@
 				<button onclick={fetchAudioDevices} class="save-button">
 					Refresh Devices
 				</button>
+
+				<div class="section-divider"></div>
+				<h2>Resampling Quality</h2>
+				<p class="help-text">Higher quality takes longer but sounds better</p>
+
+				{#if $resamplingQualityLoading}
+					<p class="help-text" style="text-align: center;">Loading...</p>
+				{:else}
+					<div class="quality-row">
+						<button
+							class="quality-button"
+							class:active={$resamplingQuality === 'fast'}
+							onclick={() => updateResamplingQuality('fast')}
+						>
+							<span class="quality-name">Fast</span>
+							<span class="quality-desc">Quick testing</span>
+						</button>
+						<button
+							class="quality-button"
+							class:active={$resamplingQuality === 'balanced'}
+							onclick={() => updateResamplingQuality('balanced')}
+						>
+							<span class="quality-name">Balanced</span>
+							<span class="quality-desc">Good quality</span>
+						</button>
+						<button
+							class="quality-button"
+							class:active={$resamplingQuality === 'high'}
+							onclick={() => updateResamplingQuality('high')}
+						>
+							<span class="quality-name">High</span>
+							<span class="quality-desc">Best quality</span>
+						</button>
+					</div>
+				{/if}
 			{/if}
 			{/if}
 		</div>
@@ -726,5 +762,47 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		font-weight: 500;
+	}
+
+	.quality-row {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0.5rem;
+	}
+
+	.quality-button {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.75rem 0.5rem;
+		background: #0c0c0c;
+		color: #666;
+		border: 1px solid rgba(255, 255, 255, 0.03);
+		border-radius: 8px;
+		font-size: 0.875rem;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.quality-button:hover {
+		background: #111;
+		color: #888;
+		border-color: rgba(255, 255, 255, 0.08);
+	}
+
+	.quality-button.active {
+		background: rgba(34, 197, 94, 0.1);
+		color: #22c55e;
+		border-color: rgba(34, 197, 94, 0.3);
+	}
+
+	.quality-name {
+		font-weight: 500;
+	}
+
+	.quality-desc {
+		font-size: 0.65rem;
+		opacity: 0.7;
 	}
 </style>

@@ -662,22 +662,25 @@
 	}
 
 	async function removeGuide() {
-		if (!programId) return;
-		if (!program?.guideAudioId && !guideWavesurfer) return;
+		if (!program?.guideAudioId) return;
 
 		try {
-			if (program?.guideAudioId) {
-				await fetch(`${API_URL}/audio/${program.guideAudioId}`, { method: 'DELETE' });
-				removeGuideAudioForProgram(programId);
-			}
+			const response = await fetch(`${API_URL}/audio/${program.guideAudioId}`, {
+				method: 'DELETE'
+			});
 
-			if (guideWavesurfer) {
-				guideWavesurfer.destroy();
-				guideWavesurfer = null;
+			if (response.ok) {
+				removeGuideAudioForProgram(program.id);
+
+				if (guideWavesurfer) {
+					guideWavesurfer.destroy();
+					guideWavesurfer = null;
+					guideIsLoaded = false;
+				}
+
+				const updatedProgram = program.copyWith({ guideAudioId: undefined });
+				await saveProgram();
 			}
-			guideIsLoaded = false;
-			program.guideAudioId = undefined;
-			await saveProgram();
 		} catch (err) {
 			console.error('Failed to remove guide track:', err);
 		}
@@ -1347,6 +1350,9 @@ function playFullProgram() {
 				</button>
 			{/if}
 		</div>
+		<div class="backing-label">
+			<span>Backing</span>
+		</div>
 		<div class="waveform-wrapper">
 			{#if !isLoaded && (program?.audioId || program?.audioData)}
 				<div class="waveform-skeleton"></div>
@@ -1918,8 +1924,8 @@ function playFullProgram() {
 	}
 
 	.guide-section {
-		border-top: 1px solid rgba(255, 255, 255, 0.1);
 		margin-top: 0.5rem;
+		padding-top: 0.5rem;
 	}
 
 	.guide-waveform-wrapper {
@@ -1931,6 +1937,14 @@ function playFullProgram() {
 		visibility: hidden;
 		width: 100%;
 		pointer-events: none;
+	}
+
+	.backing-label {
+		padding: 0.25rem 1rem;
+		font-size: 0.75rem;
+		color: rgba(139, 92, 246, 0.8);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 
 	.guide-label {
