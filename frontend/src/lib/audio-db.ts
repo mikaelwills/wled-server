@@ -252,27 +252,6 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 	loadingPrograms.add(programId);
 
 	try {
-		const peaksResponse = await fetch(`${API_URL}/audio/${audioId}/peaks`);
-
-		if (peaksResponse.ok) {
-			const peaksData = await peaksResponse.json();
-			cachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
-
-			const audioResponse = await fetch(`${API_URL}/audio/${audioId}`);
-			if (!audioResponse.ok) return undefined;
-
-			const blob = await audioResponse.blob();
-			const blobUrl = URL.createObjectURL(blob);
-			console.log(`[loadAudioForProgram] ${programId} - created NEW blob URL: ${blobUrl.substring(0, 50)}...`);
-
-			const audio = new Audio();
-			audio.src = blobUrl;
-			audioElements.update(elements => ({ ...elements, [programId]: audio }));
-			audioBlobUrls.update(urls => ({ ...urls, [programId]: blobUrl }));
-
-			return blobUrl;
-		}
-
 		const audioResponse = await fetch(`${API_URL}/audio/${audioId}`);
 		if (!audioResponse.ok) return undefined;
 
@@ -284,6 +263,15 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 		audioElements.update(elements => ({ ...elements, [programId]: audio }));
 		audioBlobUrls.update(urls => ({ ...urls, [programId]: blobUrl }));
 
+		const peaksResponse = await fetch(`${API_URL}/audio/${audioId}/peaks`);
+		if (peaksResponse.ok) {
+			const peaksData = await peaksResponse.json();
+			cachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
+			console.log(`[loadAudio] ${programId} - using cached peaks`);
+			return blobUrl;
+		}
+
+		console.log(`[loadAudio] ${programId} - no cached peaks, computing locally...`);
 		const ctx = getAudioContext();
 		const arrayBuffer = await blob.arrayBuffer();
 		const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
@@ -297,7 +285,7 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ peaks, duration: audioBuffer.duration })
-		}).catch(err => console.warn(`Failed to save peaks for program ${programId}:`, err));
+		}).catch(err => console.warn(`[loadAudio] Failed to save peaks for ${programId}:`, err));
 
 		return blobUrl;
 	} catch (err) {

@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use tokio::sync::mpsc;
 
-use super::{DeviceManager, LoadedTrack, PlaybackCommand};
+use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingSnapshot, TrackType};
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 
@@ -63,6 +63,7 @@ pub struct InternalPlaybackState {
     pub track_channels: AtomicUsize,
     pub track_sample_count: AtomicUsize,
     pub device_sample_rate: AtomicU32,
+    pub routing: ArcSwap<RoutingSnapshot>,
 }
 
 impl InternalPlaybackState {
@@ -75,7 +76,22 @@ impl InternalPlaybackState {
             track_channels: AtomicUsize::new(2),
             track_sample_count: AtomicUsize::new(0),
             device_sample_rate: AtomicU32::new(0),
+            routing: ArcSwap::from_pointee(RoutingSnapshot::default()),
         })
+    }
+
+    pub fn update_routing(&self, routing: RoutingSnapshot) {
+        self.routing.store(Arc::new(routing));
+    }
+
+    pub fn set_mute(&self, track: TrackType, muted: bool) {
+        let mut current = (**self.routing.load()).clone();
+        match track {
+            TrackType::Backing => current.backing_muted = muted,
+            TrackType::Guide => current.guide_muted = muted,
+            TrackType::Click => current.click_muted = muted,
+        }
+        self.routing.store(Arc::new(current));
     }
 
     pub fn load_track(&self, track: Arc<LoadedTrack>) {
@@ -83,7 +99,8 @@ impl InternalPlaybackState {
         let samples = track.get_samples_for_rate(device_rate);
         let sample_len = samples.len();
 
-        self.track_channels.store(track.channels as usize, Ordering::Relaxed);
+        self.track_channels
+            .store(track.channels as usize, Ordering::Relaxed);
         self.track.store(Some(track));
         self.active_samples.store(Some(samples));
         std::sync::atomic::fence(Ordering::Release);
@@ -124,7 +141,10 @@ impl Drop for AudioThread {
                     break;
                 }
                 if start.elapsed() > Duration::from_millis(THREAD_JOIN_TIMEOUT_MS) {
-                    eprintln!("[AudioThread] Warning: Thread join timed out after {}ms", THREAD_JOIN_TIMEOUT_MS);
+                    eprintln!(
+                        "[AudioThread] Warning: Thread join timed out after {}ms",
+                        THREAD_JOIN_TIMEOUT_MS
+                    );
                     break;
                 }
                 thread::sleep(Duration::from_millis(10));
@@ -167,6 +187,14 @@ fn build_stream(
     eprintln!("[AudioThread] Device sample rate: {}Hz", sample_rate);
 
     let output_channels = config.channels() as usize;
+    eprintln!("[AudioThread] Device output channels: {}", output_channels);
+
+    {
+        let mut current_routing = (**state.routing.load()).clone();
+        current_routing.output_channels = output_channels;
+        state.routing.store(Arc::new(current_routing));
+    }
+
     let config: cpal::StreamConfig = config.into();
 
     let stream = device
@@ -181,20 +209,26 @@ fn build_stream(
                     let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
                     while interval > max {
                         match health.max_callback_interval_us.compare_exchange_weak(
-                            max, interval, Ordering::Relaxed, Ordering::Relaxed
+                            max,
+                            interval,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
                         ) {
                             Ok(_) => break,
                             Err(current) => max = current,
                         }
                     }
-                    let expected_interval_us = (data.len() as u64 * 1_000_000) / (sample_rate as u64 * output_channels as u64);
+                    let expected_interval_us = (data.len() as u64 * 1_000_000)
+                        / (sample_rate as u64 * output_channels as u64);
                     if interval > expected_interval_us * 2 {
                         health.late_callbacks.fetch_add(1, Ordering::Relaxed);
                     }
                 }
 
                 health.callback_count.fetch_add(1, Ordering::Relaxed);
-                health.last_buffer_size.store(data.len() as u32, Ordering::Relaxed);
+                health
+                    .last_buffer_size
+                    .store(data.len() as u32, Ordering::Relaxed);
 
                 if !state.playing.load(Ordering::Relaxed) {
                     data.fill(0.0);
@@ -224,6 +258,8 @@ fn build_stream(
                 let mut samples_written = 0u64;
                 let mut silence_written = 0u64;
 
+                let routing = state.routing.load();
+
                 for frame in data.chunks_mut(output_channels) {
                     if idx >= sample_count {
                         frame.fill(0.0);
@@ -231,10 +267,23 @@ fn build_stream(
                         continue;
                     }
 
-                    for (ch, out_sample) in frame.iter_mut().enumerate() {
-                        let src_ch = ch % track_channels;
-                        let src_idx = idx + src_ch;
-                        *out_sample = samples.get(src_idx).copied().unwrap_or(0.0);
+                    frame.fill(0.0);
+
+                    let left = samples.get(idx).copied().unwrap_or(0.0);
+                    let right = samples.get(idx + 1).copied().unwrap_or(0.0);
+
+                    if !routing.backing_muted {
+                        if routing.is_stereo_mode() {
+                            frame[0] = left;
+                            frame[1] = right;
+                        } else {
+                            if routing.backing_left < output_channels {
+                                frame[routing.backing_left] = left;
+                            }
+                            if routing.backing_right < output_channels {
+                                frame[routing.backing_right] = right;
+                            }
+                        }
                     }
 
                     samples_written += output_channels as u64;
@@ -243,9 +292,13 @@ fn build_stream(
 
                 state.sample_index.store(idx, Ordering::Relaxed);
                 position.store(idx as u64, Ordering::Relaxed);
-                health.samples_delivered.fetch_add(samples_written, Ordering::Relaxed);
+                health
+                    .samples_delivered
+                    .fetch_add(samples_written, Ordering::Relaxed);
                 if silence_written > 0 {
-                    health.silence_frames.fetch_add(silence_written, Ordering::Relaxed);
+                    health
+                        .silence_frames
+                        .fetch_add(silence_written, Ordering::Relaxed);
                 }
             },
             |err| {
@@ -277,7 +330,12 @@ impl AudioThread {
                     .build()
                     .expect("Failed to create tokio runtime");
 
-                rt.block_on(Self::run_audio_loop(command_rx, position, health, device_manager));
+                rt.block_on(Self::run_audio_loop(
+                    command_rx,
+                    position,
+                    health,
+                    device_manager,
+                ));
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
@@ -341,7 +399,12 @@ impl AudioThread {
             let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
             eprintln!("Audio output device: {}", device_name);
 
-            let stream = match build_stream(&device, Arc::clone(&state), Arc::clone(&position), Arc::clone(&health)) {
+            let stream = match build_stream(
+                &device,
+                Arc::clone(&state),
+                Arc::clone(&position),
+                Arc::clone(&health),
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to build audio stream: {}", e);
@@ -354,7 +417,10 @@ impl AudioThread {
                     eprintln!("[AudioThread] Switching device to: {}", new_device);
 
                     if let Err(e) = stream.pause() {
-                        eprintln!("[AudioThread] Warning: Failed to pause stream during switch: {}", e);
+                        eprintln!(
+                            "[AudioThread] Warning: Failed to pause stream during switch: {}",
+                            e
+                        );
                     }
 
                     state.clear_track();
@@ -371,7 +437,10 @@ impl AudioThread {
                     eprintln!("[AudioThread] Shutting down...");
 
                     if let Err(e) = stream.pause() {
-                        eprintln!("[AudioThread] Warning: Failed to pause stream during shutdown: {}", e);
+                        eprintln!(
+                            "[AudioThread] Warning: Failed to pause stream during shutdown: {}",
+                            e
+                        );
                     }
 
                     state.clear_track();
@@ -415,6 +484,12 @@ impl AudioThread {
                 PlaybackCommand::SetDevice(device_id) => {
                     state.playing.store(false, Ordering::Release);
                     return CommandResult::RebuildStream(device_id);
+                }
+                PlaybackCommand::UpdateRouting(routing) => {
+                    state.update_routing(routing);
+                }
+                PlaybackCommand::SetMute { track, muted } => {
+                    state.set_mute(track, muted);
                 }
             }
         }

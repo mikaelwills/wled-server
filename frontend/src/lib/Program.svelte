@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
@@ -14,6 +14,7 @@
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import PresetPicker from '$lib/PresetPicker.svelte';
 	import CueEditor from '$lib/CueEditor.svelte';
+	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 
 	// Props
 	let {
@@ -39,6 +40,11 @@
 	let guideIsLoaded = $state(false);
 	let guideAudioToUpload = $state(null);
 	let guideWavesurferInitialized = $state(false);
+
+	// Resampling state
+	let isTrackReady = $state(true);
+	let resamplingProgress: ResamplingProgress | null = $state(null);
+	let unsubscribeResampling: (() => void) | null = null;
 
 	// Program metadata
 	let songName = $state('');
@@ -185,16 +191,55 @@
 	// Pending cues to restore after audio loads (component-scoped, not global)
 	let pendingCues = [];
 
-	onMount(async () => {
-		// Boards, groups, and presets are now loaded via stores in parent component
-		// No need to fetch here
+	function stripAudioExtension(id: string): string {
+		return id.replace(/\.(mp3|wav)$/i, '');
+	}
 
-		// Initialize programId from program prop
+	async function checkTrackReadiness() {
+		if (!program?.audioId) {
+			isTrackReady = true;
+			return;
+		}
+
+		try {
+			const response = await fetch(`${API_URL}/audio/engine/readiness`);
+			if (response.ok) {
+				const data = await response.json();
+				const audioIdBase = stripAudioExtension(program.audioId);
+				const trackInfo = data.tracks.find((t: { id: string }) =>
+					t.id === program.audioId || t.id === audioIdBase
+				);
+				isTrackReady = trackInfo?.ready ?? true;
+			}
+		} catch (err) {
+			isTrackReady = true;
+		}
+	}
+
+	onMount(async () => {
+		unsubscribeResampling = onResamplingProgress((progress) => {
+			if (!program?.audioId) return;
+
+			const audioIdBase = stripAudioExtension(program.audioId);
+			if (progress.trackName === audioIdBase || progress.trackName === program.audioId) {
+				if (progress.active) {
+					isTrackReady = false;
+					resamplingProgress = progress;
+				} else {
+					isTrackReady = true;
+					resamplingProgress = null;
+				}
+			}
+		});
+
+		if (program?.audioId) {
+			checkTrackReadiness();
+		}
+
 		if (program?.id) {
 			programId = program.id;
 		}
 
-		// Load initial data if provided
 		if (program) {
 			console.log(`[Program.svelte] onMount - program for ${program.id}:`, {
 				hasAudioId: !!program.audioId,
@@ -204,14 +249,12 @@
 
 			loadProgramData(program);
 
-			// Legacy embedded audio (rare case)
 			if (!program.audioId && program.audioData) {
 				console.log(`[Program.svelte] Loading legacy embedded audio`);
 				setTimeout(() => {
 					loadCompressedAudio(program.audioData);
 				}, 50);
 			}
-			// Modern programs: audio loading handled by reactive $effect below
 		}
 
 		// Keyboard handler for play/pause (Space) and add cue (C)
@@ -1188,7 +1231,6 @@ function playFullProgram() {
 		}
 	});
 
-	// Cleanup on component destroy
 	onDestroy(() => {
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1197,6 +1239,10 @@ function playFullProgram() {
 		if (guideWavesurfer) {
 			guideWavesurfer.destroy();
 			guideWavesurfer = null;
+		}
+		if (unsubscribeResampling) {
+			unsubscribeResampling();
+			unsubscribeResampling = null;
 		}
 	});
 </script>
@@ -1209,7 +1255,7 @@ function playFullProgram() {
 					⏸
 				</button>
 			{:else}
-				<button class="btn-program-play" onclick={playFullProgram}>
+				<button class="btn-program-play" onclick={playFullProgram} disabled={!isTrackReady}>
 					▶
 				</button>
 			{/if}
@@ -1267,6 +1313,12 @@ function playFullProgram() {
 			{/if}
 			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
+
+		{#if resamplingProgress}
+			<div class="resampling-indicator">
+				Resampling {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz - {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
+			</div>
+		{/if}
 
 		{#if isLoaded}
 			<div class="guide-section">
@@ -1490,10 +1542,16 @@ function playFullProgram() {
 		color: #555;
 	}
 
-	.btn-program-play:hover {
+	.btn-program-play:hover:not(:disabled) {
 		background-color: #111;
 		color: #22c55e;
 		border-color: #222;
+	}
+
+	.btn-program-play:disabled {
+		color: #333;
+		cursor: not-allowed;
+		opacity: 0.5;
 	}
 
 	.btn-program-pause {
@@ -1787,6 +1845,15 @@ function playFullProgram() {
 	.waveform-wrapper * {
 		scrollbar-width: thin;
 		scrollbar-color: rgba(168, 85, 247, 0.5) transparent;
+	}
+
+	.resampling-indicator {
+		padding: 0.5rem 1rem;
+		color: #888;
+		font-size: 0.8rem;
+		text-align: center;
+		background: rgba(139, 92, 246, 0.05);
+		border-top: 1px solid rgba(139, 92, 246, 0.1);
 	}
 
 	.guide-section {

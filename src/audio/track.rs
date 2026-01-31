@@ -76,6 +76,13 @@ impl LoadedTrack {
     }
 
     pub fn ensure_resampled(&self, target_rate: u32) -> Result<(), String> {
+        self.ensure_resampled_with_progress(target_rate, None::<fn(u32, u32) -> bool>)
+    }
+
+    pub fn ensure_resampled_with_progress<F>(&self, target_rate: u32, progress_callback: Option<F>) -> Result<(), String>
+    where
+        F: Fn(u32, u32) -> bool,
+    {
         if target_rate == self.original_rate {
             return Ok(());
         }
@@ -96,11 +103,12 @@ impl LoadedTrack {
         );
 
         let start = std::time::Instant::now();
-        let resampled = resampler::resample(
+        let resampled = resampler::resample_with_progress(
             &self.original_samples,
             self.channels,
             self.original_rate,
             target_rate,
+            progress_callback,
         )?;
         let elapsed = start.elapsed();
 
@@ -129,5 +137,13 @@ impl LoadedTrack {
     pub fn cached_rates(&self) -> Vec<u32> {
         let cache = self.resampled_cache.read();
         cache.keys().copied().collect()
+    }
+
+    pub fn is_ready_for_rate(&self, target_rate: u32) -> bool {
+        if target_rate == 0 || target_rate == self.original_rate {
+            return true;
+        }
+        let cache = self.resampled_cache.read();
+        cache.contains_key(&target_rate)
     }
 }

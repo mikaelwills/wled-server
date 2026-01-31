@@ -123,6 +123,10 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/engine/memory", get(audio::get_memory_stats))
         .route("/audio/engine/health", get(audio::get_engine_health).delete(audio::reset_engine_health))
         .route("/audio/engine/resampling", get(audio::get_resampling_status))
+        .route("/audio/engine/readiness", get(audio::get_track_readiness))
+        .route("/audio/routing/:device_id", get(audio::get_routing).put(audio::update_routing))
+        .route("/audio/devices/:device_id/outputs", get(audio::get_device_outputs))
+        .route("/audio/mute", post(audio::set_mute))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state)
 }

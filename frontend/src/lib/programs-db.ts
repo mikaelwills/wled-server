@@ -180,22 +180,28 @@ export async function deleteProgram(programId: string): Promise<void> {
       }
     }
 
-    // Delete program from backend
+    // Delete program from backend (may not exist if never saved)
+    console.log(`[programs-db] Deleting program JSON: ${programId}`);
     const response = await fetch(`${API_URL}/programs/${programId}`, {
       method: 'DELETE'
     });
+    console.log(`[programs-db] Delete response: ${response.status}`);
 
-    if (!response.ok) {
-      throw new Error('Failed to delete program from server');
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Failed to delete program from server: ${response.status}`);
     }
 
-    // Update local store
-    programs.update(currentPrograms =>
-      currentPrograms.filter(p => p.id !== programId)
-    );
+    // Update local store (always, even if backend had no file)
+    programs.update(currentPrograms => {
+      console.log(`[programs-db] Removing from store, before: ${currentPrograms.length} programs`);
+      const filtered = currentPrograms.filter(p => p.id !== programId);
+      console.log(`[programs-db] After filter: ${filtered.length} programs`);
+      return filtered;
+    });
 
     // Clean up cached audio blob URL
     removeAudioForProgram(programId);
+    console.log(`[programs-db] Program deleted: ${programId}`);
   } catch (error) {
     console.error('Failed to delete program:', error);
     programsError.set('Failed to delete program from server.');

@@ -5,12 +5,15 @@ export interface ResamplingProgress {
   current: number;
   total: number;
   active: boolean;
+  trackName: string;
+  fromRate: number;
+  toRate: number;
 }
 
 export type SseEvent =
   | { type: 'state_update'; board_id: string; state: BoardState }
   | { type: 'connection_status'; board_id: string; connected: boolean }
-  | { type: 'resampling_progress'; current: number; total: number; active: boolean }
+  | { type: 'resampling_progress'; current: number; total: number; active: boolean; track_name: string; from_rate: number; to_rate: number }
   | { type: 'connected'; message: string };
 
 type ResamplingCallback = (progress: ResamplingProgress) => void;
@@ -53,7 +56,10 @@ export function createSseConnection(
         const progress: ResamplingProgress = {
           current: data.current,
           total: data.total,
-          active: data.active
+          active: data.active,
+          trackName: data.track_name,
+          fromRate: data.from_rate,
+          toRate: data.to_rate,
         };
         for (const cb of resamplingCallbacks) {
           cb(progress);

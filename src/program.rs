@@ -105,14 +105,18 @@ impl Program {
     }
 
     pub fn delete(&self, programs_path: &Path, audio_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        info!("Deleting program: {}", self.id);
+
         if let Some(guide_file) = &self.guide_audio_file {
             let guide_file_path = audio_path.join(guide_file);
             if guide_file_path.exists() {
                 fs::remove_file(&guide_file_path)?;
+                info!("Deleted guide audio: {}", guide_file);
             }
             let guide_peaks_path = audio_path.join(format!("{}.peaks.json", guide_file));
             if guide_peaks_path.exists() {
                 fs::remove_file(&guide_peaks_path)?;
+                info!("Deleted guide peaks: {}.peaks.json", guide_file);
             }
         }
 
@@ -120,18 +124,22 @@ impl Program {
             let audio_file_path = audio_path.join(audio_file);
             if audio_file_path.exists() {
                 fs::remove_file(&audio_file_path)?;
+                info!("Deleted audio: {}", audio_file);
             }
             let peaks_path = audio_path.join(format!("{}.peaks.json", audio_file));
             if peaks_path.exists() {
                 fs::remove_file(&peaks_path)?;
+                info!("Deleted peaks: {}.peaks.json", audio_file);
             }
         }
 
         let program_file = programs_path.join(format!("{}.json", self.id));
         if program_file.exists() {
-            fs::remove_file(program_file)?;
+            fs::remove_file(&program_file)?;
+            info!("Deleted program JSON: {}.json", self.id);
         }
 
+        info!("Program deletion complete: {}", self.id);
         Ok(())
     }
 }

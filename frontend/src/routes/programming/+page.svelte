@@ -1,12 +1,34 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import Program from '$lib/Program.svelte';
 	import { API_URL } from '$lib/api';
 	import { programs, programsLoading, programsError } from '$lib/store';
 	import { saveProgram, deleteProgram } from '$lib/programs-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
+	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 
 	let isDragging = $state(false);
 	let isLoading = $state(false);
+	let resamplingProgress = $state<ResamplingProgress | null>(null);
+	let unsubscribeResampling: (() => void) | null = null;
+
+	function startListeningForProgress() {
+		unsubscribeResampling = onResamplingProgress((progress) => {
+			resamplingProgress = progress.active ? progress : null;
+		});
+	}
+
+	function stopListeningForProgress() {
+		if (unsubscribeResampling) {
+			unsubscribeResampling();
+			unsubscribeResampling = null;
+		}
+		resamplingProgress = null;
+	}
+
+	onDestroy(() => {
+		stopListeningForProgress();
+	});
 
 	function handleDragOver(event: DragEvent) {
 		event.preventDefault();
@@ -142,6 +164,7 @@
 	async function importProgramFromJSON(file: File) {
 		console.log('Importing program from JSON:', file.name);
 		isLoading = true;
+		startListeningForProgress();
 
 		try {
 			// Read JSON file
@@ -197,6 +220,7 @@
 			console.error('Failed to import program:', err);
 			alert(`Failed to import program: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
+			stopListeningForProgress();
 			isLoading = false;
 		}
 	}
@@ -209,7 +233,8 @@
 
 		console.log('Creating new program with file:', file.name);
 
-		isLoading = true; // Set to true immediately to show loading card
+		isLoading = true;
+		startListeningForProgress();
 
 		const timestamp = Date.now();
 		const fileName = file.name;
@@ -222,15 +247,15 @@
 			// --- To use MP3 compression, comment out the "Raw Audio" block and uncomment the "Compressed Audio" line. ---
 
 			// Option 1: Raw Audio (default)
-			// audioDataURL = await new Promise((resolve, reject) => {
-			// 	const reader = new FileReader();
-			// 	reader.onload = (e) => resolve(e.target.result);
-			// 	reader.onerror = reject;
-			// 	reader.readAsDataURL(file);
-			// });
+			audioDataURL = await new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = (e) => resolve(e.target.result);
+				reader.onerror = reject;
+				reader.readAsDataURL(file);
+			});
 
 			// Option 2: Compressed Audio
-			audioDataURL = await compressAudio(file);
+			// audioDataURL = await compressAudio(file);
 
 
 			// Upload audio to backend API
@@ -270,7 +295,8 @@
 			console.error('Failed to create program:', err);
 			alert('Failed to save audio file. Check console for details.');
 		} finally {
-			isLoading = false; // Ensure it's reset after process completes or errors
+			stopListeningForProgress();
+			isLoading = false;
 		}
 	}
 
@@ -317,9 +343,17 @@
 			<!-- Loading Card at Top (new programs appear here) -->
 			{#if isLoading}
 				<div class="compression-loading-card">
-					<div class="spinner"></div>
-					<p>Saving program...</p>
-					<p class="compression-hint">Processing audio file</p>
+					{#if resamplingProgress?.active}
+						<div class="progress-container">
+							<div class="progress-bar" style="width: {(resamplingProgress.current / resamplingProgress.total) * 100}%"></div>
+						</div>
+						<p>Resampling audio...</p>
+						<p class="compression-hint">{Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%</p>
+					{:else}
+						<div class="spinner"></div>
+						<p>Saving program...</p>
+						<p class="compression-hint">Processing audio file</p>
+					{/if}
 				</div>
 			{/if}
 
@@ -426,5 +460,21 @@
 	.compression-hint {
 		font-size: 0.875rem !important;
 		color: #555 !important;
+	}
+
+	.progress-container {
+		width: 200px;
+		height: 8px;
+		background: #1a1a1a;
+		border-radius: 4px;
+		margin: 0 auto 1rem;
+		overflow: hidden;
+	}
+
+	.progress-bar {
+		height: 100%;
+		background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+		border-radius: 4px;
+		transition: width 0.1s ease-out;
 	}
 </style>

@@ -25,29 +25,28 @@ impl DeviceManager {
     pub fn list_devices(&self) -> Vec<AudioDevice> {
         let host = cpal::default_host();
         let default_device = host.default_output_device();
-        let default_name = default_device
-            .as_ref()
-            .and_then(|d| d.name().ok());
+        let default_name = default_device.as_ref().and_then(|d| d.name().ok());
 
         let mut devices = Vec::new();
 
-        if let Ok(output_devices) = host.output_devices() {
-            for device in output_devices {
-                if let Ok(name) = device.name() {
-                    let config = device.default_output_config().ok();
-                    let channels = config.as_ref().map(|c| c.channels()).unwrap_or(2);
-                    let sample_rate = config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
-                    let is_default = default_name.as_ref() == Some(&name);
+        let Ok(output_devices) = host.output_devices() else {
+            return devices;
+        };
 
-                    devices.push(AudioDevice {
-                        id: name.clone(),
-                        name: name.clone(),
-                        output_channels: channels,
-                        sample_rate,
-                        is_default,
-                    });
-                }
-            }
+        for device in output_devices {
+            let Ok(name) = device.name() else { continue };
+            let config = device.default_output_config().ok();
+            let channels = config.as_ref().map(|c| c.channels()).unwrap_or(2);
+            let sample_rate = config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
+            let is_default = default_name.as_ref() == Some(&name);
+
+            devices.push(AudioDevice {
+                id: name.clone(),
+                name: name.clone(),
+                output_channels: channels,
+                sample_rate,
+                is_default,
+            });
         }
 
         devices
@@ -66,15 +65,18 @@ impl DeviceManager {
         let host = cpal::default_host();
         let selected = self.selected_device_id.read().unwrap();
 
-        if let Some(ref device_id) = *selected {
-            if let Ok(devices) = host.output_devices() {
-                for device in devices {
-                    if let Ok(name) = device.name() {
-                        if &name == device_id {
-                            return Some(device);
-                        }
-                    }
-                }
+        let Some(ref device_id) = *selected else {
+            return host.default_output_device();
+        };
+
+        let Ok(devices) = host.output_devices() else {
+            return host.default_output_device();
+        };
+
+        for device in devices {
+            let Ok(name) = device.name() else { continue };
+            if &name == device_id {
+                return Some(device);
             }
         }
 
@@ -82,26 +84,48 @@ impl DeviceManager {
     }
 
     pub fn get_selected_sample_rate(&self) -> u32 {
-        if let Some(device) = self.get_output_device() {
-            if let Ok(config) = device.default_output_config() {
-                return config.sample_rate().0;
-            }
-        }
-        48000
+        let Some(device) = self.get_output_device() else {
+            return 48000;
+        };
+        let Ok(config) = device.default_output_config() else {
+            return 48000;
+        };
+        config.sample_rate().0
     }
 
     pub fn get_device_sample_rate(&self, device_id: &str) -> Option<u32> {
         let host = cpal::default_host();
-        if let Ok(devices) = host.output_devices() {
-            for device in devices {
-                if let Ok(name) = device.name() {
-                    if name == device_id {
-                        if let Ok(config) = device.default_output_config() {
-                            return Some(config.sample_rate().0);
-                        }
-                    }
-                }
+
+        let devices = host.output_devices().ok()?;
+
+        for device in devices {
+            let Some(name) = device.name().ok() else {
+                continue;
+            };
+            if name != device_id {
+                continue;
             }
+            let config = device.default_output_config().ok()?;
+            return Some(config.sample_rate().0);
+        }
+
+        None
+    }
+
+    pub fn get_device_output_channels(&self, device_id: &str) -> Option<u16> {
+        let host = cpal::default_host();
+
+        let devices = host.output_devices().ok()?;
+
+        for device in devices {
+            let Some(name) = device.name().ok() else {
+                continue;
+            };
+            if name != device_id {
+                continue;
+            }
+            let config = device.default_output_config().ok()?;
+            return Some(config.channels());
         }
         None
     }

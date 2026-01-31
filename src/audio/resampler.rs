@@ -6,6 +6,19 @@ pub fn resample(
     from_rate: u32,
     to_rate: u32,
 ) -> Result<Vec<f32>, String> {
+    resample_with_progress(samples, channels, from_rate, to_rate, None::<fn(u32, u32) -> bool>)
+}
+
+pub fn resample_with_progress<F>(
+    samples: &[f32],
+    channels: u16,
+    from_rate: u32,
+    to_rate: u32,
+    progress_callback: Option<F>,
+) -> Result<Vec<f32>, String>
+where
+    F: Fn(u32, u32) -> bool,
+{
     if from_rate == to_rate {
         return Ok(samples.to_vec());
     }
@@ -56,6 +69,7 @@ pub fn resample(
         .collect();
 
     let mut pos = 0;
+    let total_frames = frames_in as u32;
     while pos + chunk_size <= frames_in {
         let input_chunk: Vec<Vec<f32>> = channel_buffers
             .iter()
@@ -73,6 +87,12 @@ pub fn resample(
         }
 
         pos += chunk_size;
+
+        if let Some(ref callback) = progress_callback {
+            if !callback(pos as u32, total_frames) {
+                return Err("Resampling cancelled".to_string());
+            }
+        }
     }
 
     let remaining = frames_in - pos;

@@ -11,7 +11,6 @@
 	import { toggleTimingMonitor } from '$lib/timing-store';
 	import AudioHealthMonitor from '$lib/AudioHealthMonitor.svelte';
 	import { toggleAudioHealthMonitor } from '$lib/audio-health-store';
-	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 	import { API_URL } from '$lib/api';
 
 	let { children } = $props();
@@ -38,10 +37,6 @@
 	}
 	let memoryStats = $state<MemoryStats | null>(null);
 	let memoryPollInterval: ReturnType<typeof setInterval> | null = null;
-
-	// Resampling progress (via SSE)
-	let resamplingStatus = $state<ResamplingProgress | null>(null);
-	let unsubscribeResampling: (() => void) | null = null;
 
 	async function fetchMemoryStats() {
 		try {
@@ -86,12 +81,7 @@
 			// Must run after programs are loaded
 			await initAudio();
 
-			// Subscribe to resampling progress via SSE
-			unsubscribeResampling = onResamplingProgress((progress) => {
-				resamplingStatus = progress.active ? progress : null;
-			});
-
-			// Start memory stats polling (only memory, resampling comes via SSE)
+			// Start memory stats polling
 			await fetchMemoryStats();
 			memoryPollInterval = setInterval(() => {
 				fetchMemoryStats();
@@ -107,9 +97,6 @@
 			cleanupAudio();
 			if (memoryPollInterval) {
 				clearInterval(memoryPollInterval);
-			}
-			if (unsubscribeResampling) {
-				unsubscribeResampling();
 			}
 		}
 	});
@@ -142,13 +129,6 @@
 		</div>
 
 		<div class="nav-status">
-			{#if resamplingStatus?.active}
-				<div class="resampling-status">
-					<span class="resampling-label">Resampling</span>
-					<span class="resampling-value">{resamplingStatus.current}/{resamplingStatus.total}</span>
-				</div>
-			{/if}
-
 			{#if memoryStats}
 				<div class="memory-stats">
 					<span class="memory-value">{memoryStats.memory_mb.toFixed(1)} MB</span>
@@ -248,31 +228,6 @@
 		align-items: center;
 		gap: 0.5rem;
 		margin-left: auto;
-	}
-
-	.resampling-status {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: 0.5rem 1rem;
-		gap: 0.125rem;
-		background: rgba(251, 191, 36, 0.1);
-		border-radius: 4px;
-	}
-
-	.resampling-label {
-		font-size: 0.65rem;
-		color: #fbbf24;
-		text-transform: uppercase;
-		font-weight: 600;
-	}
-
-	.resampling-value {
-		font-size: 0.9rem;
-		font-weight: 600;
-		color: #fbbf24;
-		font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
 	}
 
 	.memory-stats {

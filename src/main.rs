@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -34,6 +35,8 @@ use types::{AppState, BoardEntry, SharedState};
 
 #[tokio::main]
 async fn main() {
+    let startup_time = Instant::now();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -45,60 +48,64 @@ async fn main() {
     let storage_paths = config::StoragePaths::default();
 
     let usb_programs_path = &storage_paths.programs;
-    let max_usb_wait_secs = 30;
-    let mut usb_waited = 0;
+    let is_usb_path = usb_programs_path.to_string_lossy().starts_with("/tmp/mountd/");
 
-    fn count_json_files(path: &std::path::Path) -> usize {
-        match std::fs::read_dir(path) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-                .count(),
-            Err(_) => 0,
-        }
-    }
+    if is_usb_path {
+        let max_usb_wait_secs = 30;
+        let mut usb_waited = 0;
 
-    let mut file_count = count_json_files(usb_programs_path);
-    while file_count == 0 && usb_waited < max_usb_wait_secs {
-        if usb_waited == 0 {
-            warn!("USB programs directory empty or not ready at {:?}, waiting...", usb_programs_path);
-        }
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        usb_waited += 1;
-        file_count = count_json_files(usb_programs_path);
-        if usb_waited % 5 == 0 {
-            info!("Still waiting for USB programs... ({}/{}s, found {} files)", usb_waited, max_usb_wait_secs, file_count);
-        }
-    }
-
-    if file_count > 0 {
-        if usb_waited > 0 {
-            info!("✅ USB programs ready after {}s ({} files found)", usb_waited, file_count);
-        } else {
-            info!("✅ USB programs detected ({} files), waiting for stability...", file_count);
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        fn count_json_files(path: &std::path::Path) -> usize {
+            match std::fs::read_dir(path) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+                    .count(),
+                Err(_) => 0,
+            }
         }
 
-        if count_json_files(usb_programs_path) == 0 {
-            warn!("USB disappeared after initial detection! Waiting for remount...");
-            let mut remount_wait = 0;
-            let max_remount_wait = 30;
-            while count_json_files(usb_programs_path) == 0 && remount_wait < max_remount_wait {
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                remount_wait += 1;
-                if remount_wait % 5 == 0 {
-                    info!("Still waiting for USB remount... ({}/{}s)", remount_wait, max_remount_wait);
+        let mut file_count = count_json_files(usb_programs_path);
+        while file_count == 0 && usb_waited < max_usb_wait_secs {
+            if usb_waited == 0 {
+                warn!("USB programs directory empty or not ready at {:?}, waiting...", usb_programs_path);
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            usb_waited += 1;
+            file_count = count_json_files(usb_programs_path);
+            if usb_waited % 5 == 0 {
+                info!("Still waiting for USB programs... ({}/{}s, found {} files)", usb_waited, max_usb_wait_secs, file_count);
+            }
+        }
+
+        if file_count > 0 {
+            if usb_waited > 0 {
+                info!("✅ USB programs ready after {}s ({} files found)", usb_waited, file_count);
+            } else {
+                info!("✅ USB programs detected ({} files), waiting for stability...", file_count);
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+
+            if count_json_files(usb_programs_path) == 0 {
+                warn!("USB disappeared after initial detection! Waiting for remount...");
+                let mut remount_wait = 0;
+                let max_remount_wait = 30;
+                while count_json_files(usb_programs_path) == 0 && remount_wait < max_remount_wait {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    remount_wait += 1;
+                    if remount_wait % 5 == 0 {
+                        info!("Still waiting for USB remount... ({}/{}s)", remount_wait, max_remount_wait);
+                    }
+                }
+                let final_count = count_json_files(usb_programs_path);
+                if final_count > 0 {
+                    info!("✅ USB remounted after {}s ({} files)", remount_wait, final_count);
+                } else {
+                    warn!("⚠️ USB did not remount after {}s", max_remount_wait);
                 }
             }
-            let final_count = count_json_files(usb_programs_path);
-            if final_count > 0 {
-                info!("✅ USB remounted after {}s ({} files)", remount_wait, final_count);
-            } else {
-                warn!("⚠️ USB did not remount after {}s", max_remount_wait);
-            }
+        } else {
+            warn!("⚠️ No program files found after {}s - directory may be empty or USB not mounted", max_usb_wait_secs);
         }
-    } else {
-        warn!("⚠️ No program files found after {}s - directory may be empty or USB not mounted", max_usb_wait_secs);
     }
 
     if let Err(e) = storage_paths.init() {
@@ -228,43 +235,6 @@ async fn main() {
         None
     };
 
-    if storage_paths.audio.exists() {
-        let mut loaded_count = 0;
-        if let Ok(entries) = std::fs::read_dir(&storage_paths.audio) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let is_audio = path.extension().map_or(false, |ext| {
-                    ext == "mp3" || ext == "wav"
-                });
-                if is_audio {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        let stem = stem.to_string();
-                        let path_clone = path.clone();
-                        let decode_result = tokio::task::spawn_blocking(move || {
-                            audio::decode_file(&path_clone)
-                        }).await;
-
-                        match decode_result {
-                            Ok(Ok(track)) => {
-                                audio_engine.load_track(stem, track).await;
-                                loaded_count += 1;
-                            }
-                            Ok(Err(e)) => {
-                                warn!("Failed to preload audio '{}': {}", path.display(), e);
-                            }
-                            Err(e) => {
-                                warn!("Decode task failed for '{}': {}", path.display(), e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if loaded_count > 0 {
-            info!("Preloaded {} audio track(s) into engine", loaded_count);
-        }
-    }
-
     let audio_engine = Arc::new(Mutex::new(audio_engine));
 
     let programs_map: HashMap<String, program::Program> =
@@ -383,7 +353,7 @@ async fn main() {
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => {
-            info!("API Server running on http://{}", addr);
+            info!("API Server running on http://{} (startup: {:?})", addr, startup_time.elapsed());
             l
         }
         Err(e) => {
@@ -392,6 +362,51 @@ async fn main() {
             return;
         }
     };
+
+    let audio_engine_bg = state.audio_engine.clone();
+    let audio_path_bg = state.storage_paths.audio.clone();
+    tokio::spawn(async move {
+        if !audio_path_bg.exists() {
+            return;
+        }
+        let entries: Vec<_> = match std::fs::read_dir(&audio_path_bg) {
+            Ok(e) => e.flatten().collect(),
+            Err(_) => return,
+        };
+        let mut loaded_count = 0;
+        for entry in entries {
+            let path = entry.path();
+            let is_audio = path.extension().map_or(false, |ext| {
+                ext == "mp3" || ext == "wav"
+            });
+            if is_audio {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let stem = stem.to_string();
+                    let path_clone = path.clone();
+                    let decode_result = tokio::task::spawn_blocking(move || {
+                        audio::decode_file(&path_clone)
+                    }).await;
+
+                    match decode_result {
+                        Ok(Ok(track)) => {
+                            let mut engine = audio_engine_bg.lock().await;
+                            engine.load_track(stem, track).await;
+                            loaded_count += 1;
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Failed to preload audio '{}': {}", path.display(), e);
+                        }
+                        Err(e) => {
+                            warn!("Decode task failed for '{}': {}", path.display(), e);
+                        }
+                    }
+                }
+            }
+        }
+        if loaded_count > 0 {
+            info!("Background: preloaded {} audio track(s) into engine", loaded_count);
+        }
+    });
 
     match axum::serve(listener, app).await {
         Ok(_) => info!("Server stopped properly"),
