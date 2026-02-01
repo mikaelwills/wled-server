@@ -1,31 +1,14 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
+import { resamplingProgress, type SlotResamplingProgress } from './store';
 
-export interface ResamplingProgress {
-  current: number;
-  total: number;
-  active: boolean;
-  trackName: string;
-  fromRate: number;
-  toRate: number;
-}
+export type { SlotResamplingProgress as ResamplingProgress };
 
 export type SseEvent =
   | { type: 'state_update'; board_id: string; state: BoardState }
   | { type: 'connection_status'; board_id: string; connected: boolean }
-  | { type: 'resampling_progress'; current: number; total: number; active: boolean; track_name: string; from_rate: number; to_rate: number }
+  | { type: 'resampling_progress'; slot: string; program_id: string; track_name: string; current: number; total: number; active: boolean; from_rate: number; to_rate: number }
   | { type: 'connected'; message: string };
-
-type ResamplingCallback = (progress: ResamplingProgress) => void;
-const resamplingCallbacks: ResamplingCallback[] = [];
-
-export function onResamplingProgress(callback: ResamplingCallback): () => void {
-  resamplingCallbacks.push(callback);
-  return () => {
-    const idx = resamplingCallbacks.indexOf(callback);
-    if (idx >= 0) resamplingCallbacks.splice(idx, 1);
-  };
-}
 
 export function createSseConnection(
   onStateUpdate: (boardId: string, state: BoardState) => void,
@@ -54,15 +37,19 @@ export function createSseConnection(
         onConnectionStatus(data.board_id, data.connected);
       } else if (data.type === 'resampling_progress') {
         const progress: ResamplingProgress = {
+          slot: data.slot,
+          programId: data.program_id,
+          trackName: data.track_name,
           current: data.current,
           total: data.total,
           active: data.active,
-          trackName: data.track_name,
           fromRate: data.from_rate,
           toRate: data.to_rate,
         };
-        for (const cb of resamplingCallbacks) {
-          cb(progress);
+        if (progress.active) {
+          resamplingProgress.update(state => ({ ...state, [progress.slot]: progress }));
+        } else {
+          resamplingProgress.update(state => ({ ...state, [progress.slot]: null }));
         }
       }
     } catch (err) {

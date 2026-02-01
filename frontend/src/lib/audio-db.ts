@@ -2,7 +2,7 @@
 // Centralized audio loading and management
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs, resamplingQuality, resamplingQualityLoading } from './store';
+import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs, resamplingQuality, resamplingQualityLoading, slotMuted } from './store';
 import type { ResamplingQuality } from './store';
 import { API_URL } from '$lib/api';
 
@@ -489,5 +489,27 @@ export async function updateResamplingQuality(quality: ResamplingQuality): Promi
 		});
 	} catch (e) {
 		console.error('Failed to set resampling quality:', e);
+	}
+}
+
+export type SlotId = 'backing' | 'guide' | 'click' | 'aux';
+
+export async function toggleSlotMute(track: SlotId): Promise<void> {
+	if (!browser) return;
+
+	const currentMuted = get(slotMuted);
+	const newMuted = !currentMuted[track];
+
+	slotMuted.update(state => ({ ...state, [track]: newMuted }));
+
+	try {
+		await fetch(`${API_URL}/audio/mute`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ track, muted: newMuted })
+		});
+	} catch (e) {
+		console.error(`Failed to set ${track} mute:`, e);
+		slotMuted.update(state => ({ ...state, [track]: !newMuted }));
 	}
 }

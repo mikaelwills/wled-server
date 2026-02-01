@@ -33,6 +33,8 @@ pub struct Program {
     pub grid_offset: Option<f64>,  // Downbeat position for beat grid alignment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guide_audio_file: Option<String>,  // Guide track filename
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub click_rate: Option<f64>,  // Click track rate multiplier (0.5, 1.0, or 2.0)
 }
 
 fn default_transition_type() -> String {

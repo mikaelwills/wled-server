@@ -10,6 +10,31 @@
 ## ⚠️ IMPORTANT: DO NOT RESTART THE SERVER ⚠️
 **Run `cargo build` to check compilation, but NEVER restart/kill the server process. The user will deploy with their deploy script.**
 
+## Quick API Testing
+
+**Port:** 3010
+
+```bash
+# Health check
+curl http://localhost:3010/api/health
+
+# List programs
+curl http://localhost:3010/api/programs
+
+# Get specific program (URL encode spaces as %20)
+curl "http://localhost:3010/api/programs/my-program-id"
+
+# Update program (PUT)
+curl -X PUT "http://localhost:3010/api/programs/my-program-id" \
+  -H "Content-Type: application/json" -d @program.json
+
+# List boards
+curl http://localhost:3010/api/boards
+
+# List presets
+curl http://localhost:3010/api/presets
+```
+
 A Rust-based intermediary server for controlling WLED devices with light sequencing for Loopy Pro integration.
 
 ## Documentation

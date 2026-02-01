@@ -398,11 +398,13 @@ impl ProgramEngine {
                                 if let Some(bpm) = program.bpm {
                                     if let Some(track) = eng.get_track(track_id) {
                                         let grid_offset = program.grid_offset.unwrap_or(0.0);
+                                        let click_rate = program.click_rate.unwrap_or(1.0);
                                         eng.generate_and_load_click(
                                             track_id,
                                             bpm as f64,
                                             grid_offset,
                                             track.duration_secs,
+                                            click_rate,
                                         ).await;
                                     }
                                 }

@@ -67,14 +67,17 @@ pub async fn select_device(
     let total = tracks_to_resample.len() as u32;
 
     tokio::spawn(async move {
-        for (i, (track_id, track)) in tracks_to_resample.iter().enumerate() {
+        for (i, (slot, program_id, track)) in tracks_to_resample.iter().enumerate() {
             let from_rate = track.original_rate;
+            let slot_name = slot.name().to_string();
 
             let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
+                slot: slot_name.clone(),
+                program_id: program_id.clone(),
+                track_name: program_id.clone(),
                 current: i as u32,
                 total,
                 active: true,
-                track_name: track_id.clone(),
                 from_rate,
                 to_rate: sample_rate,
             });
@@ -84,10 +87,12 @@ pub async fn select_device(
             }
 
             let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
+                slot: slot_name,
+                program_id: program_id.clone(),
+                track_name: program_id.clone(),
                 current: (i + 1) as u32,
                 total,
                 active: i + 1 < tracks_to_resample.len(),
-                track_name: track_id.clone(),
                 from_rate,
                 to_rate: sample_rate,
             });

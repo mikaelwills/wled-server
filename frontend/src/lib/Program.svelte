@@ -17,7 +17,8 @@
 	import RoutingModal from '$lib/RoutingModal.svelte';
 	import Track from '$lib/Track.svelte';
 	import { getSlot } from '$lib/slots';
-	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
+	import { toggleSlotMute } from '$lib/audio-db';
+	import { slotMuted, resamplingProgress as resamplingProgressStore, type SlotResamplingProgress } from '$lib/store';
 	import type { MarkerType } from '$lib/models/Cue';
 
 	interface Marker {
@@ -56,17 +57,21 @@
 	let audioToUpload = $state(null);
 	let wavesurferInitialized = $state(false);
 
-	// Resampling state
-	let isTrackReady = $state(true);
-	let resamplingProgress: ResamplingProgress | null = $state(null);
-	let guideResamplingProgress: ResamplingProgress | null = $state(null);
+	// Resampling state - derived from centralized store, filtered by program
+	let backingProgress = $derived(
+		$resamplingProgressStore.backing?.programId === program?.audioId ? $resamplingProgressStore.backing : null
+	);
+	let guideProgress = $derived(
+		$resamplingProgressStore.guide?.programId === `${programId}_guide` ? $resamplingProgressStore.guide : null
+	);
+	let resamplingModalOpen = $state(false);
+	let resamplingModalMessage = $state('');
 
 	// Guide track state - uses Track component
 	// Show guide section when: guideAudioId exists, OR resampling in progress (during upload)
-	let hasGuide = $derived(!!program?.guideAudioId || !!guideResamplingProgress);
+	let hasGuide = $derived(!!program?.guideAudioId || !!guideProgress);
 	let guideBlobUrl = $derived(program?.id ? $guideBlobUrls[program.id] : null);
 	let guidePeaks = $derived(program?.id ? $guideCachedPeaks[program.id] : null);
-	let unsubscribeResampling: (() => void) | null = null;
 
 	// Program metadata
 	let songName = $state('');
@@ -74,6 +79,7 @@
 	let audioDuration: number | null = $state(null); // Duration in seconds (extracted from audio)
 	let bpm: number | null = $state(null); // BPM for speed-synced effects
 	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
+	let clickRate = $state(1); // Click track rate (0.5 = half, 1 = normal, 2 = double)
 
 	// Preset picker modal state
 	let presetPickerOpen = $state(false);
@@ -229,10 +235,9 @@
 		return id.replace(/\.(mp3|wav)$/i, '');
 	}
 
-	async function checkTrackReadiness() {
+	async function checkTrackReadiness(): Promise<{ ready: boolean; message: string }> {
 		if (!program?.audioId) {
-			isTrackReady = true;
-			return;
+			return { ready: true, message: '' };
 		}
 
 		try {
@@ -243,47 +248,24 @@
 				const trackInfo = data.tracks.find((t: { id: string }) =>
 					t.id === program.audioId || t.id === audioIdBase
 				);
-				isTrackReady = trackInfo?.ready ?? true;
+				if (trackInfo?.ready) {
+					return { ready: true, message: '' };
+				} else {
+					const fromRate = trackInfo?.original_rate || 0;
+					const toRate = data.device_sample_rate || 0;
+					return {
+						ready: false,
+						message: `Resampling audio from ${(fromRate/1000).toFixed(1)}kHz to ${(toRate/1000).toFixed(1)}kHz...`
+					};
+				}
 			}
 		} catch (err) {
-			isTrackReady = true;
+			console.error('Failed to check track readiness:', err);
 		}
+		return { ready: true, message: '' };
 	}
 
 	onMount(async () => {
-		unsubscribeResampling = onResamplingProgress((progress) => {
-			if (program?.audioId) {
-				const audioIdBase = stripAudioExtension(program.audioId);
-				if (progress.trackName === audioIdBase || progress.trackName === program.audioId) {
-					if (progress.active) {
-						isTrackReady = false;
-						resamplingProgress = progress;
-					} else {
-						isTrackReady = true;
-						resamplingProgress = null;
-					}
-				}
-			}
-
-			const expectedGuideId = programId ? `${programId}_guide` : null;
-			const guideIdBase = program?.guideAudioId ? stripAudioExtension(program.guideAudioId) : null;
-			const trackNameWithoutPrefix = progress.trackName.replace(/^guide:/, '');
-			if (trackNameWithoutPrefix === guideIdBase ||
-				trackNameWithoutPrefix === program?.guideAudioId ||
-				trackNameWithoutPrefix === expectedGuideId ||
-				progress.trackName === `guide:${expectedGuideId}`) {
-				if (progress.active) {
-					guideResamplingProgress = progress;
-				} else {
-					guideResamplingProgress = null;
-				}
-			}
-		});
-
-		if (program?.audioId) {
-			checkTrackReadiness();
-		}
-
 		if (program?.id) {
 			programId = program.id;
 		}
@@ -360,13 +342,14 @@
 		};
 	});
 
-	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; cues?: Marker[] }) {
+	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; cues?: Marker[] }) {
 		songName = data.songName || '';
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
 		defaultTargetBoard = data.defaultTargetBoard || null;
 		bpm = data.bpm || null;
 		gridOffset = data.gridOffset || 0;
+		clickRate = data.clickRate ?? 1;
 		// Note: cues will need to be restored after audio file is loaded
 		// Store them temporarily in component-scoped variable
 		pendingCues = data.cues || [];
@@ -942,7 +925,7 @@
 		}
 	}
 
-function playFullProgram() {
+async function playFullProgram() {
 		lastActiveProgramId.set(programId);
 
 		let currentProgram = null;
@@ -952,6 +935,13 @@ function playFullProgram() {
 		unsubscribe();
 
 		if (!currentProgram) return;
+
+		const { ready, message } = await checkTrackReadiness();
+		if (!ready) {
+			resamplingModalMessage = message;
+			resamplingModalOpen = true;
+			return;
+		}
 
 		const currentTime = wavesurfer ? wavesurfer.getCurrentTime() : 0;
 		console.log('▶️ PLAY pressed - starting from position:', currentTime);
@@ -1068,6 +1058,7 @@ function playFullProgram() {
 			audioDuration: audioDuration,
 			bpm: bpm ? Number(bpm) : undefined,
 			gridOffset: gridOffset || 0,
+			clickRate: clickRate,
 			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0
 		};
 
@@ -1262,10 +1253,6 @@ function playFullProgram() {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;
 		}
-		if (unsubscribeResampling) {
-			unsubscribeResampling();
-			unsubscribeResampling = null;
-		}
 	});
 </script>
 
@@ -1277,7 +1264,7 @@ function playFullProgram() {
 					⏸
 				</button>
 			{:else}
-				<button class="btn-program-play" onclick={playFullProgram} disabled={!isTrackReady}>
+				<button class="btn-program-play" onclick={playFullProgram}>
 					▶
 				</button>
 			{/if}
@@ -1308,6 +1295,28 @@ function playFullProgram() {
 			/>
 			<span class="file-name">{fileName}</span>
 			<div class="spacer"></div>
+			<div class="click-group" title="Click track">
+				<button
+					class="click-mute-btn"
+					class:muted={$slotMuted.click}
+					onclick={() => toggleSlotMute('click')}
+				>Click</button>
+				<button
+					class="click-rate-btn"
+					class:active={clickRate === 0.5}
+					onclick={() => clickRate = 0.5}
+				>½</button>
+				<button
+					class="click-rate-btn"
+					class:active={clickRate === 1}
+					onclick={() => clickRate = 1}
+				>1</button>
+				<button
+					class="click-rate-btn"
+					class:active={clickRate === 2}
+					onclick={() => clickRate = 2}
+				>2</button>
+			</div>
 			<div class="action-menu-wrapper">
 				<button
 					class="btn-action-menu"
@@ -1331,10 +1340,10 @@ function playFullProgram() {
 			</div>
 		</div>
 		<div class="track-label" style="--track-color: {backingSlot.color}">
-			<span>{backingSlot.label}</span>
-			{#if resamplingProgress}
+			<button class="mute-btn" class:muted={$slotMuted.backing} onclick={() => toggleSlotMute('backing')}>{backingSlot.label}</button>
+			{#if backingProgress}
 				<span class="resampling-inline">
-					{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
+					{backingProgress.trackName} • {(backingProgress.fromRate / 1000).toFixed(1)}kHz → {(backingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((backingProgress.current / backingProgress.total) * 100)}%
 				</span>
 			{/if}
 			<div class="track-label-actions">
@@ -1480,7 +1489,7 @@ function playFullProgram() {
 						programId={programId}
 						blobUrl={guideBlobUrl}
 						cachedPeaks={guidePeaks}
-						resamplingProgress={guideResamplingProgress}
+						resamplingProgress={guideProgress}
 						mainWavesurfer={wavesurfer}
 						onRemove={removeGuide}
 					/>
@@ -1532,6 +1541,19 @@ function playFullProgram() {
 	open={routingModalOpen}
 	onClose={() => routingModalOpen = false}
 />
+
+{#if resamplingModalOpen}
+	<div class="modal-overlay" onclick={() => resamplingModalOpen = false}>
+		<div class="resampling-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="resampling-modal-content">
+				<div class="resampling-spinner"></div>
+				<p>{resamplingModalMessage}</p>
+				<p class="resampling-hint">Please wait for resampling to complete.</p>
+			</div>
+			<button class="resampling-modal-close" onclick={() => resamplingModalOpen = false}>OK</button>
+		</div>
+	</div>
+{/if}
 
 <style>
 	/* Force all WaveSurfer region labels to be centered - overrides plugin's default CSS */
@@ -1710,6 +1732,65 @@ function playFullProgram() {
 
 	.bpm-input::placeholder {
 		color: #444;
+	}
+
+	.click-group {
+		display: flex;
+		background-color: transparent;
+		border: 1px solid #1a1a1a;
+		border-radius: 6px;
+		overflow: hidden;
+		height: 36px;
+		box-sizing: border-box;
+	}
+
+	.click-mute-btn {
+		background: transparent;
+		border: none;
+		color: #fbbf24;
+		padding: 0 0.9rem;
+		font-size: 0.75rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		cursor: pointer;
+		border-right: 1px solid #1a1a1a;
+		transition: all 0.15s;
+		height: 100%;
+	}
+
+	.click-mute-btn:hover {
+		background: #111;
+	}
+
+	.click-mute-btn.muted {
+		color: #444;
+	}
+
+	.click-rate-btn {
+		background: transparent;
+		border: none;
+		color: #444;
+		padding: 0 0.75rem;
+		font-size: 0.875rem;
+		cursor: pointer;
+		border-right: 1px solid #1a1a1a;
+		transition: all 0.15s;
+		height: 100%;
+	}
+
+	.click-rate-btn:last-child {
+		border-right: none;
+	}
+
+	.click-rate-btn:hover {
+		background: #111;
+		color: #888;
+	}
+
+	.click-rate-btn.active {
+		background: #1a1a1a;
+		color: #fff;
 	}
 
 	.cue-count-badge-wrapper {
@@ -1899,6 +1980,27 @@ function playFullProgram() {
 		color: var(--track-color, #888);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+
+	.mute-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		font-size: inherit;
+		font-weight: inherit;
+		text-transform: inherit;
+		letter-spacing: inherit;
+		color: var(--track-color, #888);
+		cursor: pointer;
+		transition: color 0.15s;
+	}
+
+	.mute-btn:hover {
+		opacity: 0.7;
+	}
+
+	.mute-btn.muted {
+		color: #444;
 	}
 
 	.track-label-actions {
@@ -2221,6 +2323,71 @@ function playFullProgram() {
 		background-color: transparent;
 		color: #333;
 		cursor: not-allowed;
+	}
+
+	.modal-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: rgba(0, 0, 0, 0.7);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 2000;
+	}
+
+	.resampling-modal {
+		background: #0c0c0c;
+		border: 1px solid #1a1a1a;
+		border-radius: 12px;
+		padding: 1.5rem;
+		min-width: 300px;
+		text-align: center;
+	}
+
+	.resampling-modal-content {
+		margin-bottom: 1rem;
+	}
+
+	.resampling-modal-content p {
+		margin: 0.5rem 0;
+		color: #e5e5e5;
+	}
+
+	.resampling-hint {
+		color: #666 !important;
+		font-size: 0.85rem;
+	}
+
+	.resampling-spinner {
+		width: 24px;
+		height: 24px;
+		border: 2px solid #333;
+		border-top-color: #a78bfa;
+		border-radius: 50%;
+		animation: spin 1s linear infinite;
+		margin: 0 auto 1rem;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	.resampling-modal-close {
+		background: #1a1a1a;
+		border: 1px solid #333;
+		color: #888;
+		padding: 0.5rem 1.5rem;
+		border-radius: 6px;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+
+	.resampling-modal-close:hover {
+		background: #222;
+		color: #ccc;
 	}
 
 </style>

@@ -1,33 +1,16 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import Program from '$lib/Program.svelte';
 	import { API_URL } from '$lib/api';
-	import { programs, programsLoading, programsError } from '$lib/store';
+	import { programs, programsLoading, programsError, resamplingProgress } from '$lib/store';
 	import { saveProgram, deleteProgram } from '$lib/programs-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
-	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 
 	let isDragging = $state(false);
 	let isLoading = $state(false);
-	let resamplingProgress = $state<ResamplingProgress | null>(null);
-	let unsubscribeResampling: (() => void) | null = null;
 
-	function startListeningForProgress() {
-		unsubscribeResampling = onResamplingProgress((progress) => {
-			resamplingProgress = progress.active ? progress : null;
-		});
-	}
-
-	function stopListeningForProgress() {
-		if (unsubscribeResampling) {
-			unsubscribeResampling();
-			unsubscribeResampling = null;
-		}
-		resamplingProgress = null;
-	}
-
-	onDestroy(() => {
-		stopListeningForProgress();
+	let activeResamplingProgress = $derived(() => {
+		const progress = $resamplingProgress;
+		return progress.backing || progress.guide || progress.click || progress.aux;
 	});
 
 	function handleDragOver(event: DragEvent) {
@@ -345,12 +328,12 @@
 			<!-- Loading Card at Top (new programs appear here) -->
 			{#if isLoading}
 				<div class="compression-loading-card">
-					{#if resamplingProgress?.active}
+					{#if activeResamplingProgress()?.active}
 						<div class="progress-container">
-							<div class="progress-bar" style="width: {(resamplingProgress.current / resamplingProgress.total) * 100}%"></div>
+							<div class="progress-bar" style="width: {(activeResamplingProgress()!.current / activeResamplingProgress()!.total) * 100}%"></div>
 						</div>
 						<p>Resampling audio...</p>
-						<p class="compression-hint">{Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%</p>
+						<p class="compression-hint">{Math.round((activeResamplingProgress()!.current / activeResamplingProgress()!.total) * 100)}%</p>
 					{:else}
 						<div class="spinner"></div>
 						<p>Saving program...</p>

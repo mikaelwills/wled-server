@@ -25,6 +25,8 @@ export interface ProgramData {
   bpm?: number;
   // Grid offset (downbeat position) for beat grid alignment
   gridOffset?: number;
+  // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
+  clickRate?: number;
 }
 
 export class Program implements ProgramData {
@@ -49,6 +51,8 @@ export class Program implements ProgramData {
   bpm?: number;
   // Grid offset (downbeat position) for beat grid alignment
   gridOffset?: number;
+  // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
+  clickRate?: number;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -68,6 +72,7 @@ export class Program implements ProgramData {
     this.displayOrder = data.displayOrder ?? 0;
     this.bpm = data.bpm;
     this.gridOffset = data.gridOffset;
+    this.clickRate = data.clickRate;
   }
 
   /**
@@ -119,6 +124,7 @@ export class Program implements ProgramData {
       displayOrder: data.displayOrder ?? data.display_order ?? 0,
       bpm: data.bpm,
       gridOffset: data.gridOffset ?? data.grid_offset ?? 0,
+      clickRate: data.clickRate ?? data.click_rate ?? 1.0,
     });
   }
 
@@ -144,6 +150,7 @@ export class Program implements ProgramData {
       display_order: this.displayOrder,
       bpm: this.bpm,
       grid_offset: this.gridOffset,
+      click_rate: this.clickRate,
     };
   }
 }

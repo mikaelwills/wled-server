@@ -53,8 +53,9 @@ pub fn generate_click_track(
     total_duration: f64,
     sample_rate: u32,
     beats_per_bar: u32,
+    click_rate: f64,
 ) -> Vec<f32> {
-    let beat_interval = 60.0 / bpm;
+    let beat_interval = 60.0 / (bpm * click_rate);
     let total_samples = (total_duration * sample_rate as f64) as usize;
     let mut samples = vec![0.0f32; total_samples];
 

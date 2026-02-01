@@ -9,5 +9,14 @@ pub enum SseEvent {
     #[serde(rename = "connection_status")]
     ConnectionStatus { board_id: String, connected: bool },
     #[serde(rename = "resampling_progress")]
-    ResamplingProgress { current: u32, total: u32, active: bool, track_name: String, from_rate: u32, to_rate: u32 },
+    ResamplingProgress {
+        slot: String,
+        program_id: String,
+        track_name: String,
+        current: u32,
+        total: u32,
+        active: bool,
+        from_rate: u32,
+        to_rate: u32,
+    },
 }

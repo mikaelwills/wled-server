@@ -215,16 +215,19 @@ impl AudioEngine {
         current: u32,
         total: u32,
         active: bool,
-        track_name: &str,
+        slot: &str,
+        program_id: &str,
         from_rate: u32,
         to_rate: u32,
     ) {
         if let Some(ref tx) = self.broadcast_tx {
             let _ = tx.send(SseEvent::ResamplingProgress {
+                slot: slot.to_string(),
+                program_id: program_id.to_string(),
+                track_name: program_id.to_string(),
                 current,
                 total,
                 active,
-                track_name: track_name.to_string(),
                 from_rate,
                 to_rate,
             });
@@ -313,7 +316,8 @@ impl AudioEngine {
 
             let track_clone = Arc::clone(&track);
             let id_clone = id.clone();
-            let track_name = format!("{}:{}", slot_name, id);
+            let slot_name_owned = slot_name.to_string();
+            let program_id = id.clone();
             let broadcast_tx = self.broadcast_tx.clone();
 
             tokio::spawn(async move {
@@ -321,22 +325,27 @@ impl AudioEngine {
 
                 let progress_forwarder = tokio::spawn(async move {
                     if let Some(tx) = broadcast_tx {
-                        let track_name_for_completion = track_name.clone();
+                        let slot_for_completion = slot_name_owned.clone();
+                        let program_id_for_completion = program_id.clone();
                         while let Some((current, total)) = progress_rx.recv().await {
                             let _ = tx.send(SseEvent::ResamplingProgress {
+                                slot: slot_name_owned.clone(),
+                                program_id: program_id.clone(),
+                                track_name: program_id.clone(),
                                 current,
                                 total,
                                 active: true,
-                                track_name: track_name.clone(),
                                 from_rate: original_rate,
                                 to_rate: device_rate,
                             });
                         }
                         let _ = tx.send(SseEvent::ResamplingProgress {
+                            slot: slot_for_completion,
+                            program_id: program_id_for_completion.clone(),
+                            track_name: program_id_for_completion,
                             current: 0,
                             total: 0,
                             active: false,
-                            track_name: track_name_for_completion,
                             from_rate: 0,
                             to_rate: 0,
                         });
@@ -386,6 +395,7 @@ impl AudioEngine {
         bpm: f64,
         grid_offset: f64,
         duration: f64,
+        click_rate: f64,
     ) {
         if self.device_sample_rate == 0 {
             eprintln!("[AudioEngine] Cannot generate click: no device sample rate set");
@@ -398,14 +408,15 @@ impl AudioEngine {
             duration,
             self.device_sample_rate,
             4,
+            click_rate,
         );
 
         let track = LoadedTrack::new(samples, self.device_sample_rate, 1);
         let click_id = format!("{}_click", program_id);
         self.load_slot_track(SlotId::Click, click_id, track).await;
         eprintln!(
-            "[AudioEngine] Generated click track for {} at {}bpm ({}s)",
-            program_id, bpm, duration
+            "[AudioEngine] Generated click track for {} at {}bpm x{} ({}s)",
+            program_id, bpm, click_rate, duration
         );
     }
 
@@ -414,11 +425,12 @@ impl AudioEngine {
             return Ok(());
         }
 
-        let mut tracks_to_resample: Vec<(String, Arc<LoadedTrack>)> = Vec::new();
-        for slot_tracks in &self.slot_tracks {
-            for (id, track) in slot_tracks.iter() {
+        let mut tracks_to_resample: Vec<(SlotId, String, Arc<LoadedTrack>)> = Vec::new();
+        for slot in SlotId::all() {
+            let slot_idx = *slot as usize;
+            for (id, track) in self.slot_tracks[slot_idx].iter() {
                 if track.original_rate != new_rate {
-                    tracks_to_resample.push((id.clone(), Arc::clone(track)));
+                    tracks_to_resample.push((*slot, id.clone(), Arc::clone(track)));
                 }
             }
         }
@@ -429,12 +441,13 @@ impl AudioEngine {
 
         let total = tracks_to_resample.len() as u32;
         self.resampling_progress.start(total);
-        self.broadcast_resampling_progress(0, total, true, "Multiple tracks", 0, new_rate);
+        self.broadcast_resampling_progress(0, total, true, "multiple", "", 0, new_rate);
 
         let mut errors = Vec::new();
-        for (id, track) in tracks_to_resample {
+        for (slot, id, track) in tracks_to_resample {
             let from_rate = track.original_rate;
-            let track_name = id.clone();
+            let slot_name = slot.name();
+            let program_id = id.clone();
             let result = tokio::task::spawn_blocking(move || track.ensure_resampled(new_rate))
                 .await
                 .map_err(|e| format!("Task failed: {}", e))?;
@@ -445,18 +458,19 @@ impl AudioEngine {
                 current,
                 total,
                 true,
-                &track_name,
+                slot_name,
+                &program_id,
                 from_rate,
                 new_rate,
             );
 
             if let Err(e) = result {
-                errors.push(format!("{}: {}", id, e));
+                errors.push(format!("{}:{}: {}", slot_name, id, e));
             }
         }
 
         self.resampling_progress.finish();
-        self.broadcast_resampling_progress(total, total, false, "", 0, 0);
+        self.broadcast_resampling_progress(total, total, false, "", "", 0, 0);
 
         if errors.is_empty() {
             Ok(())
@@ -487,10 +501,15 @@ impl AudioEngine {
             .collect()
     }
 
-    pub fn get_all_tracks_with_ids(&self) -> Vec<(String, Arc<LoadedTrack>)> {
-        self.slot_tracks
+    pub fn get_all_tracks_with_ids(&self) -> Vec<(SlotId, String, Arc<LoadedTrack>)> {
+        SlotId::all()
             .iter()
-            .flat_map(|slot| slot.iter().map(|(id, track)| (id.clone(), Arc::clone(track))))
+            .flat_map(|slot| {
+                let slot_idx = *slot as usize;
+                self.slot_tracks[slot_idx]
+                    .iter()
+                    .map(move |(id, track)| (*slot, id.clone(), Arc::clone(track)))
+            })
             .collect()
     }
 

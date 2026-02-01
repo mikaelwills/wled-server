@@ -92,3 +92,30 @@ export const gridMultiplier: Writable<number> = writable(4);
 export type ResamplingQuality = 'fast' | 'balanced' | 'high';
 export const resamplingQuality: Writable<ResamplingQuality> = writable('balanced');
 export const resamplingQualityLoading: Writable<boolean> = writable(true);
+
+// Slot mute state - tracks which audio slots are muted
+export const slotMuted: Writable<Record<string, boolean>> = writable({
+	backing: false,
+	guide: false,
+	click: false,
+	aux: false,
+});
+
+// Resampling progress store - centralized SSE progress state
+export interface SlotResamplingProgress {
+	slot: string;
+	programId: string;
+	trackName: string;
+	current: number;
+	total: number;
+	active: boolean;
+	fromRate: number;
+	toRate: number;
+}
+
+export const resamplingProgress: Writable<Record<string, SlotResamplingProgress | null>> = writable({
+	backing: null,
+	guide: null,
+	click: null,
+	aux: null,
+});

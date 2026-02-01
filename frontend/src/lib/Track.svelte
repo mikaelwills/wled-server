@@ -2,14 +2,15 @@
 	import { onMount, onDestroy } from 'svelte';
 	import WaveSurfer from 'wavesurfer.js';
 	import type { SlotConfig } from '$lib/slots';
-	import type { ResamplingProgress } from '$lib/sse';
+	import { toggleSlotMute } from '$lib/audio-db';
+	import { slotMuted, type SlotResamplingProgress } from '$lib/store';
 
 	interface Props {
 		track: SlotConfig;
 		programId: string;
 		blobUrl: string | null;
 		cachedPeaks: { peaks: Array<number[]>; duration: number } | null;
-		resamplingProgress: ResamplingProgress | null;
+		resamplingProgress: SlotResamplingProgress | null;
 		mainWavesurfer: WaveSurfer | null;
 		onRemove: () => void;
 	}
@@ -88,10 +89,10 @@
 
 <div class="track" style="--track-color: {track.color}">
 	<div class="track-label">
-		<span>{track.label}</span>
+		<button class="mute-btn" class:muted={$slotMuted[track.id]} onclick={() => toggleSlotMute(track.id)}>{track.label}</button>
 		{#if resamplingProgress}
 			<span class="resampling-inline">
-				{resamplingProgress.trackName.replace(/^guide:/, '')} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
+				{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
 			</span>
 		{/if}
 		<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>
@@ -118,6 +119,27 @@
 		color: var(--track-color, #888);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+
+	.mute-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		font-size: inherit;
+		font-weight: inherit;
+		text-transform: inherit;
+		letter-spacing: inherit;
+		color: var(--track-color, #888);
+		cursor: pointer;
+		transition: color 0.15s;
+	}
+
+	.mute-btn:hover {
+		opacity: 0.7;
+	}
+
+	.mute-btn.muted {
+		color: #444;
 	}
 
 	.resampling-inline {
