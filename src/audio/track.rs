@@ -1,15 +1,25 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use super::resampler;
 use crate::config::ResamplingQuality;
+
+const CACHE_MAGIC: &[u8; 4] = b"WPCM";
+const CACHE_HEADER_SIZE: usize = 24;
 
 pub struct LoadedTrack {
     pub original_samples: Arc<Vec<f32>>,
     pub original_rate: u32,
     pub channels: u16,
     pub duration_secs: f64,
+    source_path: Option<PathBuf>,
+    source_mtime: u64,
+    cache_dir: Option<PathBuf>,
     resampled_cache: RwLock<HashMap<u32, Arc<Vec<f32>>>>,
 }
 
@@ -21,7 +31,116 @@ impl LoadedTrack {
             original_rate: sample_rate,
             channels,
             duration_secs,
+            source_path: None,
+            source_mtime: 0,
+            cache_dir: None,
             resampled_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_source_info(mut self, source_path: PathBuf, cache_dir: PathBuf) -> Self {
+        self.source_mtime = fs::metadata(&source_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.source_path = Some(source_path);
+        self.cache_dir = Some(cache_dir);
+        self
+    }
+
+    fn cache_path(&self, target_rate: u32) -> Option<PathBuf> {
+        let source = self.source_path.as_ref()?;
+        let cache_dir = self.cache_dir.as_ref()?;
+        let filename = source.file_name()?.to_str()?;
+        Some(cache_dir.join(filename).join(format!("{}_{}.pcm", target_rate, self.channels)))
+    }
+
+    fn load_from_cache(&self, target_rate: u32) -> Option<Vec<f32>> {
+        let path = self.cache_path(target_rate)?;
+        if !path.exists() {
+            return None;
+        }
+
+        let mut file = File::open(&path).ok()?;
+        let mut header = [0u8; CACHE_HEADER_SIZE];
+        file.read_exact(&mut header).ok()?;
+
+        if &header[0..4] != CACHE_MAGIC {
+            eprintln!("[Track] Cache invalid magic: {:?}", path);
+            return None;
+        }
+
+        let cached_rate = u32::from_le_bytes(header[4..8].try_into().ok()?);
+        let cached_channels = u16::from_le_bytes(header[8..10].try_into().ok()?);
+        let cached_mtime = u64::from_le_bytes(header[16..24].try_into().ok()?);
+
+        if cached_rate != target_rate || cached_channels != self.channels {
+            eprintln!("[Track] Cache rate/channel mismatch: {:?}", path);
+            return None;
+        }
+
+        if cached_mtime != self.source_mtime && self.source_mtime > 0 {
+            eprintln!("[Track] Cache stale (mtime {} vs {}): {:?}", cached_mtime, self.source_mtime, path);
+            let _ = fs::remove_file(&path);
+            return None;
+        }
+
+        let mut sample_bytes = Vec::new();
+        file.read_to_end(&mut sample_bytes).ok()?;
+
+        if sample_bytes.len() % 4 != 0 {
+            eprintln!("[Track] Cache corrupted (bad size): {:?}", path);
+            return None;
+        }
+
+        let samples: Vec<f32> = sample_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+
+        eprintln!("[Track] Loaded {} samples from disk cache: {:?}", samples.len(), path);
+        Some(samples)
+    }
+
+    fn save_to_cache(&self, target_rate: u32, samples: &[f32]) {
+        let Some(path) = self.cache_path(target_rate) else { return };
+
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("[Track] Failed to create cache dir: {}", e);
+                return;
+            }
+        }
+
+        let tmp_path = path.with_extension("pcm.tmp");
+        let result = (|| -> std::io::Result<()> {
+            let mut file = File::create(&tmp_path)?;
+
+            let mut header = [0u8; CACHE_HEADER_SIZE];
+            header[0..4].copy_from_slice(CACHE_MAGIC);
+            header[4..8].copy_from_slice(&target_rate.to_le_bytes());
+            header[8..10].copy_from_slice(&self.channels.to_le_bytes());
+            header[16..24].copy_from_slice(&self.source_mtime.to_le_bytes());
+            file.write_all(&header)?;
+
+            for sample in samples {
+                file.write_all(&sample.to_le_bytes())?;
+            }
+
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => eprintln!("[Track] Saved {} samples to disk cache: {:?}", samples.len(), path),
+            Err(e) => {
+                eprintln!("[Track] Failed to save cache: {}", e);
+                let _ = fs::remove_file(&tmp_path);
+            }
         }
     }
 
@@ -35,6 +154,14 @@ impl LoadedTrack {
             if let Some(cached) = cache.get(&target_rate) {
                 return Arc::clone(cached);
             }
+        }
+
+        if let Some(cached_samples) = self.load_from_cache(target_rate) {
+            eprintln!("[Track] Loaded {}Hz from disk cache ({} samples)", target_rate, cached_samples.len());
+            let resampled = Arc::new(cached_samples);
+            let mut cache = self.resampled_cache.write();
+            cache.insert(target_rate, Arc::clone(&resampled));
+            return resampled;
         }
 
         eprintln!(
@@ -59,6 +186,7 @@ impl LoadedTrack {
                     self.original_samples.len(),
                     resampled.len()
                 );
+                self.save_to_cache(target_rate, &resampled);
                 let resampled = Arc::new(resampled);
                 let mut cache = self.resampled_cache.write();
                 cache.insert(target_rate, Arc::clone(&resampled));
@@ -99,9 +227,16 @@ impl LoadedTrack {
         {
             let cache = self.resampled_cache.read();
             if cache.contains_key(&target_rate) {
-                eprintln!("[Resampler] CACHE HIT for {}Hz", target_rate);
+                eprintln!("[Resampler] MEMORY CACHE HIT for {}Hz", target_rate);
                 return Ok(());
             }
+        }
+
+        if let Some(cached_samples) = self.load_from_cache(target_rate) {
+            eprintln!("[Resampler] DISK CACHE HIT for {}Hz ({} samples)", target_rate, cached_samples.len());
+            let mut cache = self.resampled_cache.write();
+            cache.insert(target_rate, Arc::new(cached_samples));
+            return Ok(());
         }
 
         eprintln!(
@@ -129,6 +264,8 @@ impl LoadedTrack {
             self.original_samples.len(),
             resampled.len()
         );
+
+        self.save_to_cache(target_rate, &resampled);
 
         let mut cache = self.resampled_cache.write();
         cache.insert(target_rate, Arc::new(resampled));

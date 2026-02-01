@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -9,7 +9,18 @@ use symphonia::core::probe::Hint;
 
 use super::LoadedTrack;
 
+pub struct DecodedAudio {
+    pub track: LoadedTrack,
+    pub source_path: PathBuf,
+}
+
 pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<LoadedTrack, String> {
+    let result = decode_file_with_path(&path)?;
+    Ok(result.track)
+}
+
+pub fn decode_file_with_path<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
+    let source_path = path.as_ref().to_path_buf();
     let file = File::open(&path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -46,5 +57,8 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<LoadedTrack, String> {
         }
     }
 
-    Ok(LoadedTrack::new(samples, sample_rate, channels))
+    Ok(DecodedAudio {
+        track: LoadedTrack::new(samples, sample_rate, channels),
+        source_path,
+    })
 }

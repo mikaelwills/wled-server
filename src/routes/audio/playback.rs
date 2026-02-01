@@ -27,10 +27,15 @@ pub async fn load_track(
         return Err((StatusCode::NOT_FOUND, format!("Audio file not found: {}", id)));
     };
 
-    let track = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path))
+    let cache_dir = state.storage_paths.audio.join("resampled");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    let decoded = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&audio_path))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let track = decoded.track.with_source_info(decoded.source_path, cache_dir);
 
     let mut engine = state.audio_engine.lock().await;
     engine.load_track(id.clone(), track).await;

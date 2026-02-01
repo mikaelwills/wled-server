@@ -24,6 +24,7 @@ mod program;
 mod program_engine;
 mod routes;
 mod sse;
+mod timecode;
 mod timing_metrics;
 mod transport;
 mod types;
@@ -210,10 +211,28 @@ async fn main() {
     )));
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
     let device_manager = Arc::new(audio::DeviceManager::new());
-    if let Some(ref preferred_device) = loaded_config.audio.preferred_device_id {
+    let startup_routing = if let Some(ref preferred_device) = loaded_config.audio.preferred_device_id {
         device_manager.select_device(Some(preferred_device.clone()));
         info!("Restored preferred audio device: {}", preferred_device);
-    }
+
+        let output_channels = device_manager
+            .get_device_output_channels(preferred_device)
+            .unwrap_or(2) as usize;
+        let routing_config = loaded_config
+            .audio
+            .get_routing_for_device(preferred_device)
+            .cloned()
+            .unwrap_or_else(|| config::DeviceRouting::new_default(preferred_device.clone()));
+        let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
+        info!("Restored audio routing for {}: backing={}/{}, guide={}, click={}",
+            preferred_device,
+            routing_config.backing_left, routing_config.backing_right,
+            routing_config.guide, routing_config.click);
+        Some(routing)
+    } else {
+        None
+    };
+
     let mut audio_engine = audio::AudioEngine::new();
     audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
     audio_engine.set_resampling_quality(loaded_config.audio.resampling_quality);
@@ -237,6 +256,12 @@ async fn main() {
     };
 
     let audio_engine = Arc::new(Mutex::new(audio_engine));
+
+    if let Some(routing) = startup_routing {
+        let engine = audio_engine.lock().await;
+        engine.update_routing(routing).await;
+        info!("Applied startup routing to audio thread");
+    }
 
     let programs_map: HashMap<String, program::Program> =
         match program::Program::load_all(&storage_paths.programs) {
@@ -370,6 +395,10 @@ async fn main() {
         if !audio_path_bg.exists() {
             return;
         }
+        let cache_dir = audio_path_bg.join("resampled");
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            warn!("Failed to create resampled cache dir: {}", e);
+        }
         let entries: Vec<_> = match std::fs::read_dir(&audio_path_bg) {
             Ok(e) => e.flatten().collect(),
             Err(_) => return,
@@ -386,12 +415,14 @@ async fn main() {
                     let stem = stem.to_string();
                     let is_guide = stem.contains("_guide");
                     let path_clone = path.clone();
+                    let cache_dir_clone = cache_dir.clone();
                     let decode_result = tokio::task::spawn_blocking(move || {
-                        audio::decode_file(&path_clone)
+                        audio::decode_file_with_path(&path_clone)
                     }).await;
 
                     match decode_result {
-                        Ok(Ok(track)) => {
+                        Ok(Ok(decoded)) => {
+                            let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
                             let mut engine = audio_engine_bg.lock().await;
                             if is_guide {
                                 engine.load_guide_track(stem, track).await;

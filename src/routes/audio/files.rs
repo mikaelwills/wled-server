@@ -73,13 +73,17 @@ pub async fn upload_audio(
     info!("Uploaded audio file: {}", filename);
 
     let audio_path = state.storage_paths.audio.join(&filename);
+    let cache_dir = state.storage_paths.audio.join("resampled");
     let audio_engine = state.audio_engine.clone();
     let id_clone = id.clone();
     let is_guide = id.contains("_guide");
     tokio::spawn(async move {
-        let decode_result = tokio::task::spawn_blocking(move || audio::decode_file(&audio_path)).await;
+        let _ = fs::create_dir_all(&cache_dir);
+        let cache_dir_clone = cache_dir.clone();
+        let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&audio_path)).await;
         match decode_result {
-            Ok(Ok(track)) => {
+            Ok(Ok(decoded)) => {
+                let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
                 let mut engine = audio_engine.lock().await;
                 if is_guide {
                     engine.load_guide_track(id_clone.clone(), track).await;
