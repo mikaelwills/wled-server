@@ -39,7 +39,7 @@
 	let audioDevices: AudioDevice[] = $state([]);
 	let audioDevicesLoading = $state(true);
 	let selectedDeviceId: string | null = $state(null);
-	let switchingDevice = $state(false);
+	let switchingToDeviceId: string | null = $state(null);
 
 	async function fetchStorageStatus() {
 		try {
@@ -98,8 +98,8 @@
 	}
 
 	async function selectDevice(deviceId: string | null) {
-		if (switchingDevice) return;
-		switchingDevice = true;
+		if (switchingToDeviceId) return;
+		switchingToDeviceId = deviceId;
 		try {
 			const res = await fetch(`${API_URL}/audio/device/select`, {
 				method: 'POST',
@@ -112,7 +112,7 @@
 		} catch (e) {
 			console.error('Failed to select device:', e);
 		} finally {
-			switchingDevice = false;
+			switchingToDeviceId = null;
 		}
 	}
 
@@ -168,42 +168,118 @@
 			{#if $loopyProSettingsLoading}
 				<p>Loading settings...</p>
 			{:else}
-			<div class="audio-source-row">
-				<button
-					class="source-button"
-					class:active={audioSource === 'audio_engine'}
-					onclick={() => setAudioSource('audio_engine')}
-				>
-					Audio Engine
-				</button>
-				<button
-					class="source-button"
-					class:active={audioSource === 'loopy_pro'}
-					onclick={() => setAudioSource('loopy_pro')}
-				>
-					Loopy Pro
-				</button>
-			</div>
-
-			{#if audioSource === 'loopy_pro'}
-			<p class="help-text">Loopy Pro IP address</p>
-			<div class="input-row">
-				<input
-					id="ip"
-					type="text"
-					bind:value={ip}
-					placeholder="192.168.1.242"
-					class="text-input ip-input"
-				/>
-				<input
-					id="port"
-					type="number"
-					bind:value={port}
-					placeholder="9595"
-					class="text-input port-input"
-				/>
-			</div>
+				<div class="audio-source-row">
+					<button
+						class="source-button"
+						class:active={audioSource === 'audio_engine'}
+						onclick={() => setAudioSource('audio_engine')}
+					>
+						Audio Engine
+					</button>
+					<button
+						class="source-button"
+						class:active={audioSource === 'loopy_pro'}
+						onclick={() => setAudioSource('loopy_pro')}
+					>
+						Loopy Pro
+					</button>
+				</div>
 			{/if}
+
+			{#if !$loopyProSettingsLoading && audioSource === 'loopy_pro'}
+				<p class="help-text">Loopy Pro IP address</p>
+				<div class="input-row">
+					<input
+						id="ip"
+						type="text"
+						bind:value={ip}
+						placeholder="192.168.1.242"
+						class="text-input ip-input"
+					/>
+					<input
+						id="port"
+						type="number"
+						bind:value={port}
+						placeholder="9595"
+						class="text-input port-input"
+					/>
+				</div>
+
+				<button onclick={saveSettings} class="save-button">
+					{saved ? 'Saved' : 'Save'}
+				</button>
+			{/if}
+
+			{#if !$loopyProSettingsLoading && audioSource === 'audio_engine'}
+				<h2>Audio Devices</h2>
+
+				{#if audioDevicesLoading}
+					<p class="help-text" style="text-align: center;">Loading devices...</p>
+				{:else}
+					<div class="device-list" class:disabled={switchingToDeviceId !== null}>
+						{#each audioDevices as device}
+							<div
+								class="device-card"
+								class:is-selected={selectedDeviceId === device.id}
+								onclick={() => selectDevice(device.id)}
+							>
+								<div class="device-info">
+									<span class="device-name">{device.name}</span>
+									<span class="device-channels">{device.output_channels} channels{device.sample_rate ? ` @ ${device.sample_rate/1000}kHz` : ''}</span>
+								</div>
+								{#if switchingToDeviceId === device.id}
+									<span class="selected-badge">Switching...</span>
+								{:else if selectedDeviceId === device.id}
+									<span class="selected-badge">Selected</span>
+								{:else if device.is_default}
+									<span class="default-badge">Default</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+
+					<button onclick={fetchAudioDevices} class="save-button">
+						Refresh Devices
+					</button>
+
+					<h2>Resampling Quality</h2>
+
+					{#if $resamplingQualityLoading}
+						<p class="help-text" style="text-align: center;">Loading...</p>
+					{:else}
+						<div class="quality-row">
+							<button
+								class="quality-button"
+								class:active={$resamplingQuality === 'fast'}
+								onclick={() => updateResamplingQuality('fast')}
+							>
+								<span class="quality-name">Fast</span>
+								<span class="quality-desc">Quick testing</span>
+							</button>
+							<button
+								class="quality-button"
+								class:active={$resamplingQuality === 'balanced'}
+								onclick={() => updateResamplingQuality('balanced')}
+							>
+								<span class="quality-name">Balanced</span>
+								<span class="quality-desc">Good quality</span>
+							</button>
+							<button
+								class="quality-button"
+								class:active={$resamplingQuality === 'high'}
+								onclick={() => updateResamplingQuality('high')}
+							>
+								<span class="quality-name">High</span>
+								<span class="quality-desc">Best quality</span>
+							</button>
+						</div>
+					{/if}
+				{/if}
+			{/if}
+		</div>
+
+		<div class="card">
+			<h2>Lighting Sync</h2>
 
 			<div class="delay-row">
 				<label for="audio-sync-delay" class="delay-label">
@@ -223,78 +299,7 @@
 			<button onclick={saveSettings} class="save-button">
 				{saved ? 'Saved' : 'Save'}
 			</button>
-			{/if}
 
-			{#if audioSource === 'audio_engine'}
-			<div class="section-divider"></div>
-			<h2>Audio Devices</h2>
-
-			{#if audioDevicesLoading}
-				<p class="help-text" style="text-align: center;">Loading devices...</p>
-			{:else}
-				<div class="device-list" class:disabled={switchingDevice}>
-					{#each audioDevices as device}
-						<div
-							class="device-card"
-							class:is-selected={selectedDeviceId === device.id}
-							onclick={() => selectDevice(device.id)}
-						>
-							<div class="device-info">
-								<span class="device-name">{device.name}</span>
-								<span class="device-channels">{device.output_channels} channels{device.sample_rate ? ` @ ${device.sample_rate/1000}kHz` : ''}</span>
-							</div>
-							{#if selectedDeviceId === device.id}
-								<span class="selected-badge">{switchingDevice ? 'Switching...' : 'Selected'}</span>
-							{:else if device.is_default}
-								<span class="default-badge">Default</span>
-							{/if}
-						</div>
-					{/each}
-				</div>
-
-				<button onclick={fetchAudioDevices} class="save-button">
-					Refresh Devices
-				</button>
-
-				<div class="section-divider"></div>
-				<h2>Resampling Quality</h2>
-				<p class="help-text">Higher quality takes longer but sounds better</p>
-
-				{#if $resamplingQualityLoading}
-					<p class="help-text" style="text-align: center;">Loading...</p>
-				{:else}
-					<div class="quality-row">
-						<button
-							class="quality-button"
-							class:active={$resamplingQuality === 'fast'}
-							onclick={() => updateResamplingQuality('fast')}
-						>
-							<span class="quality-name">Fast</span>
-							<span class="quality-desc">Quick testing</span>
-						</button>
-						<button
-							class="quality-button"
-							class:active={$resamplingQuality === 'balanced'}
-							onclick={() => updateResamplingQuality('balanced')}
-						>
-							<span class="quality-name">Balanced</span>
-							<span class="quality-desc">Good quality</span>
-						</button>
-						<button
-							class="quality-button"
-							class:active={$resamplingQuality === 'high'}
-							onclick={() => updateResamplingQuality('high')}
-						>
-							<span class="quality-name">High</span>
-							<span class="quality-desc">Best quality</span>
-						</button>
-					</div>
-				{/if}
-			{/if}
-			{/if}
-		</div>
-
-		<div class="card">
 			<h2>Developer Tools</h2>
 
 			<div class="toggle-row">
@@ -388,17 +393,11 @@
 		gap: 1rem;
 	}
 
-	.section-divider {
-		height: 1px;
-		background: rgba(255, 255, 255, 0.05);
-		margin: 0.5rem 0;
-	}
-
 	h2 {
 		font-size: 0.875rem;
 		margin: 0;
 		color: #9ca3af;
-		text-align: center;
+		text-align: left;
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;

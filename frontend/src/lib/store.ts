@@ -23,6 +23,7 @@ export const presets: Writable<Preset[]> = writable([]);
 
 // Performance presets store (server-side effects engine, E1.31)
 export interface PerformancePreset {
+	id?: number;
 	name: string;
 	effect_type: string;
 	color: [number, number, number];

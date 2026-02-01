@@ -70,10 +70,30 @@ impl Default for RoutingConfig {
         Self {
             output_channels: 2,
             slots: [
-                SlotRouting { left_channel: 0, right_channel: 1, muted: false, is_stereo: true },
-                SlotRouting { left_channel: 2, right_channel: 2, muted: false, is_stereo: false },
-                SlotRouting { left_channel: 3, right_channel: 3, muted: false, is_stereo: false },
-                SlotRouting { left_channel: 4, right_channel: 4, muted: false, is_stereo: false },
+                SlotRouting {
+                    left_channel: 0,
+                    right_channel: 1,
+                    muted: false,
+                    is_stereo: true,
+                },
+                SlotRouting {
+                    left_channel: 2,
+                    right_channel: 2,
+                    muted: false,
+                    is_stereo: false,
+                },
+                SlotRouting {
+                    left_channel: 3,
+                    right_channel: 3,
+                    muted: false,
+                    is_stereo: false,
+                },
+                SlotRouting {
+                    left_channel: 4,
+                    right_channel: 4,
+                    muted: false,
+                    is_stereo: false,
+                },
             ],
         }
     }
@@ -84,7 +104,10 @@ impl RoutingConfig {
         self.output_channels <= 2
     }
 
-    pub fn from_device_routing(routing: &crate::config::DeviceRouting, output_channels: usize) -> Self {
+    pub fn from_device_routing(
+        routing: &crate::config::DeviceRouting,
+        output_channels: usize,
+    ) -> Self {
         Self {
             output_channels,
             slots: [
@@ -129,8 +152,14 @@ pub enum PlaybackCommand {
     Seek(u64),
     SetDevice(String),
     UpdateRouting(RoutingConfig),
-    SetMute { slot: SlotId, muted: bool },
-    LoadSlot { slot: SlotId, track: Arc<LoadedTrack> },
+    SetMute {
+        slot: SlotId,
+        muted: bool,
+    },
+    LoadSlot {
+        slot: SlotId,
+        track: Arc<LoadedTrack>,
+    },
     ClearSlot(SlotId),
 }
 
@@ -181,7 +210,15 @@ impl AudioEngine {
         eprintln!("[AudioEngine] Resampling quality set to {:?}", quality);
     }
 
-    fn broadcast_resampling_progress(&self, current: u32, total: u32, active: bool, track_name: &str, from_rate: u32, to_rate: u32) {
+    fn broadcast_resampling_progress(
+        &self,
+        current: u32,
+        total: u32,
+        active: bool,
+        track_name: &str,
+        from_rate: u32,
+        to_rate: u32,
+    ) {
         if let Some(ref tx) = self.broadcast_tx {
             let _ = tx.send(SseEvent::ResamplingProgress {
                 current,
@@ -226,9 +263,31 @@ impl AudioEngine {
         self.health.reset_all();
     }
 
+    pub async fn set_device_and_routing(
+        &mut self,
+        device_id: String,
+        sample_rate: u32,
+        routing: RoutingConfig,
+    ) {
+        if sample_rate != self.device_sample_rate {
+            self.set_device_sample_rate(sample_rate);
+        }
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::SetDevice(device_id))
+            .await;
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::UpdateRouting(routing))
+            .await;
+    }
+
     pub fn set_device_sample_rate(&mut self, rate: u32) {
         if rate != self.device_sample_rate {
-            eprintln!("[AudioEngine] Device sample rate changed: {}Hz -> {}Hz", self.device_sample_rate, rate);
+            eprintln!(
+                "[AudioEngine] Device sample rate changed: {}Hz -> {}Hz",
+                self.device_sample_rate, rate
+            );
             self.device_sample_rate = rate;
         }
     }
@@ -249,7 +308,8 @@ impl AudioEngine {
         if device_rate > 0 && original_rate != device_rate {
             let cancelled = Arc::new(AtomicBool::new(false));
             let cancel_key = format!("{}:{}", slot_name, id);
-            self.resampling_cancellation.insert(cancel_key.clone(), Arc::clone(&cancelled));
+            self.resampling_cancellation
+                .insert(cancel_key.clone(), Arc::clone(&cancelled));
 
             let track_clone = Arc::clone(&track);
             let id_clone = id.clone();
@@ -290,15 +350,23 @@ impl AudioEngine {
                         !cancelled_clone.load(Ordering::Relaxed)
                     };
                     track_clone.ensure_resampled_with_options(device_rate, quality, Some(callback))
-                }).await;
+                })
+                .await;
 
                 let _ = progress_forwarder.await;
 
                 match result {
                     Ok(Ok(())) => eprintln!("[AudioEngine] Resampling complete for '{}'", id_clone),
-                    Ok(Err(e)) if e.contains("cancelled") => eprintln!("[AudioEngine] Resampling cancelled for '{}'", id_clone),
-                    Ok(Err(e)) => eprintln!("[AudioEngine] Failed to resample '{}': {}", id_clone, e),
-                    Err(e) => eprintln!("[AudioEngine] Resample task failed for '{}': {}", id_clone, e),
+                    Ok(Err(e)) if e.contains("cancelled") => {
+                        eprintln!("[AudioEngine] Resampling cancelled for '{}'", id_clone)
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("[AudioEngine] Failed to resample '{}': {}", id_clone, e)
+                    }
+                    Err(e) => eprintln!(
+                        "[AudioEngine] Resample task failed for '{}': {}",
+                        id_clone, e
+                    ),
                 }
             });
         }
@@ -338,15 +406,20 @@ impl AudioEngine {
         for (id, track) in tracks_to_resample {
             let from_rate = track.original_rate;
             let track_name = id.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                track.ensure_resampled(new_rate)
-            })
-            .await
-            .map_err(|e| format!("Task failed: {}", e))?;
+            let result = tokio::task::spawn_blocking(move || track.ensure_resampled(new_rate))
+                .await
+                .map_err(|e| format!("Task failed: {}", e))?;
 
             self.resampling_progress.increment();
             let (current, _) = self.resampling_progress.get();
-            self.broadcast_resampling_progress(current, total, true, &track_name, from_rate, new_rate);
+            self.broadcast_resampling_progress(
+                current,
+                total,
+                true,
+                &track_name,
+                from_rate,
+                new_rate,
+            );
 
             if let Err(e) = result {
                 errors.push(format!("{}: {}", id, e));
@@ -359,7 +432,10 @@ impl AudioEngine {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(format!("Failed to resample some tracks: {}", errors.join(", ")))
+            Err(format!(
+                "Failed to resample some tracks: {}",
+                errors.join(", ")
+            ))
         }
     }
 
@@ -375,6 +451,13 @@ impl AudioEngine {
         self.get_slot_track(SlotId::Guide, id)
     }
 
+    pub fn get_all_tracks(&self) -> Vec<Arc<LoadedTrack>> {
+        self.slot_tracks
+            .iter()
+            .flat_map(|slot| slot.values().cloned())
+            .collect()
+    }
+
     pub fn get_track_readiness(&self) -> Vec<(String, bool)> {
         self.slot_tracks[SlotId::Backing as usize]
             .iter()
@@ -383,7 +466,10 @@ impl AudioEngine {
     }
 
     pub fn loaded_track_ids(&self) -> Vec<String> {
-        self.slot_tracks[SlotId::Backing as usize].keys().cloned().collect()
+        self.slot_tracks[SlotId::Backing as usize]
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn unload_slot_track(&mut self, slot: SlotId, id: &str) -> bool {
@@ -395,9 +481,16 @@ impl AudioEngine {
         }
         if let Some(track) = self.slot_tracks[slot as usize].remove(id) {
             let memory_mb = track.memory_usage() as f64 / 1024.0 / 1024.0;
-            eprintln!("[AudioEngine] Unloaded {} track '{}' - freed {:.2} MB", slot_name, id, memory_mb);
+            eprintln!(
+                "[AudioEngine] Unloaded {} track '{}' - freed {:.2} MB",
+                slot_name, id, memory_mb
+            );
             let (count, total) = self.memory_usage();
-            eprintln!("[AudioEngine] Remaining: {} tracks, {:.2} MB total", count, total as f64 / 1024.0 / 1024.0);
+            eprintln!(
+                "[AudioEngine] Remaining: {} tracks, {:.2} MB total",
+                count,
+                total as f64 / 1024.0 / 1024.0
+            );
             true
         } else {
             eprintln!("[AudioEngine] {} track '{}' not found", slot_name, id);
@@ -422,7 +515,10 @@ impl AudioEngine {
         let mut total_bytes = 0;
         for slot_tracks in &self.slot_tracks {
             total_tracks += slot_tracks.len();
-            total_bytes += slot_tracks.values().map(|t| t.memory_usage()).sum::<usize>();
+            total_bytes += slot_tracks
+                .values()
+                .map(|t| t.memory_usage())
+                .sum::<usize>();
         }
         (total_tracks, total_bytes)
     }
@@ -431,7 +527,12 @@ impl AudioEngine {
         self.play_with_guide(track_id, None, start_sample).await
     }
 
-    pub async fn play_with_guide(&mut self, track_id: &str, guide_id: Option<&str>, start_sample: Option<u64>) -> bool {
+    pub async fn play_with_guide(
+        &mut self,
+        track_id: &str,
+        guide_id: Option<&str>,
+        start_sample: Option<u64>,
+    ) -> bool {
         let backing_tracks = &self.slot_tracks[SlotId::Backing as usize];
         if let Some(track) = backing_tracks.get(track_id).cloned() {
             let start = start_sample.unwrap_or(0);
@@ -440,21 +541,32 @@ impl AudioEngine {
             if let Some(gid) = guide_id {
                 let guide_tracks = &self.slot_tracks[SlotId::Guide as usize];
                 if let Some(guide_track) = guide_tracks.get(gid).cloned() {
-                    let _ = self.command_tx.send(PlaybackCommand::LoadSlot {
-                        slot: SlotId::Guide,
-                        track: guide_track
-                    }).await;
+                    let _ = self
+                        .command_tx
+                        .send(PlaybackCommand::LoadSlot {
+                            slot: SlotId::Guide,
+                            track: guide_track,
+                        })
+                        .await;
                     self.current_slot_ids[SlotId::Guide as usize] = Some(gid.to_string());
                     eprintln!("[AudioEngine] Loaded guide track '{}' for playback", gid);
                 } else {
                     eprintln!("[AudioEngine] Guide track '{}' not found", gid);
                 }
             } else {
-                let _ = self.command_tx.send(PlaybackCommand::ClearSlot(SlotId::Guide)).await;
+                let _ = self
+                    .command_tx
+                    .send(PlaybackCommand::ClearSlot(SlotId::Guide))
+                    .await;
                 self.current_slot_ids[SlotId::Guide as usize] = None;
             }
 
-            if self.command_tx.send(PlaybackCommand::Play(track)).await.is_ok() {
+            if self
+                .command_tx
+                .send(PlaybackCommand::Play(track))
+                .await
+                .is_ok()
+            {
                 if start > 0 {
                     let _ = self.command_tx.send(PlaybackCommand::Seek(start)).await;
                 }
@@ -491,22 +603,19 @@ impl AudioEngine {
         let _ = self.command_tx.send(PlaybackCommand::Seek(position)).await;
     }
 
-    pub async fn set_device(&mut self, device_id: String, new_sample_rate: u32) {
-        if new_sample_rate != self.device_sample_rate {
-            self.set_device_sample_rate(new_sample_rate);
-            if let Err(e) = self.resample_all_tracks(new_sample_rate).await {
-                eprintln!("[AudioEngine] Warning: {}", e);
-            }
-        }
-        let _ = self.command_tx.send(PlaybackCommand::SetDevice(device_id)).await;
-    }
-
+   
     pub async fn update_routing(&self, routing: RoutingConfig) {
-        let _ = self.command_tx.send(PlaybackCommand::UpdateRouting(routing)).await;
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::UpdateRouting(routing))
+            .await;
     }
 
     pub async fn set_mute(&self, slot: SlotId, muted: bool) {
-        let _ = self.command_tx.send(PlaybackCommand::SetMute { slot, muted }).await;
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::SetMute { slot, muted })
+            .await;
     }
 
     pub fn get_state(&self) -> PlaybackState {

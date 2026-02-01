@@ -45,25 +45,34 @@ pub async fn select_device(
             tracing::error!("Failed to save config: {}", e);
         }
 
-        let routing_config = config.audio.get_routing_for_device(&device_id)
+        let routing_config = config
+            .audio
+            .get_routing_for_device(&device_id)
             .cloned()
             .unwrap_or_else(|| crate::config::DeviceRouting::new_default(device_id.clone()));
         audio::RoutingConfig::from_device_routing(&routing_config, output_channels)
     };
 
-    let engine = state.audio_engine.clone();
-    let device_id_for_task = device_id.clone();
+    let tracks_to_resample = {
+        let mut engine = state.audio_engine.lock().await;
+        engine.set_device_and_routing(device_id.clone(), sample_rate, routing_snapshot).await;
+        engine.get_all_tracks()
+    };
+
+    if tracks_to_resample.is_empty() {
+        return StatusCode::OK;
+    }
 
     tokio::spawn(async move {
-        let mut engine = engine.lock().await;
-        engine.set_device(device_id_for_task.clone(), sample_rate).await;
-        engine.update_routing(routing_snapshot).await;
-        info!("Audio device switched to: {} ({}Hz, {} channels)", device_id_for_task, sample_rate, output_channels);
+        for track in tracks_to_resample {
+            if let Err(e) = track.ensure_resampled(sample_rate) {
+                eprintln!("[Resampling] Error: {}", e);
+            }
+        }
     });
 
     StatusCode::OK
 }
-
 pub async fn list_devices(
     State(state): State<SharedState>,
 ) -> Json<Vec<crate::audio::AudioDevice>> {
@@ -88,7 +97,8 @@ pub async fn get_device_outputs(
     State(state): State<SharedState>,
     Path(device_id): Path<String>,
 ) -> Result<Json<DeviceOutputsResponse>, StatusCode> {
-    let channels = state.device_manager
+    let channels = state
+        .device_manager
         .get_device_output_channels(&device_id)
         .ok_or(StatusCode::NOT_FOUND)?;
 

@@ -19,6 +19,19 @@
 	import { getSlot } from '$lib/slots';
 	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
 
+	interface Marker {
+		id: string;
+		time: number;
+		label?: string;
+		boards?: string[];
+		presetName?: string;
+		preset?: number;
+		effect?: number;
+		color?: [number, number, number];
+		brightness?: number;
+		syncRate?: number;
+	}
+
 	const backingSlot = getSlot('backing')!;
 	const guideSlot = getSlot('guide')!;
 
@@ -32,9 +45,9 @@
 	// Sanitized version of programId for use in HTML IDs and CSS selectors (no spaces or special chars)
 	let sanitizedProgramId = $derived(programId ? programId.replace(/[^a-zA-Z0-9-_]/g, '-') : null);
 
-	let wavesurfer = $state(null);
-	let regions = $state(null);
-	let markers = $state([]);
+	let wavesurfer: WaveSurfer | null = $state(null);
+	let regions: ReturnType<typeof RegionsPlugin.create> | null = $state(null);
+	let markers: Marker[] = $state([]);
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
@@ -56,23 +69,23 @@
 	// Program metadata
 	let songName = $state('');
 	let loopyProTrack = $state('');
-	let audioDuration = $state(null); // Duration in seconds (extracted from audio)
-	let bpm = $state(null); // BPM for speed-synced effects
+	let audioDuration: number | null = $state(null); // Duration in seconds (extracted from audio)
+	let bpm: number | null = $state(null); // BPM for speed-synced effects
 	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
 
 	// Preset picker modal state
 	let presetPickerOpen = $state(false);
-	let presetPickerMarkerId = $state(null);
+	let presetPickerMarkerId: string | null = $state(null);
 
 	// Routing modal state
 	let routingModalOpen = $state(false);
 
-	function openPresetPicker(markerId) {
+	function openPresetPicker(markerId: string) {
 		presetPickerMarkerId = markerId;
 		presetPickerOpen = true;
 	}
 
-	function handlePresetSelect(presetName) {
+	function handlePresetSelect(presetName: string) {
 		if (presetPickerMarkerId) {
 			updateMarkerPreset(presetPickerMarkerId, presetName);
 		}
@@ -90,7 +103,7 @@
 	}
 
 	// Snap time to nearest grid line based on BPM and offset (only if within 10px)
-	function snapToGrid(time) {
+	function snapToGrid(time: number): number {
 		if (!bpm || bpm <= 0 || !wavesurfer || !audioDuration) return time;
 
 		const barInterval = (60 / bpm) * 4;
@@ -116,12 +129,12 @@
 	}
 
 	// Find the scroll container inside WaveSurfer's DOM
-	function getScrollContainer() {
+	function getScrollContainer(): HTMLElement | null {
 		const wrapper = wavesurfer?.getWrapper();
 		if (!wrapper) return null;
-		const findScrollable = (el) => {
+		const findScrollable = (el: Element): HTMLElement | null => {
 			const style = window.getComputedStyle(el);
-			if (style.overflowX === 'auto' || style.overflowX === 'scroll') return el;
+			if (style.overflowX === 'auto' || style.overflowX === 'scroll') return el as HTMLElement;
 			for (const child of el.children) {
 				const found = findScrollable(child);
 				if (found) return found;
@@ -132,7 +145,7 @@
 	}
 
 	// Store grid region IDs so we can remove them on update
-	let gridRegionIds = [];
+	let gridRegionIds: string[] = [];
 
 	// Render beat grid using Regions plugin (syncs with zoom/scroll automatically)
 	function updateBeatGrid() {
@@ -189,21 +202,22 @@
 
 
 	// Currently selected marker
-	let currentlySelectedMarker = $state(null);
+	let currentlySelectedMarker: string | null = $state(null);
 
 	// Default target board for new cues
-	let defaultTargetBoard = $state(null);
+	let defaultTargetBoard: string | null = $state(null);
 	let defaultBoardDropdownOpen = $state(false);
+	let actionMenuOpen = $state(false);
 
 	// Zoom state (0 = fit to container, >0 = pixels per second)
 	let zoomLevel = $state(0);
 
 	// Seeking state for debouncing
-	let seekDebounceTimeout = null;
+	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
 
 	// Pending cues to restore after audio loads (component-scoped, not global)
-	let pendingCues = [];
+	let pendingCues: Marker[] = [];
 
 	function stripAudioExtension(id: string): string {
 		return id.replace(/\.(mp3|wav)$/i, '');
@@ -286,7 +300,7 @@
 		}
 
 		// Keyboard handler for play/pause (Space) and add cue (C)
-		function handleKeyPress(event) {
+		function handleKeyPress(event: KeyboardEvent) {
 			// Only respond on the programming page
 			const currentPath = get(page).url.pathname;
 			if (currentPath !== '/programming') return;
@@ -340,7 +354,7 @@
 		};
 	});
 
-	function loadProgramData(data) {
+	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; cues?: Marker[] }) {
 		songName = data.songName || '';
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
@@ -352,11 +366,7 @@
 		pendingCues = data.cues || [];
 	}
 
-	/**
-	 * Initialize WaveSurfer instance with all event handlers
-	 * @param {string} audioUrl - Blob URL of the audio file
-	 */
-	function initializeWaveSurfer(audioUrl) {
+	function initializeWaveSurfer(audioUrl: string) {
 		regions = RegionsPlugin.create();
 
 		// Check for cached peaks once at the start
@@ -1229,7 +1239,7 @@ function playFullProgram() {
 	});
 </script>
 
-<div class="program-editor">
+<div class="program-editor" onclick={() => { actionMenuOpen = false; defaultBoardDropdownOpen = false; }}>
 	<div class="waveform-container">
 		<div class="waveform-header">
 			{#if isPlaying}
@@ -1268,26 +1278,27 @@ function playFullProgram() {
 			/>
 			<span class="file-name">{fileName}</span>
 			<div class="spacer"></div>
-			<button class="btn-save" onclick={saveProgram} title="Save program">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-					<path d="M12.5 14.5h-9c-.55 0-1-.45-1-1v-11c0-.55.45-1 1-1h6.88l3.62 3.62v8.38c0 .55-.45 1-1 1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M5.5 1.5v4h5v-4M10.5 14.5v-5h-5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-			</button>
-			{#if programId}
-				<button class="btn-download-program" onclick={downloadProgram} title="Download program with audio">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-						<path d="M8 1v10M8 11l-3-3M8 11l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-						<path d="M2 11v2c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
+			<div class="action-menu-wrapper">
+				<button
+					class="btn-action-menu"
+					onclick={(e) => {
+						e.stopPropagation();
+						actionMenuOpen = !actionMenuOpen;
+					}}
+					title="Actions"
+				>
+					⋮
 				</button>
-				<button class="btn-delete-program" onclick={deleteProgram} title="Delete program">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-						<path d="M2 4h12M5.5 4V2.5h5V4M6.5 7.5v4M9.5 7.5v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-						<path d="M3.5 4l.5 9.5c0 .55.45 1 1 1h6c.55 0 1-.45 1-1L13 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				</button>
-			{/if}
+				{#if actionMenuOpen}
+					<div class="action-menu-dropdown">
+						<button class="action-menu-item" onclick={() => { saveProgram(); actionMenuOpen = false; }}>Save</button>
+						{#if programId}
+							<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
+							<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
+						{/if}
+					</div>
+				{/if}
+			</div>
 		</div>
 		<div class="slot-label" style="--slot-color: {backingSlot.color}">
 			<span>{backingSlot.label}</span>
@@ -1311,48 +1322,6 @@ function playFullProgram() {
 			{/if}
 			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
-
-		{#if isLoaded}
-			<div class="guide-section">
-				{#if hasGuide}
-					<SlotTrack
-						slot={guideSlot}
-						programId={programId}
-						blobUrl={guideBlobUrl}
-						cachedPeaks={guidePeaks}
-						resamplingProgress={guideResamplingProgress}
-						mainWavesurfer={wavesurfer}
-						onRemove={removeGuide}
-						onRoutingClick={openRoutingModal}
-					/>
-				{:else}
-					<div
-						class="guide-dropzone"
-						onclick={() => document.getElementById(`guide-input-${sanitizedProgramId}`)?.click()}
-						ondrop={(e) => {
-							e.preventDefault();
-							const file = e.dataTransfer?.files[0];
-							if (file && (file.type.startsWith('audio/') || file.name.endsWith('.wav') || file.name.endsWith('.mp3'))) {
-								handleGuideUpload(file);
-							}
-						}}
-						ondragover={(e) => e.preventDefault()}
-					>
-						<span>Drop or click to add guide track</span>
-						<input
-							id="guide-input-{sanitizedProgramId}"
-							type="file"
-							accept="audio/*"
-							style="display: none"
-							onchange={(e) => {
-								const file = e.target?.files?.[0];
-								if (file) handleGuideUpload(file);
-							}}
-						/>
-					</div>
-				{/if}
-			</div>
-		{/if}
 
 		<div class="waveform-footer" class:has-cues={isLoaded}>
 			{#if isLoaded}
@@ -1443,6 +1412,49 @@ function playFullProgram() {
 				{/if}
 			{/if}
 		</div>
+
+		{#if isLoaded}
+			<div class="guide-section">
+				{#if hasGuide}
+					<SlotTrack
+						slot={guideSlot}
+						programId={programId}
+						blobUrl={guideBlobUrl}
+						cachedPeaks={guidePeaks}
+						resamplingProgress={guideResamplingProgress}
+						mainWavesurfer={wavesurfer}
+						onRemove={removeGuide}
+						onRoutingClick={openRoutingModal}
+					/>
+				{:else}
+					<div
+						class="guide-dropzone"
+						onclick={() => document.getElementById(`guide-input-${sanitizedProgramId}`)?.click()}
+						ondrop={(e) => {
+							e.preventDefault();
+							const file = e.dataTransfer?.files[0];
+							if (file && (file.type.startsWith('audio/') || file.name.endsWith('.wav') || file.name.endsWith('.mp3'))) {
+								handleGuideUpload(file);
+							}
+						}}
+						ondragover={(e) => e.preventDefault()}
+					>
+						<span>Drop or click to add guide track</span>
+						<input
+							id="guide-input-{sanitizedProgramId}"
+							type="file"
+							accept="audio/*"
+							style="display: none"
+							onchange={(e) => {
+								const file = e.target?.files?.[0];
+								if (file) handleGuideUpload(file);
+							}}
+						/>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		{#if !isLoaded && !program?.audioId && !program?.audioData}
 			<div class="audio-missing">
 				<p>⚠️ Audio file missing</p>
@@ -1730,88 +1742,68 @@ function playFullProgram() {
 	}
 
 
-	.btn-save {
+	.action-menu-wrapper {
+		position: relative;
+	}
+
+	.btn-action-menu {
 		background-color: transparent;
 		color: #555;
 		border: 1px solid #1a1a1a;
-		padding: 0.5rem 1rem;
+		padding: 0.5rem;
 		border-radius: 8px;
-		font-size: 0.875rem;
+		font-size: 1.1rem;
 		font-weight: 600;
 		cursor: pointer;
 		transition: all 0.2s;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.5rem;
+		width: 36px;
 		height: 36px;
 		box-sizing: border-box;
 	}
 
-	.btn-save:hover {
-		background-color: #111;
-		color: #22c55e;
-		border-color: #222;
-	}
-
-	.btn-save:active {
-		background-color: #0f0f0f;
-	}
-
-	.btn-download-program {
-		background-color: transparent;
-		color: #555;
-		border: 1px solid #1a1a1a;
-		padding: 0.5rem 1rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-		height: 36px;
-		box-sizing: border-box;
-	}
-
-	.btn-download-program:hover {
+	.btn-action-menu:hover {
 		background-color: #111;
 		color: #888;
 		border-color: #222;
 	}
 
-	.btn-download-program:active {
-		background-color: #0f0f0f;
-	}
-
-	.btn-delete-program {
-		background-color: transparent;
-		color: #555;
-		border: 1px solid #1a1a1a;
-		padding: 0.5rem 1rem;
+	.action-menu-dropdown {
+		position: absolute;
+		top: calc(100% + 4px);
+		right: 0;
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.1);
 		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 600;
+		min-width: 140px;
+		z-index: 100;
+		padding: 0.25rem;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+	}
+
+	.action-menu-item {
+		width: 100%;
+		padding: 0.5rem 0.75rem;
+		background: transparent;
+		border: none;
+		color: #888;
+		font-size: 0.8rem;
 		cursor: pointer;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-		height: 36px;
-		box-sizing: border-box;
+		border-radius: 6px;
+		transition: all 0.15s;
+		text-align: left;
 	}
 
-	.btn-delete-program:hover {
-		background-color: #1a1212;
-		color: #c44;
-		border-color: #331a1a;
+	.action-menu-item:hover {
+		background: rgba(255, 255, 255, 0.05);
+		color: #ccc;
 	}
 
-	.btn-delete-program:active {
-		background-color: #150f0f;
+	.action-menu-item-danger:hover {
+		background: rgba(239, 68, 68, 0.1);
+		color: #ef4444;
 	}
 
 	.waveform-wrapper {
