@@ -4,9 +4,9 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use tracing::info;
 
 use crate::audio;
+use crate::sse::SseEvent;
 use crate::types::SharedState;
 
 #[derive(Deserialize)]
@@ -56,18 +56,41 @@ pub async fn select_device(
     let tracks_to_resample = {
         let mut engine = state.audio_engine.lock().await;
         engine.set_device_and_routing(device_id.clone(), sample_rate, routing_snapshot).await;
-        engine.get_all_tracks()
+        engine.get_all_tracks_with_ids()
     };
 
     if tracks_to_resample.is_empty() {
         return StatusCode::OK;
     }
 
+    let broadcast_tx = state.broadcast_tx.clone();
+    let total = tracks_to_resample.len() as u32;
+
     tokio::spawn(async move {
-        for track in tracks_to_resample {
+        for (i, (track_id, track)) in tracks_to_resample.iter().enumerate() {
+            let from_rate = track.original_rate;
+
+            let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
+                current: i as u32,
+                total,
+                active: true,
+                track_name: track_id.clone(),
+                from_rate,
+                to_rate: sample_rate,
+            });
+
             if let Err(e) = track.ensure_resampled(sample_rate) {
                 eprintln!("[Resampling] Error: {}", e);
             }
+
+            let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
+                current: (i + 1) as u32,
+                total,
+                active: i + 1 < tracks_to_resample.len(),
+                track_name: track_id.clone(),
+                from_rate,
+                to_rate: sample_rate,
+            });
         }
     });
 

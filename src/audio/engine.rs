@@ -380,6 +380,35 @@ impl AudioEngine {
         self.load_slot_track(SlotId::Guide, id, track).await;
     }
 
+    pub async fn generate_and_load_click(
+        &mut self,
+        program_id: &str,
+        bpm: f64,
+        grid_offset: f64,
+        duration: f64,
+    ) {
+        if self.device_sample_rate == 0 {
+            eprintln!("[AudioEngine] Cannot generate click: no device sample rate set");
+            return;
+        }
+
+        let samples = super::click::generate_click_track(
+            bpm,
+            grid_offset,
+            duration,
+            self.device_sample_rate,
+            4,
+        );
+
+        let track = LoadedTrack::new(samples, self.device_sample_rate, 1);
+        let click_id = format!("{}_click", program_id);
+        self.load_slot_track(SlotId::Click, click_id, track).await;
+        eprintln!(
+            "[AudioEngine] Generated click track for {} at {}bpm ({}s)",
+            program_id, bpm, duration
+        );
+    }
+
     pub async fn resample_all_tracks(&self, new_rate: u32) -> Result<(), String> {
         if new_rate == 0 {
             return Ok(());
@@ -455,6 +484,13 @@ impl AudioEngine {
         self.slot_tracks
             .iter()
             .flat_map(|slot| slot.values().cloned())
+            .collect()
+    }
+
+    pub fn get_all_tracks_with_ids(&self) -> Vec<(String, Arc<LoadedTrack>)> {
+        self.slot_tracks
+            .iter()
+            .flat_map(|slot| slot.iter().map(|(id, track)| (id.clone(), Arc::clone(track))))
             .collect()
     }
 
@@ -559,6 +595,26 @@ impl AudioEngine {
                     .send(PlaybackCommand::ClearSlot(SlotId::Guide))
                     .await;
                 self.current_slot_ids[SlotId::Guide as usize] = None;
+            }
+
+            let click_id = format!("{}_click", track_id);
+            let click_tracks = &self.slot_tracks[SlotId::Click as usize];
+            if let Some(click_track) = click_tracks.get(&click_id).cloned() {
+                let _ = self
+                    .command_tx
+                    .send(PlaybackCommand::LoadSlot {
+                        slot: SlotId::Click,
+                        track: click_track,
+                    })
+                    .await;
+                self.current_slot_ids[SlotId::Click as usize] = Some(click_id.clone());
+                eprintln!("[AudioEngine] Loaded click track for playback");
+            } else {
+                let _ = self
+                    .command_tx
+                    .send(PlaybackCommand::ClearSlot(SlotId::Click))
+                    .await;
+                self.current_slot_ids[SlotId::Click as usize] = None;
             }
 
             if self

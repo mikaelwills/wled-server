@@ -1,4 +1,5 @@
 mod audio_thread;
+mod click;
 mod device_manager;
 mod engine;
 mod file;

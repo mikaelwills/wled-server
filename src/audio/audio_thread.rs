@@ -302,13 +302,23 @@ fn build_stream(
 
                         let sample_count = slot_sample_counts[slot_idx];
                         let channels = slot_channels[slot_idx];
-                        if channels == 0 || idx >= sample_count {
+                        if channels == 0 {
+                            continue;
+                        }
+
+                        let frame_number = idx / backing_channels;
+                        let slot_sample_idx = frame_number * channels;
+                        if slot_sample_idx >= sample_count {
                             continue;
                         }
 
                         if let Some(samples) = slot_guards[slot_idx].as_ref() {
-                            let left = samples.get(idx).copied().unwrap_or(0.0);
-                            let right = samples.get(idx + 1).copied().unwrap_or(0.0);
+                            let left = samples.get(slot_sample_idx).copied().unwrap_or(0.0);
+                            let right = if channels > 1 {
+                                samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0)
+                            } else {
+                                left
+                            };
 
                             if routing.is_stereo_mode() {
                                 frame[0] += left;

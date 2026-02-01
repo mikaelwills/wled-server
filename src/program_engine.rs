@@ -394,6 +394,19 @@ impl ProgramEngine {
                                         .map(|s| s.to_string())
                                 });
                                 let mut eng = engine.lock().await;
+
+                                if let Some(bpm) = program.bpm {
+                                    if let Some(track) = eng.get_track(track_id) {
+                                        let grid_offset = program.grid_offset.unwrap_or(0.0);
+                                        eng.generate_and_load_click(
+                                            track_id,
+                                            bpm as f64,
+                                            grid_offset,
+                                            track.duration_secs,
+                                        ).await;
+                                    }
+                                }
+
                                 let start_sample = if start_time > 0.0 {
                                     eng.get_track(track_id).map(|track| {
                                         let device_rate = eng.get_device_sample_rate();
