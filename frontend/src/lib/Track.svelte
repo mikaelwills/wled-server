@@ -92,7 +92,7 @@
 		<button class="mute-btn" class:muted={$slotMuted[track.id]} onclick={() => toggleSlotMute(track.id)}>{track.label}</button>
 		{#if resamplingProgress}
 			<span class="resampling-inline">
-				{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
+				{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {resamplingProgress.total > 0 ? Math.round((resamplingProgress.current / resamplingProgress.total) * 100) : 0}%
 			</span>
 		{/if}
 		<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>

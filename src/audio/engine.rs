@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
+use super::resampler::{spawn_resampling, ResamplingJob};
 use super::{LoadedTrack, PlaybackHealth, ResamplingProgress};
 use crate::config::ResamplingQuality;
 use crate::sse::SseEvent;
@@ -171,6 +172,7 @@ pub struct AudioEngine {
     health: Arc<PlaybackHealth>,
     resampling_progress: Arc<ResamplingProgress>,
     resampling_cancellation: HashMap<String, Arc<AtomicBool>>,
+    device_change_cancellation: Option<Arc<AtomicBool>>,
     command_tx: mpsc::Sender<PlaybackCommand>,
     command_rx: Option<mpsc::Receiver<PlaybackCommand>>,
     device_sample_rate: u32,
@@ -189,6 +191,7 @@ impl AudioEngine {
             health: PlaybackHealth::new(),
             resampling_progress: ResamplingProgress::new(),
             resampling_cancellation: HashMap::new(),
+            device_change_cancellation: None,
             command_tx: tx,
             command_rx: Some(rx),
             device_sample_rate: 0,
@@ -210,28 +213,19 @@ impl AudioEngine {
         eprintln!("[AudioEngine] Resampling quality set to {:?}", quality);
     }
 
-    fn broadcast_resampling_progress(
-        &self,
-        current: u32,
-        total: u32,
-        active: bool,
-        slot: &str,
-        program_id: &str,
-        from_rate: u32,
-        to_rate: u32,
-    ) {
-        if let Some(ref tx) = self.broadcast_tx {
-            let _ = tx.send(SseEvent::ResamplingProgress {
-                slot: slot.to_string(),
-                program_id: program_id.to_string(),
-                track_name: program_id.to_string(),
-                current,
-                total,
-                active,
-                from_rate,
-                to_rate,
-            });
+    pub fn cancel_device_change_resampling(&mut self) {
+        if let Some(ref token) = self.device_change_cancellation {
+            token.store(true, Ordering::Relaxed);
+            eprintln!("[AudioEngine] Cancelled previous device-change resampling");
         }
+        self.device_change_cancellation = None;
+    }
+
+    pub fn create_device_change_cancellation(&mut self) -> Arc<AtomicBool> {
+        self.cancel_device_change_resampling();
+        let token = Arc::new(AtomicBool::new(false));
+        self.device_change_cancellation = Some(Arc::clone(&token));
+        token
     }
 
     pub fn get_resampling_progress(&self) -> Arc<ResamplingProgress> {
@@ -301,84 +295,31 @@ impl AudioEngine {
 
     pub async fn load_slot_track(&mut self, slot: SlotId, id: String, track: LoadedTrack) {
         let track = Arc::new(track);
-        let device_rate = self.device_sample_rate;
-        let original_rate = track.original_rate;
-        let quality = self.resampling_quality;
         let slot_name = slot.name();
+
+        eprintln!(
+            "[AudioEngine] load_slot_track: slot={}, id={}, original_rate={}, device_rate={}",
+            slot_name, id, track.original_rate, self.device_sample_rate
+        );
 
         self.slot_tracks[slot as usize].insert(id.clone(), Arc::clone(&track));
 
-        if device_rate > 0 && original_rate != device_rate {
-            let cancelled = Arc::new(AtomicBool::new(false));
-            let cancel_key = format!("{}:{}", slot_name, id);
-            self.resampling_cancellation
-                .insert(cancel_key.clone(), Arc::clone(&cancelled));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_key = format!("{}:{}", slot_name, id);
+        self.resampling_cancellation
+            .insert(cancel_key, Arc::clone(&cancelled));
 
-            let track_clone = Arc::clone(&track);
-            let id_clone = id.clone();
-            let slot_name_owned = slot_name.to_string();
-            let program_id = id.clone();
-            let broadcast_tx = self.broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(100);
-
-                let progress_forwarder = tokio::spawn(async move {
-                    if let Some(tx) = broadcast_tx {
-                        let slot_for_completion = slot_name_owned.clone();
-                        let program_id_for_completion = program_id.clone();
-                        while let Some((current, total)) = progress_rx.recv().await {
-                            let _ = tx.send(SseEvent::ResamplingProgress {
-                                slot: slot_name_owned.clone(),
-                                program_id: program_id.clone(),
-                                track_name: program_id.clone(),
-                                current,
-                                total,
-                                active: true,
-                                from_rate: original_rate,
-                                to_rate: device_rate,
-                            });
-                        }
-                        let _ = tx.send(SseEvent::ResamplingProgress {
-                            slot: slot_for_completion,
-                            program_id: program_id_for_completion.clone(),
-                            track_name: program_id_for_completion,
-                            current: 0,
-                            total: 0,
-                            active: false,
-                            from_rate: 0,
-                            to_rate: 0,
-                        });
-                    }
-                });
-
-                let cancelled_clone = Arc::clone(&cancelled);
-                let result = tokio::task::spawn_blocking(move || {
-                    let callback = move |current: u32, total: u32| -> bool {
-                        let _ = progress_tx.blocking_send((current, total));
-                        !cancelled_clone.load(Ordering::Relaxed)
-                    };
-                    track_clone.ensure_resampled_with_options(device_rate, quality, Some(callback))
-                })
-                .await;
-
-                let _ = progress_forwarder.await;
-
-                match result {
-                    Ok(Ok(())) => eprintln!("[AudioEngine] Resampling complete for '{}'", id_clone),
-                    Ok(Err(e)) if e.contains("cancelled") => {
-                        eprintln!("[AudioEngine] Resampling cancelled for '{}'", id_clone)
-                    }
-                    Ok(Err(e)) => {
-                        eprintln!("[AudioEngine] Failed to resample '{}': {}", id_clone, e)
-                    }
-                    Err(e) => eprintln!(
-                        "[AudioEngine] Resample task failed for '{}': {}",
-                        id_clone, e
-                    ),
-                }
-            });
-        }
+        spawn_resampling(
+            vec![ResamplingJob {
+                slot,
+                id,
+                track,
+                cancellation: Some(cancelled),
+            }],
+            self.device_sample_rate,
+            self.resampling_quality,
+            self.broadcast_tx.clone(),
+        );
     }
 
     pub async fn load_track(&mut self, id: String, track: LoadedTrack) {
@@ -418,68 +359,6 @@ impl AudioEngine {
             "[AudioEngine] Generated click track for {} at {}bpm x{} ({}s)",
             program_id, bpm, click_rate, duration
         );
-    }
-
-    pub async fn resample_all_tracks(&self, new_rate: u32) -> Result<(), String> {
-        if new_rate == 0 {
-            return Ok(());
-        }
-
-        let mut tracks_to_resample: Vec<(SlotId, String, Arc<LoadedTrack>)> = Vec::new();
-        for slot in SlotId::all() {
-            let slot_idx = *slot as usize;
-            for (id, track) in self.slot_tracks[slot_idx].iter() {
-                if track.original_rate != new_rate {
-                    tracks_to_resample.push((*slot, id.clone(), Arc::clone(track)));
-                }
-            }
-        }
-
-        if tracks_to_resample.is_empty() {
-            return Ok(());
-        }
-
-        let total = tracks_to_resample.len() as u32;
-        self.resampling_progress.start(total);
-        self.broadcast_resampling_progress(0, total, true, "multiple", "", 0, new_rate);
-
-        let mut errors = Vec::new();
-        for (slot, id, track) in tracks_to_resample {
-            let from_rate = track.original_rate;
-            let slot_name = slot.name();
-            let program_id = id.clone();
-            let result = tokio::task::spawn_blocking(move || track.ensure_resampled(new_rate))
-                .await
-                .map_err(|e| format!("Task failed: {}", e))?;
-
-            self.resampling_progress.increment();
-            let (current, _) = self.resampling_progress.get();
-            self.broadcast_resampling_progress(
-                current,
-                total,
-                true,
-                slot_name,
-                &program_id,
-                from_rate,
-                new_rate,
-            );
-
-            if let Err(e) = result {
-                errors.push(format!("{}:{}: {}", slot_name, id, e));
-            }
-        }
-
-        self.resampling_progress.finish();
-        self.broadcast_resampling_progress(total, total, false, "", "", 0, 0);
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "Failed to resample some tracks: {}",
-                errors.join(", ")
-            ))
-        }
     }
 
     pub fn get_slot_track(&self, slot: SlotId, id: &str) -> Option<Arc<LoadedTrack>> {

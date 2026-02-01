@@ -57,13 +57,9 @@
 	let audioToUpload = $state(null);
 	let wavesurferInitialized = $state(false);
 
-	// Resampling state - derived from centralized store, filtered by program
-	let backingProgress = $derived(
-		$resamplingProgressStore.backing?.programId === program?.audioId ? $resamplingProgressStore.backing : null
-	);
-	let guideProgress = $derived(
-		$resamplingProgressStore.guide?.programId === `${programId}_guide` ? $resamplingProgressStore.guide : null
-	);
+	// Resampling state - derived from centralized store
+	let backingProgress = $derived($resamplingProgressStore.backing);
+	let guideProgress = $derived($resamplingProgressStore.guide);
 	let resamplingModalOpen = $state(false);
 	let resamplingModalMessage = $state('');
 

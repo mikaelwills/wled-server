@@ -36,6 +36,7 @@ export function createSseConnection(
       } else if (data.type === 'connection_status') {
         onConnectionStatus(data.board_id, data.connected);
       } else if (data.type === 'resampling_progress') {
+        console.log('[SSE] resampling_progress event:', data);
         const progress: ResamplingProgress = {
           slot: data.slot,
           programId: data.program_id,
@@ -46,6 +47,7 @@ export function createSseConnection(
           fromRate: data.from_rate,
           toRate: data.to_rate,
         };
+        console.log('[SSE] Updating store slot:', progress.slot, 'active:', progress.active);
         if (progress.active) {
           resamplingProgress.update(state => ({ ...state, [progress.slot]: progress }));
         } else {

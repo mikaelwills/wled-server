@@ -143,3 +143,29 @@ pub async fn restart_server() -> Result<StatusCode, (StatusCode, String)> {
 
     Ok(StatusCode::OK)
 }
+
+pub async fn get_timecode_settings(
+    State(state): State<SharedState>,
+) -> Result<Json<config::TimecodeConfig>, StatusCode> {
+    let config = state.config.lock().await;
+    Ok(Json(config.timecode.clone()))
+}
+
+pub async fn update_timecode_settings(
+    State(state): State<SharedState>,
+    Json(payload): Json<config::TimecodeConfig>,
+) -> Result<StatusCode, StatusCode> {
+    let mut config = state.config.lock().await;
+    config.timecode = payload;
+    config.save().map_err(|e| {
+        error!("Failed to save timecode settings: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    info!(
+        "Timecode settings updated: OSC {}:{} ({})",
+        config.timecode.osc.ip,
+        config.timecode.osc.port,
+        if config.timecode.osc.enabled { "enabled" } else { "disabled" }
+    );
+    Ok(StatusCode::OK)
+}

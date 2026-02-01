@@ -1,5 +1,118 @@
 use rubato::{SincFixedIn, SincInterpolationType, SincInterpolationParameters, WindowFunction, Resampler};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::broadcast;
+
 use crate::config::ResamplingQuality;
+use crate::sse::SseEvent;
+use super::engine::SlotId;
+use super::LoadedTrack;
+
+pub struct ResamplingJob {
+    pub slot: SlotId,
+    pub id: String,
+    pub track: Arc<LoadedTrack>,
+    pub cancellation: Option<Arc<AtomicBool>>,
+}
+
+pub fn spawn_resampling(
+    jobs: Vec<ResamplingJob>,
+    target_rate: u32,
+    quality: ResamplingQuality,
+    broadcast_tx: Option<Arc<broadcast::Sender<SseEvent>>>,
+) {
+    if target_rate == 0 {
+        return;
+    }
+
+    for job in jobs {
+        let from_rate = job.track.original_rate;
+        let slot_name = job.slot.name().to_string();
+        let program_id = job.id.clone();
+
+        if from_rate == target_rate {
+            if let Some(ref tx) = broadcast_tx {
+                let _ = tx.send(SseEvent::ResamplingProgress {
+                    slot: slot_name,
+                    program_id: program_id.clone(),
+                    track_name: program_id,
+                    current: 0,
+                    total: 0,
+                    active: false,
+                    from_rate: 0,
+                    to_rate: 0,
+                });
+            }
+            continue;
+        }
+
+        let track = job.track;
+        let cancelled = job.cancellation.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let broadcast_tx_clone = broadcast_tx.clone();
+
+        tokio::spawn(async move {
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(100);
+
+            let slot_for_forwarder = slot_name.clone();
+            let program_id_for_forwarder = program_id.clone();
+            let broadcast_for_forwarder = broadcast_tx_clone.clone();
+
+            let progress_forwarder = tokio::spawn(async move {
+                if let Some(tx) = broadcast_for_forwarder {
+                    while let Some((current, total)) = progress_rx.recv().await {
+                        let _ = tx.send(SseEvent::ResamplingProgress {
+                            slot: slot_for_forwarder.clone(),
+                            program_id: program_id_for_forwarder.clone(),
+                            track_name: program_id_for_forwarder.clone(),
+                            current,
+                            total,
+                            active: true,
+                            from_rate,
+                            to_rate: target_rate,
+                        });
+                    }
+                }
+            });
+
+            let cancelled_clone = Arc::clone(&cancelled);
+            let id_for_log = program_id.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let callback = move |current: u32, total: u32| -> bool {
+                    let _ = progress_tx.blocking_send((current, total));
+                    !cancelled_clone.load(Ordering::Relaxed)
+                };
+                track.ensure_resampled_with_options(target_rate, quality, Some(callback))
+            })
+            .await;
+
+            let _ = progress_forwarder.await;
+
+            if let Some(ref tx) = broadcast_tx_clone {
+                let _ = tx.send(SseEvent::ResamplingProgress {
+                    slot: slot_name.clone(),
+                    program_id: program_id.clone(),
+                    track_name: program_id.clone(),
+                    current: 0,
+                    total: 0,
+                    active: false,
+                    from_rate: 0,
+                    to_rate: 0,
+                });
+            }
+
+            match result {
+                Ok(Ok(())) => eprintln!("[Resampler] Complete for '{}'", id_for_log),
+                Ok(Err(e)) if e.contains("cancelled") => {
+                    eprintln!("[Resampler] Cancelled for '{}'", id_for_log)
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[Resampler] Failed for '{}': {}", id_for_log, e)
+                }
+                Err(e) => eprintln!("[Resampler] Task failed for '{}': {}", id_for_log, e),
+            }
+        });
+    }
+}
 
 pub fn resample(
     samples: &[f32],

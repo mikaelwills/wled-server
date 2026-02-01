@@ -149,7 +149,6 @@
 	async function importProgramFromJSON(file: File) {
 		console.log('Importing program from JSON:', file.name);
 		isLoading = true;
-		startListeningForProgress();
 
 		try {
 			// Read JSON file
@@ -205,7 +204,6 @@
 			console.error('Failed to import program:', err);
 			alert(`Failed to import program: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
-			stopListeningForProgress();
 			isLoading = false;
 		}
 	}
@@ -219,7 +217,6 @@
 		console.log('Creating new program with file:', file.name);
 
 		isLoading = true;
-		startListeningForProgress();
 
 		const timestamp = Date.now();
 		const fileName = file.name;
@@ -280,7 +277,6 @@
 			console.error('Failed to create program:', err);
 			alert('Failed to save audio file. Check console for details.');
 		} finally {
-			stopListeningForProgress();
 			isLoading = false;
 		}
 	}
@@ -328,12 +324,12 @@
 			<!-- Loading Card at Top (new programs appear here) -->
 			{#if isLoading}
 				<div class="compression-loading-card">
-					{#if activeResamplingProgress()?.active}
+					{#if activeResamplingProgress?.active}
 						<div class="progress-container">
-							<div class="progress-bar" style="width: {(activeResamplingProgress()!.current / activeResamplingProgress()!.total) * 100}%"></div>
+							<div class="progress-bar" style="width: {(activeResamplingProgress.current / activeResamplingProgress.total) * 100}%"></div>
 						</div>
 						<p>Resampling audio...</p>
-						<p class="compression-hint">{Math.round((activeResamplingProgress()!.current / activeResamplingProgress()!.total) * 100)}%</p>
+						<p class="compression-hint">{Math.round((activeResamplingProgress.current / activeResamplingProgress.total) * 100)}%</p>
 					{:else}
 						<div class="spinner"></div>
 						<p>Saving program...</p>

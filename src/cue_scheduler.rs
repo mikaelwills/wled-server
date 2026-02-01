@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::PatternType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
@@ -11,10 +11,39 @@ use crate::pattern::generate_sequence;
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
 use crate::timing_metrics::TimingMetrics;
 
-const COARSE_THRESHOLD: Duration = Duration::from_millis(100);
-const FINE_THRESHOLD: Duration = Duration::from_millis(10);
+const COARSE_THRESHOLD_SAMPLES: u64 = 4410;
+const FINE_THRESHOLD_SAMPLES: u64 = 441;
 const COARSE_SLEEP: Duration = Duration::from_millis(50);
 const FINE_SLEEP: Duration = Duration::from_millis(5);
+const POLL_INTERVAL: Duration = Duration::from_micros(500);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const POSITION_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone)]
+pub struct AudioTimingConfig {
+    pub position: Arc<AtomicU64>,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub start_sample: u64,
+}
+
+impl AudioTimingConfig {
+    pub fn duration_to_samples(&self, duration: Duration) -> u64 {
+        let seconds = duration.as_secs_f64();
+        (seconds * self.sample_rate as f64 * self.channels as f64) as u64
+    }
+
+    pub fn samples_to_seconds(&self, samples: u64) -> f64 {
+        if self.sample_rate == 0 || self.channels == 0 {
+            return 0.0;
+        }
+        samples as f64 / (self.sample_rate as f64 * self.channels as f64)
+    }
+
+    pub fn current_position(&self) -> u64 {
+        self.position.load(Ordering::Acquire)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PatternCueConfig {
@@ -45,7 +74,7 @@ pub struct ScheduledCue {
 pub enum SchedulerCommand {
     Start {
         cues: Vec<ScheduledCue>,
-        playback_start: Instant,
+        audio_timing: AudioTimingConfig,
     },
 }
 
@@ -76,12 +105,12 @@ impl CueScheduler {
         }
     }
 
-    pub fn start(&self, cues: Vec<ScheduledCue>, playback_start: Instant) -> Result<(), String> {
+    pub fn start(&self, cues: Vec<ScheduledCue>, audio_timing: AudioTimingConfig) -> Result<(), String> {
         self.stop_flag.store(false, Ordering::Relaxed);
         self.command_tx
             .send(SchedulerCommand::Start {
                 cues,
-                playback_start,
+                audio_timing,
             })
             .map_err(|e| e.to_string())
     }
@@ -102,56 +131,104 @@ impl CueScheduler {
             match command_rx.recv() {
                 Ok(SchedulerCommand::Start {
                     cues,
-                    playback_start,
+                    audio_timing,
                 }) => {
                     let mut sorted_cues = cues;
                     sorted_cues.sort_by_key(|c| c.fire_at);
 
+                    let initial_position = audio_timing.current_position();
                     println!(
-                        "🎬 Cue scheduler: {} cues loaded (anchor age: {:.1}ms)",
+                        "🎬 Cue scheduler: {} cues loaded (audio-synced @ {}Hz x {} ch, start_sample: {}, current_pos: {})",
                         sorted_cues.len(),
-                        playback_start.elapsed().as_secs_f64() * 1000.0
+                        audio_timing.sample_rate,
+                        audio_timing.channels,
+                        audio_timing.start_sample,
+                        initial_position
                     );
+
+                    let startup_start = std::time::Instant::now();
+                    let mut position_started = initial_position > 0;
+                    if !position_started {
+                        println!("⏳ Waiting for audio position to start advancing...");
+                        while !position_started && startup_start.elapsed() < STARTUP_TIMEOUT {
+                            if stop_flag.load(Ordering::Relaxed) {
+                                println!("⏹️ Cue scheduler: stopped during startup wait");
+                                continue;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                            let pos = audio_timing.current_position();
+                            if pos > 0 {
+                                position_started = true;
+                                println!("✅ Audio position started (pos: {})", pos);
+                            }
+                        }
+                        if !position_started {
+                            println!("⚠️ Timeout waiting for audio to start - proceeding anyway");
+                        }
+                    }
+
+                    let mut last_position = audio_timing.current_position();
+                    let mut last_position_change = std::time::Instant::now();
 
                     'cue_loop: for cue in sorted_cues {
                         if stop_flag.load(Ordering::Relaxed) {
                             break;
                         }
 
-                        let target_time = playback_start + cue.fire_at;
+                        let target_samples = audio_timing.start_sample + audio_timing.duration_to_samples(cue.fire_at);
 
                         loop {
-                            let now = Instant::now();
-                            if now >= target_time {
+                            let current_position = audio_timing.current_position();
+
+                            if current_position != last_position {
+                                last_position = current_position;
+                                last_position_change = std::time::Instant::now();
+                            } else if last_position_change.elapsed() > POSITION_STALL_TIMEOUT {
+                                println!("⚠️ Position stalled for {:?} - audio may have stopped", POSITION_STALL_TIMEOUT);
+                                break 'cue_loop;
+                            }
+
+                            if current_position >= target_samples {
                                 break;
                             }
 
-                            let remaining = target_time - now;
+                            let remaining_samples = target_samples.saturating_sub(current_position);
 
-                            if remaining > COARSE_THRESHOLD {
+                            if remaining_samples > COARSE_THRESHOLD_SAMPLES {
                                 thread::sleep(COARSE_SLEEP);
                                 if stop_flag.load(Ordering::Relaxed) {
                                     break 'cue_loop;
                                 }
-                            } else if remaining > FINE_THRESHOLD {
+                            } else if remaining_samples > FINE_THRESHOLD_SAMPLES {
                                 thread::sleep(FINE_SLEEP);
                                 if stop_flag.load(Ordering::Relaxed) {
                                     break 'cue_loop;
                                 }
                             } else {
+                                thread::sleep(POLL_INTERVAL);
                                 break;
                             }
                         }
 
-                        while Instant::now() < target_time {
+                        let spin_start = std::time::Instant::now();
+                        let spin_timeout = Duration::from_millis(100);
+                        while audio_timing.current_position() < target_samples {
                             std::hint::spin_loop();
+                            if stop_flag.load(Ordering::Relaxed) {
+                                break 'cue_loop;
+                            }
+                            if spin_start.elapsed() > spin_timeout {
+                                break;
+                            }
                         }
 
                         if stop_flag.load(Ordering::Relaxed) {
                             break 'cue_loop;
                         }
 
-                        let drift_ms = (Instant::now() - target_time).as_secs_f64() * 1000.0;
+                        let actual_position = audio_timing.current_position();
+                        let drift_samples = actual_position.saturating_sub(target_samples) as i64;
+                        let drift_ms = (drift_samples as f64 / (audio_timing.sample_rate as f64 * audio_timing.channels as f64)) * 1000.0;
 
                         if let Some(ref metrics) = timing_metrics {
                             metrics.record_cue_drift(drift_ms, &cue.label);
@@ -160,10 +237,11 @@ impl CueScheduler {
                         match &cue.cue_type {
                             CueType::Pattern(pcfg) => {
                                 println!(
-                                    "🌊 PATTERN '{}' fired @ {:.2}s (drift: {:.1}ms)",
+                                    "🌊 PATTERN '{}' fired @ {:.2}s (drift: {:.1}ms, pos: {})",
                                     cue.label,
                                     cue.fire_at.as_secs_f64(),
-                                    drift_ms
+                                    drift_ms,
+                                    actual_position
                                 );
 
                                 let _ = effects_engine.send_command(EngineCommand::Stop);
@@ -188,10 +266,11 @@ impl CueScheduler {
                             }
                             CueType::Effect { config, boards } => {
                                 println!(
-                                    "🎯 CUE '{}' fired @ {:.2}s (drift: {:.1}ms)",
+                                    "🎯 CUE '{}' fired @ {:.2}s (drift: {:.1}ms, pos: {})",
                                     cue.label,
                                     cue.fire_at.as_secs_f64(),
-                                    drift_ms
+                                    drift_ms,
+                                    actual_position
                                 );
 
                                 let _ = pattern_engine.send_command(PatternCommand::Stop);

@@ -55,6 +55,9 @@ pub fn generate_click_track(
     beats_per_bar: u32,
     click_rate: f64,
 ) -> Vec<f32> {
+    eprintln!("[Click] generate_click_track: bpm={}, grid_offset={:.3}s, duration={:.1}s, rate={}Hz, beats_per_bar={}, click_rate={}",
+        bpm, grid_offset, total_duration, sample_rate, beats_per_bar, click_rate);
+
     let beat_interval = 60.0 / (bpm * click_rate);
     let total_samples = (total_duration * sample_rate as f64) as usize;
     let mut samples = vec![0.0f32; total_samples];
@@ -62,24 +65,48 @@ pub fn generate_click_track(
     let downbeat = resample_simple(get_downbeat_samples(), SOURCE_SAMPLE_RATE, sample_rate);
     let regular = resample_simple(get_regular_samples(), SOURCE_SAMPLE_RATE, sample_rate);
 
-    let mut beat_number = 0u32;
-    let mut beat_time = grid_offset;
+    let beats_before_offset = (grid_offset / beat_interval).ceil() as i32;
+    let first_beat_time = grid_offset - (beats_before_offset as f64 * beat_interval);
+
+    eprintln!("[Click] beat_interval={:.4}s, beats_before_offset={}, first_beat_time={:.4}s",
+        beat_interval, beats_before_offset, first_beat_time);
+
+    let mut beat_idx = 0i32;
+    let mut beat_time = first_beat_time;
+    let mut click_count = 0u32;
+    let mut downbeat_count = 0u32;
+    let mut first_click_time: Option<f64> = None;
 
     while beat_time < total_duration {
-        let is_downbeat = beat_number % beats_per_bar == 0;
-        let click_samples = if is_downbeat { &downbeat } else { &regular };
-        let start_sample = (beat_time * sample_rate as f64) as usize;
+        if beat_time >= 0.0 {
+            let beats_from_downbeat = ((beat_time - grid_offset) / beat_interval).round() as i32;
+            let bar_beat = beats_from_downbeat.rem_euclid(beats_per_bar as i32);
+            let is_downbeat = bar_beat == 0;
+            let click_samples = if is_downbeat { &downbeat } else { &regular };
+            let start_sample = (beat_time * sample_rate as f64) as usize;
 
-        for (i, &sample) in click_samples.iter().enumerate() {
-            let idx = start_sample + i;
-            if idx < total_samples {
-                samples[idx] += sample;
+            for (i, &sample) in click_samples.iter().enumerate() {
+                let idx = start_sample + i;
+                if idx < total_samples {
+                    samples[idx] += sample;
+                }
+            }
+
+            if first_click_time.is_none() {
+                first_click_time = Some(beat_time);
+            }
+            click_count += 1;
+            if is_downbeat {
+                downbeat_count += 1;
             }
         }
 
-        beat_number += 1;
-        beat_time = grid_offset + (beat_number as f64 * beat_interval);
+        beat_idx += 1;
+        beat_time = first_beat_time + (beat_idx as f64 * beat_interval);
     }
+
+    eprintln!("[Click] Generated {} clicks ({} downbeats), first click at {:.3}s, total_samples={}",
+        click_count, downbeat_count, first_click_time.unwrap_or(-1.0), total_samples);
 
     samples
 }

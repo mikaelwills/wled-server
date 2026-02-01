@@ -122,6 +122,8 @@ impl InternalPlaybackState {
     pub fn load_slot(&self, slot: SlotId, track: Arc<LoadedTrack>) {
         let device_rate = self.device_sample_rate.load(Ordering::Acquire);
         let samples = track.get_samples_for_rate(device_rate);
+        eprintln!("[AudioThread] load_slot: slot={:?}, device_rate={}, samples_len={}, channels={}",
+            slot, device_rate, samples.len(), track.channels);
         self.slots[slot as usize].load(samples, track.channels as usize);
     }
 
@@ -520,6 +522,17 @@ impl AudioThread {
                     state.sample_index.store(0, Ordering::Release);
                     state.load_slot(SlotId::Backing, track);
                     state.playing.store(true, Ordering::Release);
+
+                    let routing = state.routing.load();
+                    eprintln!("[AudioThread] PLAY started - output_channels={}, stereo_mode={}",
+                        routing.output_channels, routing.is_stereo_mode());
+                    for (i, slot_routing) in routing.slots.iter().enumerate() {
+                        let slot_samples = state.slots[i].sample_count.load(Ordering::Acquire);
+                        let slot_channels = state.slots[i].channels.load(Ordering::Relaxed);
+                        eprintln!("[AudioThread]   Slot {}: samples={}, ch={}, route_to={}/{}, muted={}",
+                            i, slot_samples, slot_channels,
+                            slot_routing.left_channel, slot_routing.right_channel, slot_routing.muted);
+                    }
                 }
                 PlaybackCommand::Stop => {
                     state.playing.store(false, Ordering::Release);
@@ -546,6 +559,8 @@ impl AudioThread {
                     state.set_mute(slot, muted);
                 }
                 PlaybackCommand::LoadSlot { slot, track } => {
+                    eprintln!("[AudioThread] LoadSlot command: slot={:?}, track_channels={}, track_samples={}",
+                        slot, track.channels, track.original_samples.len());
                     state.load_slot(slot, track);
                 }
                 PlaybackCommand::ClearSlot(slot) => {

@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::audio::AudioEngine;
 use crate::config::{AudioSource, Config, PatternType};
-use crate::cue_scheduler::{CueScheduler, CueType, PatternCueConfig, ScheduledCue};
+use crate::cue_scheduler::{AudioTimingConfig, CueScheduler, CueType, PatternCueConfig, ScheduledCue};
 use crate::effects::EffectType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
@@ -345,14 +345,6 @@ impl ProgramEngine {
                         start_time
                     );
 
-                    let playback_start = if audio_sync_delay_ms < 0 {
-                        let delay_ms = audio_sync_delay_ms.unsigned_abs();
-                        println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
-                        Instant::now() + Duration::from_millis(delay_ms)
-                    } else {
-                        Instant::now()
-                    };
-
                     {
                         let mut s = state.write().await;
                         s.audio_track = Some(program.loopy_pro_track.clone());
@@ -365,13 +357,6 @@ impl ProgramEngine {
                         s.current_session_id = session_id.clone();
                     }
 
-                    let _ = cue_scheduler.start(scheduled_cues, playback_start);
-
-                    if audio_sync_delay_ms > 0 {
-                        println!("⏱️ Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
-                        tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
-                    }
-
                     let audio_source = {
                         let cfg = config.lock().await;
                         cfg.loopy_pro.audio_source.clone()
@@ -379,6 +364,47 @@ impl ProgramEngine {
 
                     match audio_source {
                         AudioSource::LoopyPro => {
+                            let simulated_position = Arc::new(AtomicU64::new(0));
+                            let simulated_sample_rate = 44100u32;
+                            let simulated_channels = 2u32;
+
+                            let light_delay_samples = if audio_sync_delay_ms < 0 {
+                                let delay_ms = audio_sync_delay_ms.unsigned_abs();
+                                println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
+                                (delay_ms as f64 / 1000.0 * simulated_sample_rate as f64 * simulated_channels as f64) as u64
+                            } else {
+                                0
+                            };
+
+                            if audio_sync_delay_ms > 0 {
+                                println!("⏱️ Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
+                                tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
+                            }
+
+                            let perf_mode_clone = performance_mode.clone();
+                            let position_clone = simulated_position.clone();
+                            std::thread::spawn(move || {
+                                let start = std::time::Instant::now();
+                                let samples_per_second = (simulated_sample_rate * simulated_channels) as f64;
+                                while perf_mode_clone.load(Ordering::Relaxed) {
+                                    let elapsed_secs = start.elapsed().as_secs_f64();
+                                    let current_sample = (elapsed_secs * samples_per_second) as u64;
+                                    position_clone.store(current_sample, Ordering::Release);
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                            });
+
+                            std::thread::sleep(Duration::from_millis(5));
+
+                            let audio_timing = AudioTimingConfig {
+                                position: simulated_position.clone(),
+                                sample_rate: simulated_sample_rate,
+                                channels: simulated_channels,
+                                start_sample: light_delay_samples,
+                            };
+
+                            let _ = cue_scheduler.start(scheduled_cues, audio_timing);
+
                             if let Some(ref callback) = on_audio_play {
                                 println!("🎵 Triggering Loopy Pro playback: {}", program.loopy_pro_track);
                                 callback(&program.loopy_pro_track);
@@ -409,24 +435,56 @@ impl ProgramEngine {
                                     }
                                 }
 
-                                let start_sample = if start_time > 0.0 {
-                                    eng.get_track(track_id).map(|track| {
-                                        let device_rate = eng.get_device_sample_rate();
-                                        let playback_rate = if device_rate > 0 { device_rate } else { track.original_rate };
-                                        let channels = track.channels as u32;
-                                        (start_time * playback_rate as f64 * channels as f64) as u64
+                                let device_rate = eng.get_device_sample_rate();
+                                let track_info = eng.get_track(track_id);
+                                let (playback_rate, channels) = track_info
+                                    .map(|t| {
+                                        let rate = if device_rate > 0 { device_rate } else { t.original_rate };
+                                        (rate, t.channels as u32)
                                     })
+                                    .unwrap_or((44100, 2));
+
+                                let start_sample = if start_time > 0.0 {
+                                    (start_time * playback_rate as f64 * channels as f64) as u64
                                 } else {
-                                    None
+                                    0
                                 };
-                                if eng.play_with_guide(track_id, guide_id.as_deref(), start_sample).await {
+
+                                let light_delay_samples = if audio_sync_delay_ms < 0 {
+                                    let delay_ms = audio_sync_delay_ms.unsigned_abs();
+                                    println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
+                                    (delay_ms as f64 / 1000.0 * playback_rate as f64 * channels as f64) as u64
+                                } else {
+                                    0
+                                };
+
+                                let position_arc = eng.get_position_arc();
+                                position_arc.store(0, Ordering::SeqCst);
+
+                                let audio_timing = AudioTimingConfig {
+                                    position: position_arc,
+                                    sample_rate: playback_rate,
+                                    channels,
+                                    start_sample: start_sample + light_delay_samples,
+                                };
+
+                                let _ = cue_scheduler.start(scheduled_cues, audio_timing);
+
+                                if audio_sync_delay_ms > 0 {
+                                    println!("⏱️ Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
+                                    tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
+                                }
+
+                                let start_sample_opt = if start_sample > 0 { Some(start_sample) } else { None };
+                                if eng.play_with_guide(track_id, guide_id.as_deref(), start_sample_opt).await {
                                     if guide_id.is_some() {
-                                        println!("🔊 Playing audio + guide via local engine: {} @ {:?} samples", track_id, start_sample);
+                                        println!("🔊 Playing audio + guide via local engine: {} @ {:?} samples", track_id, start_sample_opt);
                                     } else {
-                                        println!("🔊 Playing audio via local engine: {} @ {:?} samples", track_id, start_sample);
+                                        println!("🔊 Playing audio via local engine: {} @ {:?} samples", track_id, start_sample_opt);
                                     }
                                 } else {
                                     println!("⚠️ Track not loaded in audio engine: {}", track_id);
+                                    cue_scheduler.stop();
                                 }
                             }
                         }

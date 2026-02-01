@@ -83,6 +83,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/:id/peaks", get(audio::get_peaks).post(audio::save_peaks))
         .route("/osc", post(settings::send_osc))
         .route("/settings/loopy-pro", get(settings::get_loopy_pro_settings).put(settings::update_loopy_pro_settings))
+        .route("/settings/timecode", get(settings::get_timecode_settings).put(settings::update_timecode_settings))
         .route("/settings/storage", get(settings::get_storage_status))
         .route("/server/restart", post(settings::restart_server))
         .route("/effects/start", post(effects::start_effects_engine))

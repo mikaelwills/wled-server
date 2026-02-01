@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -5,8 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::audio;
-use crate::sse::SseEvent;
+use crate::audio::{self, spawn_resampling, ResamplingJob};
 use crate::types::SharedState;
 
 #[derive(Deserialize)]
@@ -53,51 +54,53 @@ pub async fn select_device(
         audio::RoutingConfig::from_device_routing(&routing_config, output_channels)
     };
 
-    let tracks_to_resample = {
+    let (tracks_to_resample, quality, cancellation_token) = {
         let mut engine = state.audio_engine.lock().await;
         engine.set_device_and_routing(device_id.clone(), sample_rate, routing_snapshot).await;
-        engine.get_all_tracks_with_ids()
+
+        let all_tracks = engine.get_all_tracks_with_ids();
+        let mut to_resample = Vec::new();
+        let mut clicks_to_remove = Vec::new();
+
+        for (slot, id, track) in all_tracks {
+            if id.ends_with("_click") {
+                clicks_to_remove.push(id);
+            } else {
+                to_resample.push((slot, id, track));
+            }
+        }
+
+        for click_id in &clicks_to_remove {
+            engine.unload_slot_track(audio::SlotId::Click, click_id);
+        }
+        if !clicks_to_remove.is_empty() {
+            eprintln!("[Device] Removed {} click tracks (will regenerate at new rate)", clicks_to_remove.len());
+        }
+
+        let token = engine.create_device_change_cancellation();
+        (to_resample, engine.get_resampling_quality(), token)
     };
 
-    if tracks_to_resample.is_empty() {
-        return StatusCode::OK;
+    if !tracks_to_resample.is_empty() {
+        eprintln!("[Device] Starting resampling for {} tracks to {}Hz", tracks_to_resample.len(), sample_rate);
+
+        let jobs: Vec<ResamplingJob> = tracks_to_resample
+            .into_iter()
+            .map(|(slot, id, track)| ResamplingJob {
+                slot,
+                id,
+                track,
+                cancellation: Some(Arc::clone(&cancellation_token)),
+            })
+            .collect();
+
+        spawn_resampling(
+            jobs,
+            sample_rate,
+            quality,
+            Some(state.broadcast_tx.clone()),
+        );
     }
-
-    let broadcast_tx = state.broadcast_tx.clone();
-    let total = tracks_to_resample.len() as u32;
-
-    tokio::spawn(async move {
-        for (i, (slot, program_id, track)) in tracks_to_resample.iter().enumerate() {
-            let from_rate = track.original_rate;
-            let slot_name = slot.name().to_string();
-
-            let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
-                slot: slot_name.clone(),
-                program_id: program_id.clone(),
-                track_name: program_id.clone(),
-                current: i as u32,
-                total,
-                active: true,
-                from_rate,
-                to_rate: sample_rate,
-            });
-
-            if let Err(e) = track.ensure_resampled(sample_rate) {
-                eprintln!("[Resampling] Error: {}", e);
-            }
-
-            let _ = broadcast_tx.send(SseEvent::ResamplingProgress {
-                slot: slot_name,
-                program_id: program_id.clone(),
-                track_name: program_id.clone(),
-                current: (i + 1) as u32,
-                total,
-                active: i + 1 < tracks_to_resample.len(),
-                from_rate,
-                to_rate: sample_rate,
-            });
-        }
-    });
 
     StatusCode::OK
 }
