@@ -56,142 +56,126 @@
 	});
 </script>
 
-<div class="markers-section">
-	<div class="markers-list">
-		<div class="marker-item">
-			<div class="marker-info">
-				<span class="marker-time">{formatTime(marker.time)}</span>
-				<span class="marker-label">{marker.label}</span>
-			</div>
-			<div class="marker-controls">
-				<div class="boards-dropdown-wrapper">
-					<button
-						class="boards-select-button"
-						onclick={toggleDropdown}
-					>
-						{getBoardsLabel(marker.boards)}
-						<span class="dropdown-arrow">▼</span>
-					</button>
-					{#if dropdownOpen}
-						{@const regularBoards = $boards.filter(b => !b.isGroup)}
-						{@const groups = $boards.filter(b => b.isGroup)}
+<div class="cue-editor">
+	<div class="cue-info">
+		<span class="cue-time">{formatTime(marker.time)}</span>
+		<span class="cue-label">{marker.label}</span>
+	</div>
+	<div class="cue-controls">
+		<div class="boards-dropdown-wrapper">
+			<button
+				class="boards-select-button"
+				onclick={toggleDropdown}
+			>
+				{getBoardsLabel(marker.boards)}
+				<span class="dropdown-arrow">▼</span>
+			</button>
+			{#if dropdownOpen}
+				{@const regularBoards = $boards.filter(b => !b.isGroup)}
+				{@const groups = $boards.filter(b => b.isGroup)}
 
-						<div class="boards-dropdown-menu">
-							{#if groups.length > 0}
-								<div class="dropdown-section">
-									<div class="dropdown-section-label">Groups</div>
-									{#each groups as group}
-										<label class="dropdown-option">
-											<input
-												type="checkbox"
-												checked={marker.boards.includes(group.id)}
-												onchange={() => onToggleBoardSelection(marker.id, group.id)}
-											/>
-											<span>{group.id}</span>
-										</label>
-									{/each}
-								</div>
-							{/if}
+				<div class="boards-dropdown-menu">
+					{#if groups.length > 0}
+						<div class="dropdown-section">
+							<div class="dropdown-section-label">Groups</div>
+							{#each groups as group}
+								<label class="dropdown-option">
+									<input
+										type="checkbox"
+										checked={marker.boards.includes(group.id)}
+										onchange={() => onToggleBoardSelection(marker.id, group.id)}
+									/>
+									<span>{group.id}</span>
+								</label>
+							{/each}
+						</div>
+					{/if}
 
-							{#if regularBoards.length > 0}
-								<div class="dropdown-section">
-									<div class="dropdown-section-label">Boards</div>
-									{#each regularBoards as board}
-										<label class="dropdown-option">
-											<input
-												type="checkbox"
-												checked={marker.boards.includes(board.id)}
-												onchange={() => onToggleBoardSelection(marker.id, board.id)}
-											/>
-											<span>{board.id}</span>
-										</label>
-									{/each}
-								</div>
-							{/if}
+					{#if regularBoards.length > 0}
+						<div class="dropdown-section">
+							<div class="dropdown-section-label">Boards</div>
+							{#each regularBoards as board}
+								<label class="dropdown-option">
+									<input
+										type="checkbox"
+										checked={marker.boards.includes(board.id)}
+										onchange={() => onToggleBoardSelection(marker.id, board.id)}
+									/>
+									<span>{board.id}</span>
+								</label>
+							{/each}
 						</div>
 					{/if}
 				</div>
-
-				<button
-					class="preset-picker-button"
-					class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
-					onclick={() => onOpenPresetPicker(marker.id)}
-				>
-					{marker.presetName || 'Select Preset'}
-					<span class="dropdown-arrow">▼</span>
-				</button>
-				<div class="sync-rate-group" title="BPM sync rate">
-					<button
-						class="sync-rate-btn"
-						class:active={marker.syncRate === 0.25}
-						onclick={() => onUpdateSyncRate(marker.id, 0.25)}
-					>¼</button>
-					<button
-						class="sync-rate-btn"
-						class:active={marker.syncRate === 0.5}
-						onclick={() => onUpdateSyncRate(marker.id, 0.5)}
-					>½</button>
-					<button
-						class="sync-rate-btn"
-						class:active={(marker.syncRate ?? 1) === 1}
-						onclick={() => onUpdateSyncRate(marker.id, 1)}
-					>1</button>
-					<button
-						class="sync-rate-btn"
-						class:active={marker.syncRate === 2}
-						onclick={() => onUpdateSyncRate(marker.id, 2)}
-					>2</button>
-					<button
-						class="sync-rate-btn"
-						class:active={marker.syncRate === 4}
-						onclick={() => onUpdateSyncRate(marker.id, 4)}
-					>4</button>
-				</div>
-
-				<button class="btn-delete" onclick={() => onDelete(marker.id)}>
-					✕
-				</button>
-			</div>
+			{/if}
 		</div>
+
+		<button
+			class="preset-picker-button"
+			class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
+			onclick={() => onOpenPresetPicker(marker.id)}
+		>
+			{marker.presetName || 'Select Preset'}
+			<span class="dropdown-arrow">▼</span>
+		</button>
+		<div class="sync-rate-group" title="BPM sync rate">
+			<button
+				class="sync-rate-btn"
+				class:active={marker.syncRate === 0.25}
+				onclick={() => onUpdateSyncRate(marker.id, 0.25)}
+			>¼</button>
+			<button
+				class="sync-rate-btn"
+				class:active={marker.syncRate === 0.5}
+				onclick={() => onUpdateSyncRate(marker.id, 0.5)}
+			>½</button>
+			<button
+				class="sync-rate-btn"
+				class:active={(marker.syncRate ?? 1) === 1}
+				onclick={() => onUpdateSyncRate(marker.id, 1)}
+			>1</button>
+			<button
+				class="sync-rate-btn"
+				class:active={marker.syncRate === 2}
+				onclick={() => onUpdateSyncRate(marker.id, 2)}
+			>2</button>
+			<button
+				class="sync-rate-btn"
+				class:active={marker.syncRate === 4}
+				onclick={() => onUpdateSyncRate(marker.id, 4)}
+			>4</button>
+		</div>
+
+		<button class="btn-delete" onclick={() => onDelete(marker.id)}>
+			✕
+		</button>
 	</div>
 </div>
 
 <style>
-	.markers-section {
+	.cue-editor {
 		padding: 0.5rem 1rem;
-		overflow: visible;
-	}
-
-	.markers-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		overflow: visible;
-	}
-
-	.marker-item {
-		padding: 0.35rem 0;
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		overflow: visible;
 	}
 
-	.marker-info {
+	.cue-info {
 		display: flex;
 		gap: 1rem;
 		align-items: center;
 		flex: 1;
 	}
 
-	.marker-controls {
+	.cue-controls {
 		display: flex;
 		gap: 0.75rem;
 		align-items: center;
 		overflow: visible;
 	}
 
-	.marker-time {
+	.cue-time {
 		font-family: 'Courier New', monospace;
 		font-size: 1.1rem;
 		color: #888;
@@ -199,7 +183,7 @@
 		min-width: 80px;
 	}
 
-	.marker-label {
+	.cue-label {
 		color: #888;
 		font-size: 1rem;
 		min-width: 120px;

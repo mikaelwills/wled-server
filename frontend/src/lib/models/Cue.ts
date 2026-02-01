@@ -1,7 +1,10 @@
 // frontend/src/lib/models/Cue.ts
 
+export type MarkerType = 'lighting' | 'midi';
+
 export interface CueData {
   time: number;
+  type: MarkerType;
   label: string;
   boards: string[];
   presetName?: string;
@@ -14,6 +17,7 @@ export interface CueData {
 
 export class Cue implements CueData {
   time: number;
+  type: MarkerType;
   label: string;
   boards: string[];
   presetName?: string;
@@ -25,6 +29,7 @@ export class Cue implements CueData {
 
   private constructor(data: CueData) {
     this.time = data.time;
+    this.type = data.type;
     this.label = data.label;
     this.boards = data.boards;
     this.presetName = data.presetName;
@@ -43,6 +48,7 @@ export class Cue implements CueData {
 
     return new Cue({
       time: data.time,
+      type: (data.type || data.marker_type || 'lighting') as MarkerType,
       label: data.label || `Cue ${Math.floor(data.time)}s`,
       boards: Array.isArray(data.targets) ? data.targets : (Array.isArray(data.boards) ? data.boards : []),
       presetName: data.presetName || data.preset_name,
@@ -57,6 +63,7 @@ export class Cue implements CueData {
   toJson(): Record<string, any> {
     return {
       time: this.time,
+      marker_type: this.type,
       label: this.label,
       targets: this.boards,
       preset_name: this.presetName,

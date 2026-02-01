@@ -5,30 +5,28 @@
 	import type { ResamplingProgress } from '$lib/sse';
 
 	interface Props {
-		slot: SlotConfig;
+		track: SlotConfig;
 		programId: string;
 		blobUrl: string | null;
 		cachedPeaks: { peaks: Array<number[]>; duration: number } | null;
 		resamplingProgress: ResamplingProgress | null;
 		mainWavesurfer: WaveSurfer | null;
 		onRemove: () => void;
-		onRoutingClick: () => void;
 	}
 
 	let {
-		slot,
+		track,
 		programId,
 		blobUrl,
 		cachedPeaks,
 		resamplingProgress,
 		mainWavesurfer,
 		onRemove,
-		onRoutingClick,
 	}: Props = $props();
 
 	let wavesurfer: WaveSurfer | null = $state(null);
 	let isLoaded = $state(false);
-	let containerId = $derived(`${slot.id}-waveform-${programId.replace(/[^a-zA-Z0-9-_]/g, '-')}`);
+	let containerId = $derived(`${track.id}-waveform-${programId.replace(/[^a-zA-Z0-9-_]/g, '-')}`);
 
 	function initWaveSurfer(url: string) {
 		if (wavesurfer) {
@@ -37,9 +35,9 @@
 
 		wavesurfer = WaveSurfer.create({
 			container: `#${containerId}`,
-			waveColor: slot.waveformColor,
-			progressColor: slot.progressColor,
-			cursorColor: slot.cursorColor,
+			waveColor: track.waveformColor,
+			progressColor: track.progressColor,
+			cursorColor: track.cursorColor,
 			barWidth: 2,
 			barRadius: 3,
 			height: 80,
@@ -88,25 +86,15 @@
 	});
 </script>
 
-<div class="slot-track" style="--slot-color: {slot.color}">
-	<div class="slot-label">
-		<span>{slot.label}</span>
+<div class="track" style="--track-color: {track.color}">
+	<div class="track-label">
+		<span>{track.label}</span>
 		{#if resamplingProgress}
 			<span class="resampling-inline">
 				{resamplingProgress.trackName.replace(/^guide:/, '')} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
 			</span>
 		{/if}
-		<div class="slot-label-actions">
-			<button class="routing-btn" onclick={onRoutingClick} title="Channel routing">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-					<path d="M2 4h4M10 4h4M2 8h4M10 8h4M2 12h4M10 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					<circle cx="8" cy="4" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-					<circle cx="8" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-					<circle cx="8" cy="12" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-				</svg>
-			</button>
-			<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>
-		</div>
+		<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>
 	</div>
 	<div class="waveform-inner">
 		{#if blobUrl && !isLoaded}
@@ -117,17 +105,17 @@
 </div>
 
 <style>
-	.slot-track {
+	.track {
 		margin-top: 0.5rem;
 	}
 
-	.slot-label {
+	.track-label {
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
 		padding: 0.25rem 1rem;
 		font-size: 0.75rem;
-		color: var(--slot-color, #888);
+		color: var(--track-color, #888);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 	}
@@ -142,32 +130,8 @@
 		text-overflow: ellipsis;
 	}
 
-	.slot-label-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		margin-left: auto;
-	}
-
-	.routing-btn {
-		background: transparent;
-		border: none;
-		color: color-mix(in srgb, var(--slot-color, #888) 50%, transparent);
-		cursor: pointer;
-		padding: 0.25rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 4px;
-		transition: all 0.15s;
-	}
-
-	.routing-btn:hover {
-		color: var(--slot-color, #888);
-		background: color-mix(in srgb, var(--slot-color, #888) 10%, transparent);
-	}
-
 	.btn-remove {
+		margin-left: auto;
 		background: transparent;
 		border: none;
 		color: rgba(255, 255, 255, 0.5);
@@ -194,7 +158,7 @@
 		bottom: 0;
 		background: linear-gradient(90deg,
 			transparent 25%,
-			color-mix(in srgb, var(--slot-color, #888) 5%, transparent) 50%,
+			color-mix(in srgb, var(--track-color, #888) 5%, transparent) 50%,
 			transparent 75%);
 		background-size: 200% 100%;
 		animation: shimmer 2.5s infinite ease-in-out;

@@ -15,13 +15,15 @@
 	import PresetPicker from '$lib/PresetPicker.svelte';
 	import CueEditor from '$lib/CueEditor.svelte';
 	import RoutingModal from '$lib/RoutingModal.svelte';
-	import SlotTrack from '$lib/SlotTrack.svelte';
+	import Track from '$lib/Track.svelte';
 	import { getSlot } from '$lib/slots';
 	import { onResamplingProgress, type ResamplingProgress } from '$lib/sse';
+	import type { MarkerType } from '$lib/models/Cue';
 
 	interface Marker {
 		id: string;
 		time: number;
+		type: MarkerType;
 		label?: string;
 		boards?: string[];
 		presetName?: string;
@@ -59,7 +61,7 @@
 	let resamplingProgress: ResamplingProgress | null = $state(null);
 	let guideResamplingProgress: ResamplingProgress | null = $state(null);
 
-	// Guide track state - uses SlotTrack component
+	// Guide track state - uses Track component
 	// Show guide section when: guideAudioId exists, OR resampling in progress (during upload)
 	let hasGuide = $derived(!!program?.guideAudioId || !!guideResamplingProgress);
 	let guideBlobUrl = $derived(program?.id ? $guideBlobUrls[program.id] : null);
@@ -79,6 +81,10 @@
 
 	// Routing modal state
 	let routingModalOpen = $state(false);
+
+	// Edit mode (lighting vs midi markers)
+	let editMode: MarkerType = $state('lighting');
+	let visibleMarkers = $derived(markers.filter(m => m.type === editMode));
 
 	function openPresetPicker(markerId: string) {
 		presetPickerMarkerId = markerId;
@@ -431,6 +437,7 @@
 					markers = [...markers, {
 						id: markerRegion.id,
 						time: cue.time,
+						type: cue.type || 'lighting',
 						label: cue.label,
 						boards: cue.boards,
 						presetName: presetName,
@@ -794,9 +801,10 @@
 		// Inherit default target board if set, otherwise empty
 		const initialBoards = defaultTargetBoard ? [defaultTargetBoard] : [];
 
-		const newMarker = {
+		const newMarker: Marker = {
 			id: markerRegion.id,
 			time: time,
+			type: editMode,
 			label: 'No Preset',
 			presetName: undefined,
 			boards: initialBoards,
@@ -1046,6 +1054,7 @@ function playFullProgram() {
 			guideAudioId: program?.guideAudioId || existingProgram?.guideAudioId,
 			cues: markers.map(m => ({
 				time: m.time,
+				type: m.type,
 				label: m.label,
 				boards: m.boards,
 				presetName: m.presetName,
@@ -1080,14 +1089,17 @@ function playFullProgram() {
 	}
 
 	function clearCues() {
-		if (markers.length === 0) return;
+		const toClear = visibleMarkers;
+		if (toClear.length === 0) return;
 
-		// Remove all regions from waveform
-		const allRegions = regions.getRegions();
-		allRegions.forEach(region => region.remove());
+		// Remove regions for current type only
+		toClear.forEach(marker => {
+			const region = regions.getRegions().find(r => r.id === marker.id);
+			if (region) region.remove();
+		});
 
-		// Clear markers array
-		markers = [];
+		// Keep markers of other types
+		markers = markers.filter(m => m.type !== editMode);
 		syncMarkersToStore();
 	}
 
@@ -1183,11 +1195,11 @@ function playFullProgram() {
 			return;
 		}
 
-		// Apply default board to ALL cues
-		markers = markers.map(marker => ({
-			...marker,
-			boards: [defaultTargetBoard]
-		}));
+		// Apply default board to visible cues only
+		markers = markers.map(marker => {
+			if (marker.type !== editMode) return marker;
+			return { ...marker, boards: [defaultTargetBoard] };
+		});
 
 		syncMarkersToStore();
 	}
@@ -1217,13 +1229,31 @@ function playFullProgram() {
 		}
 	});
 
-	// Trigger guide audio loading when needed - SlotTrack handles wavesurfer init
+	// Trigger guide audio loading when needed - Track handles wavesurfer init
 	$effect(() => {
 		if (!program?.guideAudioId || !isLoaded) return;
 
 		const blobUrl = $guideBlobUrls[program.id];
 		if (!blobUrl && !$audioLoading) {
 			loadGuideAudioForProgram(program.id, program.guideAudioId);
+		}
+	});
+
+	// Toggle marker region visibility based on edit mode
+	$effect(() => {
+		const mode = editMode;
+		const allMarkers = markers;
+		if (!regions) return;
+
+		for (const region of regions.getRegions()) {
+			if (gridRegionIds.includes(region.id)) continue;
+			if (!region.element) continue;
+
+			const marker = allMarkers.find(m => m.id === region.id);
+			if (!marker) continue;
+
+			const visible = marker.type === mode;
+			region.element.style.visibility = visible ? 'visible' : 'hidden';
 		}
 	});
 
@@ -1241,7 +1271,7 @@ function playFullProgram() {
 
 <div class="program-editor" onclick={() => { actionMenuOpen = false; defaultBoardDropdownOpen = false; }}>
 	<div class="waveform-container">
-		<div class="waveform-header">
+		<div class="program-transport-controls">
 			{#if isPlaying}
 				<button class="btn-program-pause" onclick={stopFullProgram}>
 					⏸
@@ -1287,7 +1317,7 @@ function playFullProgram() {
 					}}
 					title="Actions"
 				>
-					⋮
+					⋯
 				</button>
 				{#if actionMenuOpen}
 					<div class="action-menu-dropdown">
@@ -1300,50 +1330,65 @@ function playFullProgram() {
 				{/if}
 			</div>
 		</div>
-		<div class="slot-label" style="--slot-color: {backingSlot.color}">
+		<div class="track-label" style="--track-color: {backingSlot.color}">
 			<span>{backingSlot.label}</span>
 			{#if resamplingProgress}
 				<span class="resampling-inline">
 					{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {Math.round((resamplingProgress.current / resamplingProgress.total) * 100)}%
 				</span>
 			{/if}
-			<button class="routing-btn" onclick={openRoutingModal} title="Channel routing">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-					<path d="M2 4h4M10 4h4M2 8h4M10 8h4M2 12h4M10 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					<circle cx="8" cy="4" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-					<circle cx="8" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-					<circle cx="8" cy="12" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-				</svg>
-			</button>
+			<div class="track-label-actions">
+				<div class="mode-btn-group">
+					<button
+						class="mode-btn"
+						class:active={editMode === 'lighting'}
+						onclick={() => editMode = 'lighting'}
+					>Lighting</button>
+					<button
+						class="mode-btn"
+						class:active={editMode === 'midi'}
+						onclick={() => editMode = 'midi'}
+					>Midi</button>
+				</div>
+				{#if isLoaded}
+					<div class="zoom-btn-group">
+						<svg class="zoom-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+							<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/>
+							<path d="M11 11L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						</svg>
+						<button class="zoom-btn" onclick={zoomOut} title="Zoom Out">−</button>
+						<button class="zoom-btn" onclick={zoomIn} title="Zoom In">+</button>
+					</div>
+					<div class="zoom-btn-group" title="Grid density">
+						<svg class="zoom-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+							<path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						</svg>
+						<button class="zoom-btn" onclick={gridSparser} title="Sparser Grid">−</button>
+						<button class="zoom-btn" onclick={gridDenser} title="Denser Grid">+</button>
+					</div>
+				{/if}
+				<button class="routing-btn" onclick={openRoutingModal} title="Channel routing">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<path d="M2 4h4M10 4h4M2 8h4M10 8h4M2 12h4M10 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<circle cx="8" cy="4" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+						<circle cx="8" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+						<circle cx="8" cy="12" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+					</svg>
+				</button>
+			</div>
 		</div>
-		<div class="waveform-wrapper">
+		<div class="backing-waveform">
 			{#if !isLoaded && (program?.audioId || program?.audioData)}
 				<div class="waveform-skeleton"></div>
 			{/if}
 			<div id="waveform-{sanitizedProgramId}" class:hidden={!isLoaded && (program?.audioId || program?.audioData)}></div>
 		</div>
 
-		<div class="waveform-footer" class:has-cues={isLoaded}>
+		{#if editMode === 'lighting'}
+		<div class="backing-controls" class:has-cues={isLoaded}>
 			{#if isLoaded}
 				{@const groups = $boards.filter(b => b.isGroup)}
 				{@const regularBoards = $boards.filter(b => !b.isGroup)}
-
-				<div class="zoom-btn-group">
-					<svg class="zoom-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-						<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M11 11L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-					<button class="zoom-btn zoom-btn-left" onclick={zoomOut} title="Zoom Out">−</button>
-					<button class="zoom-btn zoom-btn-right" onclick={zoomIn} title="Zoom In">+</button>
-				</div>
-
-				<div class="zoom-btn-group" title="Grid density">
-					<svg class="zoom-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-						<path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-					<button class="zoom-btn zoom-btn-left" onclick={gridSparser} title="Sparser Grid">−</button>
-					<button class="zoom-btn zoom-btn-right" onclick={gridDenser} title="Denser Grid">+</button>
-				</div>
 
 				<div class="default-board-dropdown-wrapper">
 					<button
@@ -1400,9 +1445,9 @@ function playFullProgram() {
 					Apply to All Cues
 				</button>
 
-				{#if markers.length > 0}
+				{#if visibleMarkers.length > 0}
 					<button class="cue-count-badge-wrapper" onclick={clearCues}>
-						<span class="cue-count-badge">{markers.length}</span>
+						<span class="cue-count-badge">{visibleMarkers.length}</span>
 						<span class="clear-cues-text">Clear Cues</span>
 					</button>
 				{:else}
@@ -1412,19 +1457,32 @@ function playFullProgram() {
 				{/if}
 			{/if}
 		</div>
+		{/if}
+
+		{#if editMode === 'lighting' && visibleMarkers.length > 0 && currentlySelectedMarker}
+			{@const marker = visibleMarkers.find(m => m.id === currentlySelectedMarker)}
+			{#if marker}
+				<CueEditor
+					{marker}
+					onToggleBoardSelection={toggleBoardSelection}
+					onOpenPresetPicker={openPresetPicker}
+					onUpdateSyncRate={(markerId, rate) => updateMarkerProperty(markerId, 'syncRate', rate)}
+					onDelete={deleteMarker}
+				/>
+			{/if}
+		{/if}
 
 		{#if isLoaded}
 			<div class="guide-section">
 				{#if hasGuide}
-					<SlotTrack
-						slot={guideSlot}
+					<Track
+						track={guideSlot}
 						programId={programId}
 						blobUrl={guideBlobUrl}
 						cachedPeaks={guidePeaks}
 						resamplingProgress={guideResamplingProgress}
 						mainWavesurfer={wavesurfer}
 						onRemove={removeGuide}
-						onRoutingClick={openRoutingModal}
 					/>
 				{:else}
 					<div
@@ -1460,19 +1518,6 @@ function playFullProgram() {
 				<p>⚠️ Audio file missing</p>
 				<p class="audio-missing-hint">This program was saved without audio. Please re-upload the file.</p>
 			</div>
-		{/if}
-
-		{#if markers.length > 0 && currentlySelectedMarker}
-			{@const marker = markers.find(m => m.id === currentlySelectedMarker)}
-			{#if marker}
-				<CueEditor
-					{marker}
-					onToggleBoardSelection={toggleBoardSelection}
-					onOpenPresetPicker={openPresetPicker}
-					onUpdateSyncRate={(markerId, rate) => updateMarkerProperty(markerId, 'syncRate', rate)}
-					onDelete={deleteMarker}
-				/>
-			{/if}
 		{/if}
 	</div>
 </div>
@@ -1521,11 +1566,11 @@ function playFullProgram() {
 		min-height: 252px;
 	}
 
-	.waveform-header {
+	.program-transport-controls {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		padding: 0.5rem 1rem;
+		padding: 1rem;
 		background: transparent;
 	}
 
@@ -1806,35 +1851,35 @@ function playFullProgram() {
 		color: #ef4444;
 	}
 
-	.waveform-wrapper {
+	.backing-waveform {
 		position: relative;
 		min-height: 140px;
 	}
 
-	.waveform-wrapper:has(+ .waveform-footer:not(.has-cues)) {
+	.backing-waveform:has(+ .backing-controls:not(.has-cues)) {
 		margin-bottom: -40px;
 	}
 
 	/* Custom scrollbar for waveform */
-	.waveform-wrapper ::-webkit-scrollbar {
+	.backing-waveform ::-webkit-scrollbar {
 		height: 8px;
 	}
 
-	.waveform-wrapper ::-webkit-scrollbar-track {
+	.backing-waveform ::-webkit-scrollbar-track {
 		background: transparent;
 	}
 
-	.waveform-wrapper ::-webkit-scrollbar-thumb {
+	.backing-waveform ::-webkit-scrollbar-thumb {
 		background: rgba(168, 85, 247, 0.5);
 		border-radius: 4px;
 	}
 
-	.waveform-wrapper ::-webkit-scrollbar-thumb:hover {
+	.backing-waveform ::-webkit-scrollbar-thumb:hover {
 		background: rgba(168, 85, 247, 0.7);
 	}
 
 	/* Firefox scrollbar */
-	.waveform-wrapper * {
+	.backing-waveform * {
 		scrollbar-width: thin;
 		scrollbar-color: rgba(168, 85, 247, 0.5) transparent;
 	}
@@ -1842,17 +1887,25 @@ function playFullProgram() {
 	.guide-section {
 		margin-top: 0.5rem;
 		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
 	}
 
-	.slot-label {
+	.track-label {
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
 		padding: 0.25rem 1rem;
 		font-size: 0.75rem;
-		color: var(--slot-color, #888);
+		color: var(--track-color, #888);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+
+	.track-label-actions {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		margin-left: auto;
 	}
 
 	.resampling-inline {
@@ -1866,22 +1919,23 @@ function playFullProgram() {
 	}
 
 	.routing-btn {
-		margin-left: auto;
 		background: transparent;
-		border: none;
-		color: color-mix(in srgb, var(--slot-color, #888) 50%, transparent);
+		border: 1px solid #1a1a1a;
+		color: color-mix(in srgb, var(--track-color, #888) 50%, transparent);
 		cursor: pointer;
-		padding: 0.25rem;
+		padding: 0 0.5rem;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		border-radius: 4px;
+		border-radius: 6px;
 		transition: all 0.15s;
+		height: 28px;
+		box-sizing: border-box;
 	}
 
 	.routing-btn:hover {
-		color: var(--slot-color, #888);
-		background: color-mix(in srgb, var(--slot-color, #888) 10%, transparent);
+		color: var(--track-color, #888);
+		background: color-mix(in srgb, var(--track-color, #888) 10%, transparent);
 	}
 
 	.guide-dropzone {
@@ -1913,7 +1967,7 @@ function playFullProgram() {
 		pointer-events: none;
 	}
 
-	.waveform-footer {
+	.backing-controls {
 		padding: 0.5rem 1rem 0.75rem 1rem;
 		background: transparent;
 		display: flex;
@@ -1925,7 +1979,7 @@ function playFullProgram() {
 		transition: opacity 0.3s ease;
 	}
 
-	.waveform-footer.has-cues {
+	.backing-controls.has-cues {
 		opacity: 1;
 	}
 
@@ -1933,51 +1987,69 @@ function playFullProgram() {
 		display: flex;
 		align-items: center;
 		border: 1px solid #1a1a1a;
-		border-radius: 4px;
-		overflow: hidden;
+		border-radius: 6px;
 		height: 28px;
 		box-sizing: border-box;
-		background: transparent;
 	}
 
 	.zoom-icon {
 		color: #555;
 		flex-shrink: 0;
-		padding: 0 6px;
 		display: flex;
 		align-items: center;
+		padding: 0.25rem 0.35rem;
 	}
 
 	.zoom-btn {
-		width: 32px;
-		height: 100%;
 		background: transparent;
 		border: none;
 		color: #555;
-		border-radius: 0;
-		font-size: 1rem;
-		font-weight: 500;
 		cursor: pointer;
-		transition: all 0.15s ease;
+		padding: 0.25rem 0.5rem;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		box-sizing: border-box;
-		padding: 0;
+		border-radius: 4px;
+		transition: all 0.15s;
+		font-size: 1rem;
+		font-weight: 500;
 		line-height: 1;
 	}
 
-	.zoom-btn-left {
-		border-right: 1px solid #1a1a1a;
-	}
-
 	.zoom-btn:hover {
-		background: #111;
 		color: #888;
+		background: #111;
 	}
 
-	.zoom-btn:active {
-		background: #0a0a0a;
+	.mode-btn-group {
+		display: flex;
+		align-items: center;
+		border: 1px solid #1a1a1a;
+		border-radius: 6px;
+		height: 28px;
+		box-sizing: border-box;
+		overflow: hidden;
+	}
+
+	.mode-btn {
+		background: transparent;
+		border: none;
+		color: #555;
+		cursor: pointer;
+		padding: 0 0.75rem;
+		height: 100%;
+		font-size: 0.75rem;
+		transition: all 0.15s;
+	}
+
+	.mode-btn:hover {
+		color: #888;
+		background: #111;
+	}
+
+	.mode-btn.active {
+		background: #1a1a1a;
+		color: #fff;
 	}
 
 	.waveform-skeleton {
