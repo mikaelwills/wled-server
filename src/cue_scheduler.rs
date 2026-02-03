@@ -18,6 +18,7 @@ const FINE_SLEEP: Duration = Duration::from_millis(5);
 const POLL_INTERVAL: Duration = Duration::from_micros(500);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const POSITION_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+const AUDIO_END_DETECTION: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct AudioTimingConfig {
@@ -285,12 +286,41 @@ impl CueScheduler {
 
                     if stop_flag.load(Ordering::Relaxed) {
                         println!("⏹️ Cue scheduler: stopped");
-                    } else {
-                        println!("✅ All cues fired");
-                        if let Some(ref callback) = on_complete {
-                            callback();
-                        }
+                        continue;
                     }
+
+                    let final_pos = audio_timing.current_position();
+                    println!("✅ All cues fired @ {:.2}s - waiting for audio to end...",
+                        audio_timing.samples_to_seconds(final_pos));
+
+                    let mut last_pos = final_pos;
+                    let mut last_change = std::time::Instant::now();
+                    let wait_start = std::time::Instant::now();
+
+                    loop {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            println!("⏹️ Cue scheduler: stopped while waiting for audio end");
+                            break;
+                        }
+
+                        let current_pos = audio_timing.current_position();
+                        if current_pos != last_pos {
+                            last_pos = current_pos;
+                            last_change = std::time::Instant::now();
+                        } else if last_change.elapsed() > AUDIO_END_DETECTION {
+                            println!("🏁 Audio ended @ {:.2}s (waited {:.1}s after last cue)",
+                                audio_timing.samples_to_seconds(current_pos),
+                                wait_start.elapsed().as_secs_f64());
+                            break;
+                        }
+
+                        thread::sleep(COARSE_SLEEP);
+                    }
+
+                    if stop_flag.load(Ordering::Relaxed) { continue; }
+
+                    let Some(ref callback) = on_complete else { continue; };
+                    callback();
                 }
                 Err(_) => break,
             }

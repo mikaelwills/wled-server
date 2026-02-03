@@ -65,12 +65,12 @@ export class Cue implements CueData {
       time: this.time,
       marker_type: this.type,
       label: this.label,
-      targets: this.boards,
-      preset_name: this.presetName,
+      targets: this.boards || [],
+      preset_name: this.presetName || '',
       color: this.color,
       effect: this.effect,
       brightness: this.brightness,
-      sync_rate: this.syncRate,
+      sync_rate: this.syncRate ?? 1,
     };
   }
 

@@ -43,13 +43,23 @@
 	let switchingToDeviceId: string | null = $state(null);
 	let routingModalOpen = $state(false);
 	let devicePickerOpen = $state(false);
+	let devicePickerLoading = $state(false);
 
 	let selectedDevice = $derived(audioDevices.find(d => d.id === selectedDeviceId));
 	let selectedDeviceChannels = $derived(selectedDevice?.output_channels ?? 0);
 
 	async function openDevicePicker() {
-		await fetchAudioDevices();
 		devicePickerOpen = true;
+		devicePickerLoading = true;
+		try {
+			const res = await fetch(`${API_URL}/audio/devices`);
+			if (res.ok) {
+				audioDevices = await res.json();
+			}
+		} catch (e) {
+			console.error('Failed to fetch audio devices:', e);
+		}
+		devicePickerLoading = false;
 	}
 
 	async function selectDeviceAndClose(deviceId: string | null) {
@@ -384,7 +394,7 @@
 				<button class="close-btn" onclick={() => devicePickerOpen = false}>×</button>
 			</div>
 			<div class="modal-body">
-				{#if audioDevicesLoading}
+				{#if devicePickerLoading}
 					<p class="help-text" style="text-align: center;">Loading devices...</p>
 				{:else}
 					<div class="device-list" class:disabled={switchingToDeviceId !== null}>

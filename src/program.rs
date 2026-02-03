@@ -45,7 +45,9 @@ fn default_transition_type() -> String {
 pub struct Cue {
     pub time: f64,
     pub label: String,
+    #[serde(default)]
     pub targets: Vec<String>,
+    #[serde(default)]
     pub preset_name: String,
     #[serde(default = "default_sync_rate")]
     pub sync_rate: f64,
