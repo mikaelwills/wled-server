@@ -14,7 +14,6 @@
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import PresetPicker from '$lib/PresetPicker.svelte';
 	import CueEditor from '$lib/CueEditor.svelte';
-	import RoutingModal from '$lib/RoutingModal.svelte';
 	import Track from '$lib/Track.svelte';
 	import { getSlot } from '$lib/slots';
 	import { toggleSlotMute } from '$lib/audio-db';
@@ -81,8 +80,8 @@
 	let presetPickerOpen = $state(false);
 	let presetPickerMarkerId: string | null = $state(null);
 
-	// Routing modal state
-	let routingModalOpen = $state(false);
+	// Metadata modal state
+	let metadataModalOpen = $state(false);
 
 	// Edit mode (lighting vs midi markers)
 	let editMode: MarkerType = $state('lighting');
@@ -104,10 +103,6 @@
 	function closePresetPicker() {
 		presetPickerOpen = false;
 		presetPickerMarkerId = null;
-	}
-
-	function openRoutingModal() {
-		routingModalOpen = true;
 	}
 
 	// Snap time to nearest grid line based on BPM and offset (only if within 10px)
@@ -223,6 +218,18 @@
 	// Seeking state for debouncing
 	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
+
+	// Auto-save debounce
+	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	function debouncedSave() {
+		if (saveTimeout) clearTimeout(saveTimeout);
+		saveTimeout = setTimeout(() => {
+			if (isLoaded && program) {
+				saveProgram();
+			}
+		}, 500);
+	}
 
 	// Pending cues to restore after audio loads (component-scoped, not global)
 	let pendingCues: Marker[] = [];
@@ -498,10 +505,10 @@
 				console.log('🖱️ Left-click: Seeking to', clickTime);
 				wavesurfer.seekTo(relativeX);
 			} else if (event.button === 2 && event.shiftKey) {
-				// Shift+Right-click: Set downbeat position (grid offset)
 				gridOffset = clickTime;
 				console.log('🎵 Downbeat set at:', clickTime.toFixed(3) + 's');
 				updateBeatGrid();
+				debouncedSave();
 			} else if (event.button === 2) {
 				// Right-click: Add marker (snapped to grid if BPM set)
 				const snappedTime = snapToGrid(clickTime);
@@ -737,7 +744,6 @@
 	function syncMarkersToStore() {
 		if (!programId) return;
 
-		// Update the program in the store with current markers
 		programsStore.update(programs => {
 			const programIndex = programs.findIndex(p => p.id === programId);
 			if (programIndex !== -1) {
@@ -747,6 +753,8 @@
 			}
 			return [...programs];
 		});
+
+		debouncedSave();
 	}
 
 	function addMarker(time) {
@@ -994,27 +1002,7 @@ async function playFullProgram() {
 	}
 
 	function saveProgram() {
-		// Validation
-		if (!songName.trim()) {
-			alert('Please enter a song name');
-			return;
-		}
-
-		const cuesWithoutPreset = markers.filter(m => !m.presetName);
-		if (cuesWithoutPreset.length > 0) {
-			const confirmed = confirm(
-				`${cuesWithoutPreset.length} cue(s) have no preset selected and will be skipped during playback. Save anyway?`
-			);
-			if (!confirmed) return;
-		}
-
-		const cuesWithoutBoards = markers.filter(m => m.boards.length === 0);
-		if (cuesWithoutBoards.length > 0) {
-			const confirmed = confirm(
-				`${cuesWithoutBoards.length} cue(s) have no boards selected. Save anyway?`
-			);
-			if (!confirmed) return;
-		}
+		if (!songName.trim()) return;
 
 		// Generate unique ID or use existing
 		const timestamp = Date.now();
@@ -1062,13 +1050,11 @@ async function playFullProgram() {
 		const programInstance = ProgramModel.fromJson(programData);
 
 		if (programInstance) {
-			// Save through service layer - store will update automatically
 			saveProgramToStore(programInstance, audioToUpload);
+			console.log('💾 Auto-saved program:', newProgramId);
 
-			// Clear audio data after saving
 			audioToUpload = null;
 
-			// Update local programId if new
 			if (!programId) {
 				programId = newProgramId;
 			}
@@ -1194,6 +1180,7 @@ async function playFullProgram() {
 	function selectDefaultBoard(boardId) {
 		defaultTargetBoard = boardId;
 		defaultBoardDropdownOpen = false;
+		debouncedSave();
 	}
 
 	function getDefaultBoardLabel() {
@@ -1249,6 +1236,10 @@ async function playFullProgram() {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;
 		}
+		if (saveTimeout) {
+			clearTimeout(saveTimeout);
+			saveTimeout = null;
+		}
 	});
 </script>
 
@@ -1267,29 +1258,9 @@ async function playFullProgram() {
 			<button class="btn-program-stop" onclick={stopAndReset} title="Stop and reset to start">
 				⏹
 			</button>
-			<input
-				type="text"
-				bind:value={songName}
-				placeholder="Song name"
-				class="song-name-input"
-			/>
-			<input
-				type="text"
-				bind:value={loopyProTrack}
-				placeholder="Track"
-				class="track-input"
-				maxlength="2"
-			/>
-			<input
-				type="number"
-				bind:value={bpm}
-				placeholder="BPM"
-				class="bpm-input"
-				min="20"
-				max="300"
-				oninput={updateBeatGrid}
-			/>
-			<span class="file-name">{fileName}</span>
+			<button class="song-name-btn" onclick={() => metadataModalOpen = true}>
+				{songName || 'Untitled'}
+			</button>
 			<div class="spacer"></div>
 			<div class="click-group" title="Click track">
 				<button
@@ -1300,17 +1271,17 @@ async function playFullProgram() {
 				<button
 					class="click-rate-btn"
 					class:active={clickRate === 0.5}
-					onclick={() => clickRate = 0.5}
+					onclick={() => { clickRate = 0.5; debouncedSave(); }}
 				>½</button>
 				<button
 					class="click-rate-btn"
 					class:active={clickRate === 1}
-					onclick={() => clickRate = 1}
+					onclick={() => { clickRate = 1; debouncedSave(); }}
 				>1</button>
 				<button
 					class="click-rate-btn"
 					class:active={clickRate === 2}
-					onclick={() => clickRate = 2}
+					onclick={() => { clickRate = 2; debouncedSave(); }}
 				>2</button>
 			</div>
 			<div class="action-menu-wrapper">
@@ -1324,13 +1295,10 @@ async function playFullProgram() {
 				>
 					⋯
 				</button>
-				{#if actionMenuOpen}
+				{#if actionMenuOpen && programId}
 					<div class="action-menu-dropdown">
-						<button class="action-menu-item" onclick={() => { saveProgram(); actionMenuOpen = false; }}>Save</button>
-						{#if programId}
-							<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
-							<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
-						{/if}
+						<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
+						<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
 					</div>
 				{/if}
 			</div>
@@ -1372,14 +1340,6 @@ async function playFullProgram() {
 						<button class="zoom-btn" onclick={gridDenser} title="Denser Grid">+</button>
 					</div>
 				{/if}
-				<button class="routing-btn" onclick={openRoutingModal} title="Channel routing">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-						<path d="M2 4h4M10 4h4M2 8h4M10 8h4M2 12h4M10 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						<circle cx="8" cy="4" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-						<circle cx="8" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-						<circle cx="8" cy="12" r="1.5" stroke="currentColor" stroke-width="1.5"/>
-					</svg>
-				</button>
 			</div>
 		</div>
 		<div class="backing-waveform">
@@ -1407,7 +1367,7 @@ async function playFullProgram() {
 						<span class="dropdown-arrow">▼</span>
 					</button>
 					{#if defaultBoardDropdownOpen}
-						<div class="default-board-dropdown-menu">
+						<div class="default-board-dropdown-menu" onclick={(e) => e.stopPropagation()}>
 							{#if groups.length > 0}
 								<div class="dropdown-section">
 									<div class="dropdown-section-label">GROUPS</div>
@@ -1533,10 +1493,58 @@ async function playFullProgram() {
 	onClose={closePresetPicker}
 />
 
-<RoutingModal
-	open={routingModalOpen}
-	onClose={() => routingModalOpen = false}
-/>
+{#if metadataModalOpen}
+	<div class="modal-overlay" onclick={() => metadataModalOpen = false}>
+		<div class="metadata-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="metadata-modal-header">
+				<h3>Program Details</h3>
+				<button class="modal-close-btn" onclick={() => metadataModalOpen = false}>×</button>
+			</div>
+			<div class="metadata-modal-body">
+				<div class="metadata-field">
+					<label for="meta-name">Name</label>
+					<input
+						id="meta-name"
+						type="text"
+						bind:value={songName}
+						placeholder="Song name"
+						oninput={debouncedSave}
+					/>
+				</div>
+				{#if $loopyProSettings.audio_source === 'loopy_pro'}
+					<div class="metadata-field">
+						<label for="meta-track">Loopy Pro Track</label>
+						<input
+							id="meta-track"
+							type="text"
+							bind:value={loopyProTrack}
+							placeholder="Track number"
+							maxlength="2"
+							oninput={debouncedSave}
+						/>
+					</div>
+				{/if}
+				<div class="metadata-field">
+					<label for="meta-bpm">BPM</label>
+					<input
+						id="meta-bpm"
+						type="number"
+						bind:value={bpm}
+						placeholder="BPM"
+						min="20"
+						max="300"
+						oninput={() => { updateBeatGrid(); debouncedSave(); }}
+					/>
+				</div>
+			</div>
+			{#if fileName}
+				<div class="metadata-modal-footer">
+					<span class="metadata-filename">{fileName}</span>
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
 
 {#if resamplingModalOpen}
 	<div class="modal-overlay" onclick={() => resamplingModalOpen = false}>
@@ -1649,85 +1657,126 @@ async function playFullProgram() {
 		border-color: #222;
 	}
 
-	.song-name-input {
-		flex: 0 0 250px;
-		background-color: #0a0a0a;
+	.song-name-btn {
+		background-color: transparent;
 		border: 1px solid #1a1a1a;
 		color: #e5e5e5;
-		padding: 0.5rem 0.75rem;
+		padding: 0.5rem 1.5rem;
 		border-radius: 6px;
+		font-size: 0.9rem;
+		cursor: pointer;
+		transition: all 0.2s;
+		max-width: 300px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-align: left;
+	}
+
+	.song-name-btn:hover {
+		border-color: #333;
+		background-color: #111;
+	}
+
+	.metadata-modal {
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 12px;
+		min-width: 320px;
+		max-width: 90vw;
+	}
+
+	.metadata-modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem 1.25rem;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+	}
+
+	.metadata-modal-header h3 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 500;
+		color: #e5e5e5;
+	}
+
+	.modal-close-btn {
+		background: transparent;
+		border: none;
+		color: #666;
+		font-size: 1.5rem;
+		cursor: pointer;
+		padding: 0;
+		line-height: 1;
+	}
+
+	.modal-close-btn:hover {
+		color: #999;
+	}
+
+	.metadata-modal-body {
+		padding: 1.25rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+
+	.metadata-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.metadata-field label {
+		font-size: 0.75rem;
+		color: #888;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.metadata-field input {
+		background-color: #0a0a0a;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		color: #e5e5e5;
+		padding: 0.75rem;
+		border-radius: 8px;
 		font-size: 0.9rem;
 		transition: border-color 0.2s;
 	}
 
-	.song-name-input:hover {
-		border-color: #333;
+	.metadata-field input:hover {
+		border-color: rgba(255, 255, 255, 0.2);
 	}
 
-	.song-name-input:focus {
+	.metadata-field input:focus {
 		outline: none;
-		border-color: #222;
+		border-color: rgba(255, 255, 255, 0.3);
 	}
 
-	.song-name-input::placeholder {
+	.metadata-field input::placeholder {
 		color: #444;
 	}
 
-	.track-input {
-		width: 45px;
-		background-color: #0a0a0a;
-		border: 1px solid #1a1a1a;
-		color: #e5e5e5;
-		padding: 0.5rem 0.5rem;
-		border-radius: 6px;
-		font-size: 0.9rem;
-		text-align: center;
-		transition: border-color 0.2s;
-	}
-
-	.track-input:hover {
-		border-color: #333;
-	}
-
-	.track-input:focus {
-		outline: none;
-		border-color: #222;
-	}
-
-	.track-input::placeholder {
-		color: #444;
-	}
-
-	.bpm-input {
-		width: 60px;
-		background-color: #0a0a0a;
-		border: 1px solid #1a1a1a;
-		color: #e5e5e5;
-		padding: 0.5rem 0.5rem;
-		border-radius: 6px;
-		font-size: 0.9rem;
-		text-align: center;
-		transition: border-color 0.2s;
+	.metadata-field input[type="number"] {
 		-moz-appearance: textfield;
 	}
 
-	.bpm-input::-webkit-outer-spin-button,
-	.bpm-input::-webkit-inner-spin-button {
+	.metadata-field input[type="number"]::-webkit-outer-spin-button,
+	.metadata-field input[type="number"]::-webkit-inner-spin-button {
 		-webkit-appearance: none;
 		margin: 0;
 	}
 
-	.bpm-input:hover {
-		border-color: #333;
+	.metadata-modal-footer {
+		padding: 1rem 1.25rem;
+		border-top: 1px solid rgba(255, 255, 255, 0.05);
+		text-align: center;
 	}
 
-	.bpm-input:focus {
-		outline: none;
-		border-color: #222;
-	}
-
-	.bpm-input::placeholder {
-		color: #444;
+	.metadata-filename {
+		font-size: 0.75rem;
+		color: #555;
 	}
 
 	.click-group {
@@ -1852,16 +1901,6 @@ async function playFullProgram() {
 	}
 
 
-	.file-name {
-		font-size: 0.9rem;
-		color: #555;
-		font-weight: 400;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		min-width: 200px;
-		flex-shrink: 1;
-	}
 
 
 	.action-menu-wrapper {
@@ -2014,26 +2053,6 @@ async function playFullProgram() {
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-	}
-
-	.routing-btn {
-		background: transparent;
-		border: 1px solid #1a1a1a;
-		color: color-mix(in srgb, var(--track-color, #888) 50%, transparent);
-		cursor: pointer;
-		padding: 0 0.5rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 6px;
-		transition: all 0.15s;
-		height: 28px;
-		box-sizing: border-box;
-	}
-
-	.routing-btn:hover {
-		color: var(--track-color, #888);
-		background: color-mix(in srgb, var(--track-color, #888) 10%, transparent);
 	}
 
 	.guide-dropzone {
@@ -2376,7 +2395,7 @@ async function playFullProgram() {
 		border: 1px solid #333;
 		color: #888;
 		padding: 0.5rem 1.5rem;
-		border-radius: 6px;
+		border-radius: 8px;
 		cursor: pointer;
 		transition: all 0.15s;
 	}

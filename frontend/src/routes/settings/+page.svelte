@@ -6,6 +6,7 @@
 	import { initPrograms } from '$lib/programs-db';
 	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
 	import { API_URL } from '$lib/api';
+	import RoutingModal from '$lib/RoutingModal.svelte';
 
 	import type { AudioSource, ResamplingQuality } from '$lib/store';
 
@@ -40,6 +41,21 @@
 	let audioDevicesLoading = $state(true);
 	let selectedDeviceId: string | null = $state(null);
 	let switchingToDeviceId: string | null = $state(null);
+	let routingModalOpen = $state(false);
+	let devicePickerOpen = $state(false);
+
+	let selectedDevice = $derived(audioDevices.find(d => d.id === selectedDeviceId));
+	let selectedDeviceChannels = $derived(selectedDevice?.output_channels ?? 0);
+
+	async function openDevicePicker() {
+		await fetchAudioDevices();
+		devicePickerOpen = true;
+	}
+
+	async function selectDeviceAndClose(deviceId: string | null) {
+		await selectDevice(deviceId);
+		devicePickerOpen = false;
+	}
 
 	async function fetchStorageStatus() {
 		try {
@@ -211,36 +227,33 @@
 			{/if}
 
 			{#if !$loopyProSettingsLoading && audioSource === 'audio_engine'}
-				<h2>Audio Devices</h2>
+				<h2>Audio Device</h2>
 
 				{#if audioDevicesLoading}
-					<p class="help-text" style="text-align: center;">Loading devices...</p>
+					<p class="help-text" style="text-align: center;">Loading...</p>
 				{:else}
-					<div class="device-list" class:disabled={switchingToDeviceId !== null}>
-						{#each audioDevices as device}
-							<div
-								class="device-card"
-								class:is-selected={selectedDeviceId === device.id}
-								onclick={() => selectDevice(device.id)}
-							>
-								<div class="device-info">
-									<span class="device-name">{device.name}</span>
-									<span class="device-channels">{device.output_channels} channels{device.sample_rate ? ` @ ${device.sample_rate/1000}kHz` : ''}</span>
-								</div>
-								{#if switchingToDeviceId === device.id}
-									<span class="selected-badge">Switching...</span>
-								{:else if selectedDeviceId === device.id}
-									<span class="selected-badge">Selected</span>
-								{:else if device.is_default}
-									<span class="default-badge">Default</span>
-								{/if}
+					<div
+						class="device-card clickable"
+						onclick={openDevicePicker}
+					>
+						{#if selectedDevice}
+							<div class="device-info">
+								<span class="device-name">{selectedDevice.name}</span>
+								<span class="device-channels">{selectedDevice.output_channels} channels{selectedDevice.sample_rate ? ` @ ${selectedDevice.sample_rate/1000}kHz` : ''}</span>
 							</div>
-						{/each}
+						{:else}
+							<div class="device-info">
+								<span class="device-name">No device selected</span>
+								<span class="device-channels">Click to select</span>
+							</div>
+						{/if}
 					</div>
 
-					<button onclick={fetchAudioDevices} class="save-button">
-						Refresh Devices
-					</button>
+					{#if selectedDeviceId && selectedDeviceChannels > 2}
+						<button onclick={() => routingModalOpen = true} class="save-button">
+							Channel Routing
+						</button>
+					{/if}
 
 					<h2>Resampling Quality</h2>
 
@@ -363,6 +376,49 @@
 	</div>
 </div>
 
+{#if devicePickerOpen}
+	<div class="modal-overlay" onclick={() => devicePickerOpen = false}>
+		<div class="modal-content" onclick={(e) => e.stopPropagation()}>
+			<div class="modal-header">
+				<h3>Select Audio Device</h3>
+				<button class="close-btn" onclick={() => devicePickerOpen = false}>×</button>
+			</div>
+			<div class="modal-body">
+				{#if audioDevicesLoading}
+					<p class="help-text" style="text-align: center;">Loading devices...</p>
+				{:else}
+					<div class="device-list" class:disabled={switchingToDeviceId !== null}>
+						{#each audioDevices as device}
+							<div
+								class="device-card"
+								class:is-selected={selectedDeviceId === device.id}
+								onclick={() => selectDeviceAndClose(device.id)}
+							>
+								<div class="device-info">
+									<span class="device-name">{device.name}</span>
+									<span class="device-channels">{device.output_channels} channels{device.sample_rate ? ` @ ${device.sample_rate/1000}kHz` : ''}</span>
+								</div>
+								{#if switchingToDeviceId === device.id}
+									<span class="selected-badge">Switching...</span>
+								{:else if selectedDeviceId === device.id}
+									<span class="selected-badge">Selected</span>
+								{:else if device.is_default}
+									<span class="default-badge">Default</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
+<RoutingModal
+	open={routingModalOpen}
+	onClose={() => routingModalOpen = false}
+/>
+
 <style>
 	:global(body) {
 		background-color: #0a0a0a;
@@ -386,7 +442,7 @@
 	.card {
 		background: #0c0c0c;
 		border: 1px solid rgba(255, 255, 255, 0.03);
-		border-radius: 12px;
+		border-radius: 8px;
 		padding: 1.5rem;
 		display: flex;
 		flex-direction: column;
@@ -464,8 +520,8 @@
 		padding: 0.75rem 1rem;
 		background: #0c0c0c;
 		color: #888;
-		border: 1px solid rgba(255, 255, 255, 0.03);
-		border-radius: 12px;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 8px;
 		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 		font-size: 0.875rem;
 		font-weight: 500;
@@ -477,7 +533,7 @@
 	.save-button:hover {
 		background: #0e0e0e;
 		color: #fff;
-		border-color: rgba(255, 255, 255, 0.05);
+		border-color: rgba(255, 255, 255, 0.2);
 	}
 
 	.save-button:active {
@@ -650,7 +706,7 @@
 		background: #1a1a1a;
 		color: #4ade80;
 		border: 1px solid rgba(74, 222, 128, 0.2);
-		border-radius: 12px;
+		border-radius: 8px;
 		font-size: 0.875rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -673,7 +729,7 @@
 		background: #1a1a1a;
 		color: #f87171;
 		border: 1px solid rgba(248, 113, 113, 0.2);
-		border-radius: 12px;
+		border-radius: 8px;
 		font-size: 0.875rem;
 		font-weight: 500;
 		cursor: pointer;
@@ -708,7 +764,7 @@
 		justify-content: space-between;
 		padding: 0.75rem 1rem;
 		background: #0c0c0c;
-		border: 1px solid rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.1);
 		border-radius: 8px;
 		cursor: pointer;
 		transition: all 0.15s ease;
@@ -803,5 +859,73 @@
 	.quality-desc {
 		font-size: 0.65rem;
 		opacity: 0.7;
+	}
+
+	.device-card.clickable {
+		cursor: pointer;
+	}
+
+	.device-card.clickable:hover {
+		background: #111;
+		border-color: rgba(255, 255, 255, 0.15);
+	}
+
+	.modal-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: rgba(0, 0, 0, 0.8);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+
+	.modal-content {
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 8px;
+		min-width: 340px;
+		max-width: 90vw;
+		max-height: 80vh;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem 1.25rem;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+	}
+
+	.modal-header h3 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 500;
+		color: #e5e5e5;
+	}
+
+	.close-btn {
+		background: transparent;
+		border: none;
+		color: #666;
+		font-size: 1.5rem;
+		cursor: pointer;
+		padding: 0;
+		line-height: 1;
+	}
+
+	.close-btn:hover {
+		color: #999;
+	}
+
+	.modal-body {
+		padding: 1.25rem;
+		overflow-y: auto;
 	}
 </style>
