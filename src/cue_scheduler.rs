@@ -154,7 +154,7 @@ impl CueScheduler {
                         while !position_started && startup_start.elapsed() < STARTUP_TIMEOUT {
                             if stop_flag.load(Ordering::Relaxed) {
                                 println!("⏹️ Cue scheduler: stopped during startup wait");
-                                continue;
+                                break;
                             }
                             thread::sleep(Duration::from_millis(10));
                             let pos = audio_timing.current_position();

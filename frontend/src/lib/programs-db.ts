@@ -80,11 +80,10 @@ export async function saveProgram(program: Program, audioDataUrl: string | null 
         const result = await audioResponse.json();
         console.log('[programs-db] Audio uploaded:', result);
 
-        // The backend returns a JSON object with the filename, e.g., { "filename": "..." }
-        if (result.filename) {
-          program.audioId = result.filename;
+        if (result.audio_file) {
+          program.audioId = result.audio_file;
         } else {
-          throw new Error('Audio upload response did not include a filename.');
+          throw new Error('Audio upload response did not include audio_file.');
         }
       } catch (error) {
         console.error('[programs-db] Error uploading audio:', error);

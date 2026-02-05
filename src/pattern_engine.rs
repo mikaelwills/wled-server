@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::net::UdpSocket;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -60,12 +62,29 @@ impl PatternEngine {
     fn run_loop(command_rx: mpsc::Receiver<PatternCommand>) {
         let mut active: Option<PatternState> = None;
 
+          let shared_socket = Arc::new(
+            E131RawTransport::create_socket()
+                .unwrap_or_else(|_| UdpSocket::bind("0.0.0.0:0").expect("socket bind")),
+        );
+
+
+
         loop {
             match command_rx.try_recv() {
-                Ok(PatternCommand::Start { sequence, color, boards, is_random, is_ping_pong }) => {
+                Ok(PatternCommand::Start {
+                    sequence,
+                    color,
+                    boards,
+                    is_random,
+                    is_ping_pong,
+                }) => {
                     let mut transports = HashMap::new();
                     for (board_id, info) in boards {
-                        if let Ok(transport) = E131RawTransport::new(vec![info.ip.clone()], info.universe) {
+                        if let Ok(transport) = E131RawTransport::with_socket(
+                            shared_socket.clone(),
+                            &[info.ip.clone()],
+                            info.universe,
+                        ) {
                             transports.insert(board_id, (transport, info.led_count));
                         }
                     }
@@ -94,9 +113,22 @@ impl PatternEngine {
             }
             if let Some(ref mut state) = active {
                 let stopped = if state.is_random {
-                    Self::run_random_beat(&state.sequence, state.color, &mut state.transports, &command_rx, &mut state.prev_chosen)
+                    Self::run_random_beat(
+                        &state.sequence,
+                        state.color,
+                        &mut state.transports,
+                        &command_rx,
+                        &mut state.prev_chosen,
+                    )
                 } else {
-                    Self::run_one_cycle(&state.sequence, state.color, &mut state.transports, &command_rx, state.cycle_count, state.is_ping_pong)
+                    Self::run_one_cycle(
+                        &state.sequence,
+                        state.color,
+                        &mut state.transports,
+                        &command_rx,
+                        state.cycle_count,
+                        state.is_ping_pong,
+                    )
                 };
                 if stopped {
                     for (transport, led_count) in state.transports.values_mut() {
@@ -130,7 +162,8 @@ impl PatternEngine {
         let beat_duration_ms = seq.total_duration_ms;
         let beat_start = Instant::now();
 
-        let available: Vec<&String> = board_ids.iter()
+        let available: Vec<&String> = board_ids
+            .iter()
             .filter(|id| Some((*id).clone()) != *prev_chosen)
             .collect();
 
@@ -273,7 +306,6 @@ impl PatternEngine {
                     }
                 }
             }
-
         }
 
         for fade_step in 0..3 {

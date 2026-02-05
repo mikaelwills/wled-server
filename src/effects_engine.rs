@@ -1,7 +1,8 @@
+use std::net::UdpSocket;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tracing::info;
 
 use crate::effects::{Effect, EffectType};
@@ -52,11 +53,19 @@ impl EffectsEngine {
         Ok(())
     }
 
-    fn run_loop(command_rx: mpsc::Receiver<EngineCommand>, timing_metrics: Option<Arc<TimingMetrics>>) {
+    fn run_loop(
+        command_rx: mpsc::Receiver<EngineCommand>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+    ) {
         let mut state: Option<EngineState> = None;
-        let tick_duration = Duration::from_millis(25);
+        let tick_duration = Duration::from_micros(16_667);
+        let spin_threshold = Duration::from_millis(2);
         let mut next_tick = Instant::now() + tick_duration;
-        let mut last_tick = Instant::now();
+
+        let shared_socket = Arc::new(
+            E131RawTransport::create_socket()
+                .unwrap_or_else(|_| UdpSocket::bind("0.0.0.0:0").expect("socket bind")),
+        );
 
         loop {
             match command_rx.try_recv() {
@@ -68,9 +77,13 @@ impl EffectsEngine {
                             boards = boards.len(),
                             "Effects engine START"
                         );
-                        state = Some(EngineState::new(config, boards, timing_metrics.clone()));
+                        state = Some(EngineState::new(
+                            config,
+                            shared_socket.clone(),
+                            boards,
+                            timing_metrics.clone(),
+                        ));
                         next_tick = Instant::now() + tick_duration;
-                        last_tick = Instant::now();
                     }
                     EngineCommand::Stop => {
                         info!("Effects engine STOP");
@@ -85,20 +98,24 @@ impl EffectsEngine {
             }
 
             if let Some(ref mut s) = state {
-                let now = Instant::now();
-                let actual_tick_ms = now.duration_since(last_tick).as_secs_f64() * 1000.0;
-                last_tick = now;
+                let tick_start = Instant::now();
+                s.tick();
+                let work_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
 
                 if let Some(ref metrics) = timing_metrics {
-                    metrics.record_frame_tick(actual_tick_ms);
+                    metrics.record_frame_tick(work_ms);
                 }
-
-                s.tick();
             }
 
             let now = Instant::now();
             if next_tick > now {
-                thread::sleep(next_tick - now);
+                let remaining = next_tick - now;
+                if remaining > spin_threshold {
+                    thread::sleep(remaining - spin_threshold);
+                }
+                while Instant::now() < next_tick {
+                    std::hint::spin_loop();
+                }
             }
             next_tick += tick_duration;
         }
@@ -107,23 +124,31 @@ impl EffectsEngine {
 
 struct EngineState {
     effect: Box<dyn Effect>,
-    start_time: Instant,
-    start_system_time: f64,
     transports: Vec<(E131RawTransport, usize)>,
     tick_count: u64,
+    start_time: Instant,
 }
 
 impl EngineState {
-    fn new(config: EffectConfig, boards: Vec<BoardTarget>, timing_metrics: Option<Arc<TimingMetrics>>) -> Self {
+    fn new(
+        config: EffectConfig,
+        socket: Arc<UdpSocket>,
+        boards: Vec<BoardTarget>,
+        timing_metrics: Option<Arc<TimingMetrics>>,
+    ) -> Self {
         let mut transports = Vec::new();
 
         for board in &boards {
-            match E131RawTransport::new(vec![board.ip.clone()], board.universe) {
+            match E131RawTransport::with_socket(
+                socket.clone(),
+                std::slice::from_ref(&board.ip),
+                board.universe,
+            ) {
                 Ok(mut t) => {
                     info!(
                         ip = %board.ip,
                         universe = board.universe,
-                        "E1.31 transport created"
+                        "E1.31 transport created (shared socket)"
                     );
                     if let Some(ref metrics) = timing_metrics {
                         t.set_timing_metrics(metrics.clone());
@@ -136,40 +161,19 @@ impl EngineState {
             }
         }
 
-        let start_system_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-
         let effect = config.effect_type.create(config.color, config.bpm);
 
         Self {
             effect,
-            start_time: Instant::now(),
-            start_system_time,
             transports,
             tick_count: 0,
+            start_time: Instant::now(),
         }
     }
 
     fn tick(&mut self) {
         self.tick_count += 1;
         let elapsed = self.start_time.elapsed().as_secs_f64();
-
-        if self.tick_count % 500 == 0 {
-            let system_now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            let system_elapsed = system_now - self.start_system_time;
-            let clock_drift = elapsed - system_elapsed;
-            info!(
-                tick = self.tick_count,
-                elapsed = format!("{:.3}", elapsed),
-                drift = format!("{:+.4}", clock_drift),
-                "Effects engine stats"
-            );
-        }
 
         for (transport, led_count) in &mut self.transports {
             self.effect.tick(elapsed, transport, *led_count);
@@ -178,11 +182,7 @@ impl EngineState {
 
     fn blackout(&mut self) {
         for (transport, led_count) in &mut self.transports {
-            for _ in 0..5 {
-                let _ = transport.send_raw_leds(*led_count, 0, 0, 0);
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            let _ = transport.send_raw_leds(*led_count, 0, 0, 0);
         }
-        info!(transports = self.transports.len(), "E1.31 blackout sent to all boards");
     }
 }

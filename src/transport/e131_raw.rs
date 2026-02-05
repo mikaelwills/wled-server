@@ -10,41 +10,42 @@ const DMX_DATA_OFFSET: usize = 126;
 const PACKET_SIZE: usize = 638;
 
 pub struct E131RawTransport {
-    socket: UdpSocket,
-    broadcast_addr: SocketAddr,
+    socket: Arc<UdpSocket>,
+    target_addr: SocketAddr,
     universe: u16,
     sequence: u8,
-    send_ok: u32,
-    send_wouldblock: u32,
-    send_err: u32,
     packet: [u8; PACKET_SIZE],
     timing_metrics: Option<Arc<TimingMetrics>>,
 }
 
 impl E131RawTransport {
-    pub fn new(board_ips: Vec<String>, universe: u16) -> Result<Self, Box<dyn Error>> {
+    pub fn create_socket() -> Result<UdpSocket, Box<dyn Error>> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.set_broadcast(true)?;
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    }
 
-        let broadcast_addr = Self::derive_broadcast_addr(&board_ips)?;
+    pub fn new(board_ips: Vec<String>, universe: u16) -> Result<Self, Box<dyn Error>> {
+        let socket = Arc::new(Self::create_socket()?);
+        Self::with_socket(socket, &board_ips, universe)
+    }
+
+    pub fn with_socket(socket: Arc<UdpSocket>, board_ips: &[String], universe: u16) -> Result<Self, Box<dyn Error>> {
+        let target_addr = Self::resolve_target_addr(board_ips)?;
         let packet = Self::build_header_template(universe);
 
         info!(
             universe = universe,
-            broadcast = %broadcast_addr,
-            board_count = board_ips.len(),
-            "E1.31 broadcast transport: universe {} → {} ({} boards)",
-            universe, broadcast_addr, board_ips.len()
+            target = %target_addr,
+            "E1.31 unicast transport: universe {} → {}",
+            universe, target_addr
         );
 
         Ok(Self {
             socket,
-            broadcast_addr,
+            target_addr,
             universe,
             sequence: 0,
-            send_ok: 0,
-            send_wouldblock: 0,
-            send_err: 0,
             packet,
             timing_metrics: None,
         })
@@ -86,37 +87,31 @@ impl E131RawTransport {
         p
     }
 
-    fn derive_broadcast_addr(board_ips: &[String]) -> Result<SocketAddr, Box<dyn Error>> {
+    fn resolve_target_addr(board_ips: &[String]) -> Result<SocketAddr, Box<dyn Error>> {
         if let Some(first_ip) = board_ips.first() {
             let ip_part = first_ip.split(':').next().unwrap_or(first_ip);
-            let octets: Vec<&str> = ip_part.split('.').collect();
-            if octets.len() == 4 {
-                let broadcast = format!("{}.{}.{}.255:5568", octets[0], octets[1], octets[2]);
-                return Ok(broadcast.parse()?);
-            }
+            let addr = format!("{}:5568", ip_part);
+            return Ok(addr.parse()?);
         }
-        Ok("192.168.8.255:5568".parse()?)
+        Err("No board IP provided".into())
     }
 
     pub fn send_dmx_packet(&mut self, dmx_data: &[u8; 512]) -> Result<(), Box<dyn Error>> {
         self.packet[SEQUENCE_OFFSET] = self.sequence;
         self.packet[DMX_DATA_OFFSET..].copy_from_slice(dmx_data);
 
-        match self.socket.send_to(&self.packet, self.broadcast_addr) {
+        match self.socket.send_to(&self.packet, self.target_addr) {
             Ok(_) => {
-                self.send_ok += 1;
                 if let Some(ref metrics) = self.timing_metrics {
                     metrics.record_packet_ok();
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                self.send_wouldblock += 1;
                 if let Some(ref metrics) = self.timing_metrics {
                     metrics.record_packet_wouldblock();
                 }
             }
             Err(_) => {
-                self.send_err += 1;
                 if let Some(ref metrics) = self.timing_metrics {
                     metrics.record_packet_err();
                 }
@@ -125,18 +120,6 @@ impl E131RawTransport {
 
         self.sequence = self.sequence.wrapping_add(1);
 
-        if self.sequence == 0 {
-            info!(
-                ok = self.send_ok,
-                wouldblock = self.send_wouldblock,
-                err = self.send_err,
-                "E1.31 stats (last 256 packets)"
-            );
-            self.send_ok = 0;
-            self.send_wouldblock = 0;
-            self.send_err = 0;
-        }
-
         Ok(())
     }
 
@@ -144,8 +127,8 @@ impl E131RawTransport {
         self.universe
     }
 
-    pub fn broadcast_addr(&self) -> SocketAddr {
-        self.broadcast_addr
+    pub fn target_addr(&self) -> SocketAddr {
+        self.target_addr
     }
 
     pub fn send_raw_leds(&mut self, led_count: usize, r: u8, g: u8, b: u8) -> Result<(), Box<dyn Error>> {

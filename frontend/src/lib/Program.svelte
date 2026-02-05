@@ -251,16 +251,19 @@
 				const trackInfo = data.tracks.find((t: { id: string }) =>
 					t.id === program.audioId || t.id === audioIdBase
 				);
-				if (trackInfo?.ready) {
+				console.log('[checkTrackReadiness]', { audioId: program.audioId, audioIdBase, trackIds: data.tracks.map((t: { id: string }) => t.id), match: trackInfo });
+				if (!trackInfo) {
 					return { ready: true, message: '' };
-				} else {
-					const fromRate = trackInfo?.original_rate || 0;
-					const toRate = data.device_sample_rate || 0;
-					return {
-						ready: false,
-						message: `Resampling audio from ${(fromRate/1000).toFixed(1)}kHz to ${(toRate/1000).toFixed(1)}kHz...`
-					};
 				}
+				if (trackInfo.ready) {
+					return { ready: true, message: '' };
+				}
+				const fromRate = trackInfo.original_rate || 0;
+				const toRate = data.device_sample_rate || 0;
+				return {
+					ready: false,
+					message: `Resampling audio from ${(fromRate/1000).toFixed(1)}kHz to ${(toRate/1000).toFixed(1)}kHz...`
+				};
 			}
 		} catch (err) {
 			console.error('Failed to check track readiness:', err);

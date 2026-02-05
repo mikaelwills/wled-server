@@ -3,7 +3,6 @@ use crate::effects::Effect;
 use crate::transport::E131RawTransport;
 use rand::Rng;
 
-#[derive(Default)]
 struct LightningState {
     flash_count: u8,
     total_flashes: u8,
@@ -13,6 +12,23 @@ struct LightningState {
     flash_on: bool,
     next_event_time: f64,
     after_leader: bool,
+    led_buffer: Vec<[u8; 3]>,
+}
+
+impl Default for LightningState {
+    fn default() -> Self {
+        Self {
+            flash_count: 0,
+            total_flashes: 0,
+            flash_start: 0,
+            base_len: 0,
+            max_len: 0,
+            flash_on: false,
+            next_event_time: 0.0,
+            after_leader: false,
+            led_buffer: Vec::new(),
+        }
+    }
 }
 
 pub struct Lightning {
@@ -87,17 +103,20 @@ impl Effect for Lightning {
             }
         }
 
-        let mut led_buffer: Vec<[u8; 3]> = vec![pulse_color; led_count];
+        state.led_buffer.resize(led_count, [0, 0, 0]);
+        for led in state.led_buffer.iter_mut() {
+            *led = pulse_color;
+        }
 
         if state.flash_on && state.total_flashes > 0 {
             let progress = 1.0 - (state.flash_count as f64 / state.total_flashes as f64);
             let flash_len = state.base_len + ((state.max_len - state.base_len) as f64 * progress) as usize;
             let end = (state.flash_start + flash_len).min(led_count);
             for i in state.flash_start..end {
-                led_buffer[i] = self.color;
+                state.led_buffer[i] = self.color;
             }
         }
 
-        let _ = transport.send_led_buffer(&led_buffer);
+        let _ = transport.send_led_buffer(&state.led_buffer);
     }
 }

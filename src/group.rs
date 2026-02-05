@@ -29,13 +29,13 @@ pub async fn execute_group_command(
             let mut transports_lock = state.group_e131_transports.write().await;
             if let Some(e131) = transports_lock.get_mut(group_id) {
                 let universe = e131.universe();
-                let broadcast = e131.broadcast_addr();
+                let target = e131.target_addr();
                 info!(
                     group_id = %group_id,
                     universe = universe,
-                    broadcast = %broadcast,
-                    "E1.31 broadcast group command - universe {} → {}",
-                    universe, broadcast
+                    target = %target,
+                    "E1.31 group command - universe {} → {}",
+                    universe, target
                 );
 
                 // Send E1.31 packet via Mode 6 (direct LED control)

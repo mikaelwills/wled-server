@@ -8,10 +8,20 @@ struct Spark {
     brightness: f64,
 }
 
-#[derive(Default)]
 struct SparkleState {
     sparks: Vec<Spark>,
     last_spawn_beat: i32,
+    led_buffer: Vec<[u8; 3]>,
+}
+
+impl Default for SparkleState {
+    fn default() -> Self {
+        Self {
+            sparks: Vec::new(),
+            last_spawn_beat: 0,
+            led_buffer: Vec::new(),
+        }
+    }
 }
 
 pub struct Sparkle {
@@ -60,7 +70,10 @@ impl Effect for Sparkle {
         }
         state.sparks.retain(|s| s.brightness > 0.05);
 
-        let mut led_buffer: Vec<[u8; 3]> = vec![[0, 0, 0]; led_count];
+        state.led_buffer.resize(led_count, [0, 0, 0]);
+        for led in state.led_buffer.iter_mut() {
+            *led = [0, 0, 0];
+        }
 
         for spark in &state.sparks {
             if spark.position >= led_count {
@@ -71,7 +84,7 @@ impl Effect for Sparkle {
             let g = (self.color[1] as f64 * bright) as u8;
             let b = (self.color[2] as f64 * bright) as u8;
 
-            led_buffer[spark.position] = [r, g, b];
+            state.led_buffer[spark.position] = [r, g, b];
 
             let glow_bright = bright * 0.3;
             let gr = (self.color[0] as f64 * glow_bright) as u8;
@@ -80,18 +93,18 @@ impl Effect for Sparkle {
 
             if spark.position > 0 {
                 let idx = spark.position - 1;
-                led_buffer[idx][0] = led_buffer[idx][0].saturating_add(gr);
-                led_buffer[idx][1] = led_buffer[idx][1].saturating_add(gg);
-                led_buffer[idx][2] = led_buffer[idx][2].saturating_add(gb);
+                state.led_buffer[idx][0] = state.led_buffer[idx][0].saturating_add(gr);
+                state.led_buffer[idx][1] = state.led_buffer[idx][1].saturating_add(gg);
+                state.led_buffer[idx][2] = state.led_buffer[idx][2].saturating_add(gb);
             }
             if spark.position < led_count - 1 {
                 let idx = spark.position + 1;
-                led_buffer[idx][0] = led_buffer[idx][0].saturating_add(gr);
-                led_buffer[idx][1] = led_buffer[idx][1].saturating_add(gg);
-                led_buffer[idx][2] = led_buffer[idx][2].saturating_add(gb);
+                state.led_buffer[idx][0] = state.led_buffer[idx][0].saturating_add(gr);
+                state.led_buffer[idx][1] = state.led_buffer[idx][1].saturating_add(gg);
+                state.led_buffer[idx][2] = state.led_buffer[idx][2].saturating_add(gb);
             }
         }
 
-        let _ = transport.send_led_buffer(&led_buffer);
+        let _ = transport.send_led_buffer(&state.led_buffer);
     }
 }

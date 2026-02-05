@@ -105,10 +105,16 @@ pub async fn configure_board_universe(
 
     let cfg_url = format!("http://{}/json/cfg", board_ip);
     let cfg_payload = serde_json::json!({
+        "hw": {
+            "led": {
+                "fps": 60
+            }
+        },
         "if": {
             "live": {
                 "en": true,
                 "mc": false,
+                "rlm": false,
                 "dmx": {
                     "uni": universe,
                     "mode": 6,

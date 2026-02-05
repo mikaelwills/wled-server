@@ -129,6 +129,22 @@ The server uses the **Actor Pattern** for managing WLED boards:
 - Each actor maintains its own WebSocket connection and auto-reconnects on failure
 
 
+### Board Startup Configuration:
+
+On startup, the server configures each board's WLED settings via HTTP (`configure_board_universe` in `src/routes/groups.rs`). For each board with a universe defined in `boards.toml`, it POSTs to `/json/cfg`:
+- `hw.led.fps: 60` — Explicit LED output FPS (auto/0 resolves too low during E1.31, causing stutter)
+- `live.en: true` — Enable E1.31 realtime mode
+- `live.mc: false` — Disable multicast (server sends unicast directly to each board's IP)
+- `live.rlm: false` — Disable realtime limiter (prevents frame drops/stuttering on smooth effects)
+- `live.dmx.uni` — Set DMX universe from boards.toml
+- `live.dmx.mode: 6` — E1.31 multi-RGB mode (4 bytes per LED: RGBW)
+- `live.dmx.addr: 1` — DMX start address
+- `live.timeout: 65535` — Max timeout before WLED falls back to normal mode
+
+After config, the board is rebooted via POST to `/json/state` with `{"rb": true}`.
+
+**E1.31 Transport:** Each board gets its own `E131RawTransport` with a non-blocking UDP socket sending unicast to `{board_ip}:5568`. Effects engine ticks at ~60fps (16ms interval), sending one packet per board per tick.
+
 ### Dependencies:
 
 **Backend (Rust):**

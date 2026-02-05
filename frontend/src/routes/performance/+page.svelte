@@ -691,7 +691,7 @@
 		transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 		padding: 0;
 		position: relative;
-		overflow: visible;
+		overflow: hidden;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -705,11 +705,10 @@
 	.program-button:hover {
 		border-color: rgba(255, 255, 255, 0.05);
 		background: #0e0e0e;
-		transform: scale(1.02);
 	}
 
 	.program-button:active {
-		transform: scale(1.01);
+		background: #111111;
 	}
 
 	/* Drag-and-drop states */

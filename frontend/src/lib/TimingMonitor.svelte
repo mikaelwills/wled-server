@@ -81,6 +81,44 @@
 				</div>
 			</div>
 
+			{#if $timingSnapshot.frame_count > 0}
+				<div class="section-divider"></div>
+				<div class="metrics">
+					<div class="metric">
+						<span class="label">Frames</span>
+						<span class="value">{$timingSnapshot.frame_count}</span>
+					</div>
+					<div class="metric">
+						<span class="label">Avg Tick</span>
+						<span class="value {$timingSnapshot.frame_avg_ms > 30 ? 'bad' : $timingSnapshot.frame_avg_ms > 27 ? 'warn' : 'good'}">
+							{$timingSnapshot.frame_avg_ms.toFixed(1)}ms
+						</span>
+					</div>
+					<div class="metric">
+						<span class="label">Packets OK</span>
+						<span class="value good">{$timingSnapshot.packets_ok}</span>
+					</div>
+					<div class="metric">
+						<span class="label">Dropped</span>
+						<span class="value {($timingSnapshot.packets_wouldblock + $timingSnapshot.packets_err) > 0 ? 'bad' : 'good'}">
+							{$timingSnapshot.packets_wouldblock + $timingSnapshot.packets_err}
+						</span>
+					</div>
+					<div class="metric">
+						<span class="label">Max Tick</span>
+						<span class="value {$timingSnapshot.frame_max_ms > 50 ? 'bad' : $timingSnapshot.frame_max_ms > 30 ? 'warn' : 'good'}">
+							{$timingSnapshot.frame_max_ms.toFixed(1)}ms
+						</span>
+					</div>
+					<div class="metric">
+						<span class="label">Success</span>
+						<span class="value {getPacketSuccessRate($timingSnapshot) < 99 ? 'bad' : 'good'}">
+							{getPacketSuccessRate($timingSnapshot).toFixed(1)}%
+						</span>
+					</div>
+				</div>
+			{/if}
+
 			{#if expanded}
 				<div class="expanded-section">
 					<div class="section-header">
@@ -200,6 +238,12 @@
 
 	.value.bad {
 		color: #f87171;
+	}
+
+	.section-divider {
+		height: 1px;
+		background: #333;
+		margin: 0 0.75rem;
 	}
 
 	.expanded-section {

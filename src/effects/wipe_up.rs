@@ -5,6 +5,7 @@ pub struct WipeUp {
     color: [u8; 3],
     beat_duration: f64,
     trail_length: usize,
+    led_buffer: Vec<[u8; 3]>,
 }
 
 impl WipeUp {
@@ -13,6 +14,7 @@ impl WipeUp {
             color,
             beat_duration: 60.0 / bpm,
             trail_length: 35,
+            led_buffer: Vec::new(),
         }
     }
 }
@@ -29,7 +31,7 @@ impl Effect for WipeUp {
         let fill_position = eased * (led_count + self.trail_length) as f64;
         let fill_head = fill_position as usize;
 
-        let mut led_buffer: Vec<[u8; 3]> = Vec::with_capacity(led_count);
+        self.led_buffer.resize(led_count, [0, 0, 0]);
 
         for i in 0..led_count {
             let brightness = if i < fill_head {
@@ -47,9 +49,9 @@ impl Effect for WipeUp {
             let r = ((self.color[0] as f64 * brightness).min(255.0)) as u8;
             let g = ((self.color[1] as f64 * brightness).min(255.0)) as u8;
             let b = ((self.color[2] as f64 * brightness).min(255.0)) as u8;
-            led_buffer.push([r, g, b]);
+            self.led_buffer[i] = [r, g, b];
         }
 
-        let _ = transport.send_led_buffer(&led_buffer);
+        let _ = transport.send_led_buffer(&self.led_buffer);
     }
 }

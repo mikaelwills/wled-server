@@ -5,6 +5,7 @@
 	import { updateResamplingQuality } from '$lib/audio-db';
 	import { initPrograms } from '$lib/programs-db';
 	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
+	import { audioHealthMonitorVisible, toggleAudioHealthMonitor } from '$lib/audio-health-store';
 	import { API_URL } from '$lib/api';
 	import RoutingModal from '$lib/RoutingModal.svelte';
 
@@ -340,6 +341,22 @@
 				</label>
 			</div>
 			<p class="help-text">Press Ctrl+T to toggle (tracks cue drift)</p>
+
+			<div class="toggle-row">
+				<label for="audio-health-toggle" class="toggle-label">
+					Audio Health Monitor
+				</label>
+				<label class="toggle-switch">
+					<input
+						id="audio-health-toggle"
+						type="checkbox"
+						checked={$audioHealthMonitorVisible}
+						onchange={toggleAudioHealthMonitor}
+					/>
+					<span class="toggle-slider"></span>
+				</label>
+			</div>
+			<p class="help-text">Press ⌘+Shift+A to toggle (tracks audio engine health)</p>
 		</div>
 
 		<div class="card">
