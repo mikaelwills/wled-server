@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize)]
@@ -9,6 +10,60 @@ pub struct AudioDevice {
     pub output_channels: u16,
     pub sample_rate: u32,
     pub is_default: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn build_alsa_friendly_names() -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let Ok(output) = std::process::Command::new("aplay").arg("-l").output() else {
+        return names;
+    };
+    let Ok(text) = String::from_utf8(output.stdout) else {
+        return names;
+    };
+
+    for line in text.lines() {
+        if !line.starts_with("card ") {
+            continue;
+        }
+        let Some(card_name) = line.split('[').nth(0)
+            .and_then(|s| s.split(':').last())
+            .map(|s| s.trim())
+        else {
+            continue;
+        };
+
+        let Some(device_part) = line.split(", device ").nth(1) else {
+            continue;
+        };
+        let Some(dev_num) = device_part.split(':').next().map(|s| s.trim()) else {
+            continue;
+        };
+
+        let dev_name = line.rsplit('[').next()
+            .and_then(|s| s.split(']').next())
+            .unwrap_or(dev_num)
+            .to_string();
+
+        names.insert(
+            format!("hw:CARD={},DEV={}", card_name, dev_num),
+            dev_name.clone(),
+        );
+        names.insert(
+            format!("plughw:CARD={},DEV={}", card_name, dev_num),
+            format!("{} (plug)", dev_name),
+        );
+        names.insert(
+            format!("sysdefault:CARD={}", card_name),
+            format!("{} (default)", dev_name),
+        );
+    }
+    names
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_alsa_friendly_names() -> HashMap<String, String> {
+    HashMap::new()
 }
 
 pub struct DeviceManager {
@@ -26,6 +81,7 @@ impl DeviceManager {
         let host = cpal::default_host();
         let default_device = host.default_output_device();
         let default_name = default_device.as_ref().and_then(|d| d.name().ok());
+        let friendly_names = build_alsa_friendly_names();
 
         let mut devices = Vec::new();
 
@@ -34,15 +90,19 @@ impl DeviceManager {
         };
 
         for device in output_devices {
-            let Ok(name) = device.name() else { continue };
+            let Ok(raw_name) = device.name() else { continue };
             let config = device.default_output_config().ok();
             let channels = config.as_ref().map(|c| c.channels()).unwrap_or(2);
             let sample_rate = config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
-            let is_default = default_name.as_ref() == Some(&name);
+            let is_default = default_name.as_ref() == Some(&raw_name);
+
+            let display_name = friendly_names.get(&raw_name)
+                .cloned()
+                .unwrap_or_else(|| raw_name.clone());
 
             devices.push(AudioDevice {
-                id: name.clone(),
-                name: name.clone(),
+                id: raw_name,
+                name: display_name,
                 output_channels: channels,
                 sample_rate,
                 is_default,

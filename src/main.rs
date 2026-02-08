@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use http::Method;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 mod actor;
 mod audio;
@@ -118,89 +119,7 @@ async fn main() {
     let broadcast_tx = Arc::new(broadcast_tx);
 
     let loaded_config = Config::load().unwrap_or_default();
-
-    let mut group_e131_transports = HashMap::new();
-
-    for (universe_index, group) in loaded_config.groups.iter().enumerate() {
-        let mut group_board_ips: Vec<String> = Vec::new();
-        for member_id in &group.members {
-            if let Some(board) = loaded_config.boards.iter().find(|b| &b.id == member_id) {
-                if !group_board_ips.contains(&board.ip) {
-                    group_board_ips.push(board.ip.clone());
-                }
-            }
-        }
-
-        if !group_board_ips.is_empty() {
-            let universe = group.universe.unwrap_or((universe_index + 1) as u16);
-
-            info!(
-                group_id = %group.id,
-                universe = universe,
-                board_count = group_board_ips.len(),
-                "Initializing E1.31 transport for group: {:?}",
-                group_board_ips
-            );
-
-            match transport::E131RawTransport::new(group_board_ips, universe) {
-                Ok(transport) => {
-                    group_e131_transports.insert(group.id.clone(), transport);
-                    info!(group_id = %group.id, universe = universe, "E1.31 transport initialized");
-                }
-                Err(e) => {
-                    warn!(group_id = %group.id, "Failed to initialize E1.31 transport: {}", e);
-                }
-            }
-        } else {
-            warn!(group_id = %group.id, "No boards found for group - will use WebSocket only");
-        }
-    }
-
-    info!(
-        "Initialized {} E1.31 group transport(s)",
-        group_e131_transports.len()
-    );
-
-    info!("Configuring board E1.31 universes in parallel...");
-    let mut config_tasks = Vec::new();
-
-    for board in &loaded_config.boards {
-        if let Some(universe) = board.universe {
-            let board_id = board.id.clone();
-            let board_ip = board.ip.clone();
-
-            let task = tokio::spawn(async move {
-                info!(
-                    board_id = %board_id,
-                    universe = universe,
-                    "Configuring board universe"
-                );
-
-                match routes::groups::configure_board_universe(&board_ip, universe).await {
-                    Ok(()) => {
-                        info!(board_id = %board_id, universe = universe, "Successfully configured universe");
-                    }
-                    Err(e) => {
-                        warn!(
-                            board_id = %board_id,
-                            universe = universe,
-                            "Failed to configure universe: {}. Board may need manual configuration.", e
-                        );
-                    }
-                }
-            });
-
-            config_tasks.push(task);
-        }
-    }
-
-    let config_timeout = tokio::time::Duration::from_secs(10);
-    match tokio::time::timeout(config_timeout, futures::future::join_all(config_tasks)).await {
-        Ok(_) => info!("Universe configuration complete"),
-        Err(_) => {
-            warn!("Universe configuration timed out after 10s - some boards may not be configured")
-        }
-    }
+    let group_e131_transports = loaded_config.init_e131_transports().await;
 
     let timing_metrics = Arc::new(timing_metrics::TimingMetrics::new());
     let playback_history = Arc::new(playback_history::PlaybackHistory::new(
@@ -212,23 +131,45 @@ async fn main() {
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
     let device_manager = Arc::new(audio::DeviceManager::new());
     let startup_routing = if let Some(ref preferred_device) = loaded_config.audio.preferred_device_id {
-        device_manager.select_device(Some(preferred_device.clone()));
-        info!("Restored preferred audio device: {}", preferred_device);
+        let available_devices = device_manager.list_devices();
+        let device_exists = available_devices.iter().any(|d| &d.id == preferred_device);
 
-        let output_channels = device_manager
-            .get_device_output_channels(preferred_device)
-            .unwrap_or(2) as usize;
-        let routing_config = loaded_config
-            .audio
-            .get_routing_for_device(preferred_device)
-            .cloned()
-            .unwrap_or_else(|| config::DeviceRouting::new_default(preferred_device.clone()));
-        let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
-        info!("Restored audio routing for {}: backing={}/{}, guide={}, click={}",
-            preferred_device,
-            routing_config.backing_left, routing_config.backing_right,
-            routing_config.guide, routing_config.click);
-        Some(routing)
+        if device_exists {
+            device_manager.select_device(Some(preferred_device.clone()));
+            info!("Restored preferred audio device: {}", preferred_device);
+
+            let output_channels = device_manager
+                .get_device_output_channels(preferred_device)
+                .unwrap_or(2) as usize;
+            let routing_config = loaded_config
+                .audio
+                .get_routing_for_device(preferred_device)
+                .cloned()
+                .unwrap_or_else(|| config::DeviceRouting::new_default(preferred_device.clone()));
+            let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
+            info!("Restored audio routing for {}: backing={}/{}, guide={}, click={}",
+                preferred_device,
+                routing_config.backing_left, routing_config.backing_right,
+                routing_config.guide, routing_config.click);
+            Some(routing)
+        } else {
+            let fallback = available_devices.iter().find(|d| d.is_default).or(available_devices.first());
+            if let Some(dev) = fallback {
+                warn!("Preferred audio device '{}' not found, falling back to '{}'", preferred_device, dev.name);
+                device_manager.select_device(Some(dev.id.clone()));
+                let output_channels = dev.output_channels as usize;
+                let routing_config = loaded_config
+                    .audio
+                    .get_routing_for_device(&dev.id)
+                    .cloned()
+                    .unwrap_or_else(|| config::DeviceRouting::new_default(dev.id.clone()));
+                let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
+                Some(routing)
+            } else {
+                warn!("Preferred audio device '{}' not found, no audio devices available", preferred_device);
+                None
+            }
+        }
     } else {
         None
     };
@@ -372,7 +313,16 @@ async fn main() {
 
     let api_router = routes::build_api_router(state.clone());
 
-    let app = axum::Router::new().nest("/api", api_router).layer(cors);
+    let frontend_path = std::env::var("WLED_FRONTEND_PATH")
+        .unwrap_or_else(|_| "frontend/build".to_string());
+
+    let app = axum::Router::new()
+        .nest("/api", api_router)
+        .fallback_service(
+            ServeDir::new(&frontend_path)
+                .not_found_service(ServeFile::new(format!("{}/index.html", frontend_path))),
+        )
+        .layer(cors);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3010".to_string());
     let addr = format!("0.0.0.0:{}", port);

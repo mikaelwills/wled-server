@@ -1,0 +1,31 @@
+[Unit]
+Description=WLED Lighting Server
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wled-server
+ExecStart=/opt/wled-server/rust-wled-server
+Restart=always
+RestartSec=3
+
+Environment=RUST_LOG=info
+Environment=WLED_FRONTEND_PATH=/opt/wled-server/frontend/build
+
+Nice=-20
+
+LimitMEMLOCK=infinity
+LimitRTPRIO=80
+
+SupplementaryGroups=audio
+
+User=wled
+Group=wled
+
+ProtectSystem=strict
+ReadWritePaths=/opt/wled-server
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
