@@ -16,7 +16,7 @@ set -e
 ROBERT_USER="mikael"
 ROBERT_IP="192.168.8.137"
 DEPLOY_PATH="/opt/wled-server"
-BUILD_PATH="/home/mikael/wled-server-build"
+BUILD_PATH="/home/mikael/Productivity/wled-server"
 
 echo "Checking connection to Robert..."
 if ! ping -c 1 -W 2 ${ROBERT_IP} &> /dev/null; then
@@ -55,7 +55,7 @@ if ! command -v cargo &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 fi
 source "$HOME/.cargo/env"
-cd ~/wled-server-build
+cd ~/Productivity/wled-server
 cargo build --release
 echo "Build complete"
 ENDSSH
@@ -64,7 +64,7 @@ echo ""
 echo "Deploying to Robert..."
 ssh ${ROBERT_USER}@${ROBERT_IP} "sudo systemctl stop wled-server 2>/dev/null || true"
 
-ssh ${ROBERT_USER}@${ROBERT_IP} "cp ~/wled-server-build/target/release/rust-wled-server /opt/wled-server/ && chmod +x /opt/wled-server/rust-wled-server"
+ssh ${ROBERT_USER}@${ROBERT_IP} "cp ~/Productivity/wled-server/target/release/rust-wled-server /opt/wled-server/ && chmod +x /opt/wled-server/rust-wled-server"
 
 rsync -az --delete \
     frontend/build/ \

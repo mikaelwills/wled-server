@@ -1,5 +1,17 @@
 # WLED Rust Server
 
+## Robert (Intel NUC)
+- SSH: `ssh mikael@robert` (always use this, never raw IP)
+- Source/build dir: `~/Productivity/wled-server/` (git repo, where cargo build runs)
+- Running instance: `/opt/wled-server/` (deployed binary + runtime data)
+  - Binary: `/opt/wled-server/rust-wled-server`
+  - Audio: `/opt/wled-server/audio/`
+  - Config: `/opt/wled-server/data/boards.toml`
+  - Frontend: `/opt/wled-server/frontend/`
+- Service: `wled-server` (systemd), runs as user `wled`
+- Deploy from laptop: `./deploy-to-robert.sh` (syncs source, builds on Robert, deploys)
+- Deploy from Robert itself: `./deploy-local.sh` (builds and deploys locally, run from ~/Productivity/wled-server/)
+
 ## TODO
 - Make per-board random patterns for effects (currently all boards show identical patterns):
   - Lightning: Each board should have independent random flash positions/timing
