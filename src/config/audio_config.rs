@@ -79,4 +79,50 @@ impl AudioConfig {
             self.device_routings.push(routing);
         }
     }
+
+    /// Resolve the preferred audio device and routing on startup.
+    /// Falls back to the default device if the preferred one isn't available.
+    pub fn resolve_startup_routing(
+        &self,
+        device_manager: &crate::audio::DeviceManager,
+    ) -> Option<crate::audio::RoutingConfig> {
+        let preferred_device = self.preferred_device_id.as_ref()?;
+        let available_devices = device_manager.list_devices();
+        let device_exists = available_devices.iter().any(|d| &d.id == preferred_device);
+
+        if device_exists {
+            device_manager.select_device(Some(preferred_device.clone()));
+            tracing::info!("Restored preferred audio device: {}", preferred_device);
+
+            let output_channels = device_manager
+                .get_device_output_channels(preferred_device)
+                .unwrap_or(2) as usize;
+            let routing_config = self
+                .get_routing_for_device(preferred_device)
+                .cloned()
+                .unwrap_or_else(|| DeviceRouting::new_default(preferred_device.clone()));
+            let routing = crate::audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
+            tracing::info!("Restored audio routing for {}: backing={}/{}, guide={}, click={}",
+                preferred_device,
+                routing_config.backing_left, routing_config.backing_right,
+                routing_config.guide, routing_config.click);
+            Some(routing)
+        } else {
+            let fallback = available_devices.iter().find(|d| d.is_default).or(available_devices.first());
+            if let Some(dev) = fallback {
+                tracing::warn!("Preferred audio device '{}' not found, falling back to '{}'", preferred_device, dev.name);
+                device_manager.select_device(Some(dev.id.clone()));
+                let output_channels = dev.output_channels as usize;
+                let routing_config = self
+                    .get_routing_for_device(&dev.id)
+                    .cloned()
+                    .unwrap_or_else(|| DeviceRouting::new_default(dev.id.clone()));
+                let routing = crate::audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
+                Some(routing)
+            } else {
+                tracing::warn!("Preferred audio device '{}' not found, no audio devices available", preferred_device);
+                None
+            }
+        }
+    }
 }

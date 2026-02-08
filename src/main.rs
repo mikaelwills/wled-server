@@ -49,66 +49,7 @@ async fn main() {
 
     let storage_paths = config::StoragePaths::default();
 
-    let usb_programs_path = &storage_paths.programs;
-    let is_usb_path = usb_programs_path.to_string_lossy().starts_with("/tmp/mountd/");
-
-    if is_usb_path {
-        let max_usb_wait_secs = 30;
-        let mut usb_waited = 0;
-
-        fn count_json_files(path: &std::path::Path) -> usize {
-            match std::fs::read_dir(path) {
-                Ok(entries) => entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-                    .count(),
-                Err(_) => 0,
-            }
-        }
-
-        let mut file_count = count_json_files(usb_programs_path);
-        while file_count == 0 && usb_waited < max_usb_wait_secs {
-            if usb_waited == 0 {
-                warn!("USB programs directory empty or not ready at {:?}, waiting...", usb_programs_path);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            usb_waited += 1;
-            file_count = count_json_files(usb_programs_path);
-            if usb_waited % 5 == 0 {
-                info!("Still waiting for USB programs... ({}/{}s, found {} files)", usb_waited, max_usb_wait_secs, file_count);
-            }
-        }
-
-        if file_count > 0 {
-            if usb_waited > 0 {
-                info!("✅ USB programs ready after {}s ({} files found)", usb_waited, file_count);
-            } else {
-                info!("✅ USB programs detected ({} files), waiting for stability...", file_count);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
-
-            if count_json_files(usb_programs_path) == 0 {
-                warn!("USB disappeared after initial detection! Waiting for remount...");
-                let mut remount_wait = 0;
-                let max_remount_wait = 30;
-                while count_json_files(usb_programs_path) == 0 && remount_wait < max_remount_wait {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    remount_wait += 1;
-                    if remount_wait % 5 == 0 {
-                        info!("Still waiting for USB remount... ({}/{}s)", remount_wait, max_remount_wait);
-                    }
-                }
-                let final_count = count_json_files(usb_programs_path);
-                if final_count > 0 {
-                    info!("✅ USB remounted after {}s ({} files)", remount_wait, final_count);
-                } else {
-                    warn!("⚠️ USB did not remount after {}s", max_remount_wait);
-                }
-            }
-        } else {
-            warn!("⚠️ No program files found after {}s - directory may be empty or USB not mounted", max_usb_wait_secs);
-        }
-    }
+    storage_paths.wait_for_usb().await;
 
     if let Err(e) = storage_paths.init() {
         error!("Failed to initialize storage paths: {}", e);
@@ -130,49 +71,7 @@ async fn main() {
     )));
     let pattern_engine = Arc::new(pattern_engine::PatternEngine::new());
     let device_manager = Arc::new(audio::DeviceManager::new());
-    let startup_routing = if let Some(ref preferred_device) = loaded_config.audio.preferred_device_id {
-        let available_devices = device_manager.list_devices();
-        let device_exists = available_devices.iter().any(|d| &d.id == preferred_device);
-
-        if device_exists {
-            device_manager.select_device(Some(preferred_device.clone()));
-            info!("Restored preferred audio device: {}", preferred_device);
-
-            let output_channels = device_manager
-                .get_device_output_channels(preferred_device)
-                .unwrap_or(2) as usize;
-            let routing_config = loaded_config
-                .audio
-                .get_routing_for_device(preferred_device)
-                .cloned()
-                .unwrap_or_else(|| config::DeviceRouting::new_default(preferred_device.clone()));
-            let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
-            info!("Restored audio routing for {}: backing={}/{}, guide={}, click={}",
-                preferred_device,
-                routing_config.backing_left, routing_config.backing_right,
-                routing_config.guide, routing_config.click);
-            Some(routing)
-        } else {
-            let fallback = available_devices.iter().find(|d| d.is_default).or(available_devices.first());
-            if let Some(dev) = fallback {
-                warn!("Preferred audio device '{}' not found, falling back to '{}'", preferred_device, dev.name);
-                device_manager.select_device(Some(dev.id.clone()));
-                let output_channels = dev.output_channels as usize;
-                let routing_config = loaded_config
-                    .audio
-                    .get_routing_for_device(&dev.id)
-                    .cloned()
-                    .unwrap_or_else(|| config::DeviceRouting::new_default(dev.id.clone()));
-                let routing = audio::RoutingConfig::from_device_routing(&routing_config, output_channels);
-                Some(routing)
-            } else {
-                warn!("Preferred audio device '{}' not found, no audio devices available", preferred_device);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let startup_routing = loaded_config.audio.resolve_startup_routing(&device_manager);
 
     let mut audio_engine = audio::AudioEngine::new();
     audio_engine.set_device_sample_rate(device_manager.get_selected_sample_rate());
@@ -339,63 +238,7 @@ async fn main() {
         }
     };
 
-    let audio_engine_bg = state.audio_engine.clone();
-    let audio_path_bg = state.storage_paths.audio.clone();
-    tokio::spawn(async move {
-        if !audio_path_bg.exists() {
-            return;
-        }
-        let cache_dir = audio_path_bg.join("resampled");
-        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            warn!("Failed to create resampled cache dir: {}", e);
-        }
-        let entries: Vec<_> = match std::fs::read_dir(&audio_path_bg) {
-            Ok(e) => e.flatten().collect(),
-            Err(_) => return,
-        };
-        let mut backing_count = 0;
-        let mut guide_count = 0;
-        for entry in entries {
-            let path = entry.path();
-            let is_audio = path.extension().map_or(false, |ext| {
-                ext == "mp3" || ext == "wav"
-            });
-            if is_audio {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let stem = stem.to_string();
-                    let is_guide = stem.contains("_guide");
-                    let path_clone = path.clone();
-                    let cache_dir_clone = cache_dir.clone();
-                    let decode_result = tokio::task::spawn_blocking(move || {
-                        audio::decode_file_with_path(&path_clone)
-                    }).await;
-
-                    match decode_result {
-                        Ok(Ok(decoded)) => {
-                            let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
-                            let mut engine = audio_engine_bg.lock().await;
-                            if is_guide {
-                                engine.load_guide_track(stem, track).await;
-                                guide_count += 1;
-                            } else {
-                                engine.load_track(stem, track).await;
-                                backing_count += 1;
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            warn!("Failed to preload audio '{}': {}", path.display(), e);
-                        }
-                        Err(e) => {
-                            warn!("Decode task failed for '{}': {}", path.display(), e);
-                        }
-                    }
-                }
-            }
-        }
-        if backing_count > 0 || guide_count > 0 {
-            info!("Background: preloaded {} backing + {} guide track(s) into engine", backing_count, guide_count);
-        }
-    });
+    audio::spawn_preload_task(state.audio_engine.clone(), state.storage_paths.audio.clone());
 
     match axum::serve(listener, app).await {
         Ok(_) => info!("Server stopped properly"),
