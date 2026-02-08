@@ -42,38 +42,34 @@ pub fn spawn_preload_task(audio_engine: Arc<Mutex<AudioEngine>>, audio_path: imp
         let mut guide_count = 0;
         for entry in entries {
             let path = entry.path();
-            let is_audio = path.extension().map_or(false, |ext| {
-                ext == "mp3" || ext == "wav"
-            });
-            if is_audio {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let stem = stem.to_string();
-                    let is_guide = stem.contains("_guide");
-                    let path_clone = path.clone();
-                    let cache_dir_clone = cache_dir.clone();
-                    let decode_result = tokio::task::spawn_blocking(move || {
-                        decode_file_with_path(&path_clone)
-                    }).await;
+            let is_audio = path.extension().map_or(false, |ext| ext == "mp3" || ext == "wav");
+            if !is_audio { continue; }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let stem = stem.to_string();
+            let is_guide = stem.contains("_guide");
+            let path_clone = path.clone();
+            let cache_dir_clone = cache_dir.clone();
+            let decode_result = tokio::task::spawn_blocking(move || {
+                decode_file_with_path(&path_clone)
+            }).await;
 
-                    match decode_result {
-                        Ok(Ok(decoded)) => {
-                            let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
-                            let mut engine = audio_engine.lock().await;
-                            if is_guide {
-                                engine.load_guide_track(stem, track).await;
-                                guide_count += 1;
-                            } else {
-                                engine.load_track(stem, track).await;
-                                backing_count += 1;
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("Failed to preload audio '{}': {}", path.display(), e);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Decode task failed for '{}': {}", path.display(), e);
-                        }
+            match decode_result {
+                Ok(Ok(decoded)) => {
+                    let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                    let mut engine = audio_engine.lock().await;
+                    if is_guide {
+                        engine.load_guide_track(stem, track).await;
+                        guide_count += 1;
+                    } else {
+                        engine.load_track(stem, track).await;
+                        backing_count += 1;
                     }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("Failed to preload audio '{}': {}", path.display(), e);
+                }
+                Err(e) => {
+                    tracing::warn!("Decode task failed for '{}': {}", path.display(), e);
                 }
             }
         }
