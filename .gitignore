@@ -31,6 +31,7 @@ Thumbs.db
 # Personal deployment scripts and config
 deploy-to-nas.sh
 deploy-to-beryl.sh
+deploy-to-robert.sh
 deploy.sh
 restart.sh
 
@@ -43,6 +44,7 @@ test_udp.py
 /data/boards.toml.tmp
 
 .claude/settings.local.json
+CLAUDE.md
 
 # User data - don't commit personal files
 /audio/
