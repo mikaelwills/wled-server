@@ -182,6 +182,15 @@ pub enum PlaybackCommand {
     ClearSlot(SlotId),
 }
 
+#[derive(PartialEq)]
+struct ClickCacheKey {
+    bpm_bits: u64,
+    grid_offset_bits: u64,
+    click_rate_bits: u64,
+    duration_bits: u64,
+    sample_rate: u32,
+}
+
 pub struct AudioEngine {
     state: PlaybackState,
     slot_tracks: [HashMap<String, Arc<LoadedTrack>>; SLOT_COUNT],
@@ -196,6 +205,7 @@ pub struct AudioEngine {
     device_sample_rate: u32,
     broadcast_tx: Option<Arc<broadcast::Sender<SseEvent>>>,
     resampling_quality: ResamplingQuality,
+    click_cache: HashMap<String, ClickCacheKey>,
 }
 
 impl AudioEngine {
@@ -215,6 +225,7 @@ impl AudioEngine {
             device_sample_rate: 0,
             broadcast_tx: None,
             resampling_quality: ResamplingQuality::default(),
+            click_cache: HashMap::new(),
         }
     }
 
@@ -361,6 +372,25 @@ impl AudioEngine {
             return;
         }
 
+        let click_id = format!("{}_click", program_id);
+        let new_key = ClickCacheKey {
+            bpm_bits: bpm.to_bits(),
+            grid_offset_bits: grid_offset.to_bits(),
+            click_rate_bits: click_rate.to_bits(),
+            duration_bits: duration.to_bits(),
+            sample_rate: self.device_sample_rate,
+        };
+
+        if self.click_cache.get(&click_id) == Some(&new_key)
+            && self.slot_tracks[SlotId::Click as usize].contains_key(&click_id)
+        {
+            eprintln!(
+                "[AudioEngine] Click track cache hit for {} ({}bpm x{})",
+                program_id, bpm, click_rate
+            );
+            return;
+        }
+
         let samples = super::click::generate_click_track(
             bpm,
             grid_offset,
@@ -371,7 +401,7 @@ impl AudioEngine {
         );
 
         let track = LoadedTrack::new(samples, self.device_sample_rate, 1);
-        let click_id = format!("{}_click", program_id);
+        self.click_cache.insert(click_id.clone(), new_key);
         self.load_slot_track(SlotId::Click, click_id, track).await;
         eprintln!(
             "[AudioEngine] Generated click track for {} at {}bpm x{} ({}s)",
@@ -430,6 +460,9 @@ impl AudioEngine {
         if let Some(cancelled) = self.resampling_cancellation.remove(&cancel_key) {
             cancelled.store(true, Ordering::Relaxed);
             eprintln!("[AudioEngine] Cancelled resampling for '{}'", cancel_key);
+        }
+        if slot == SlotId::Click {
+            self.click_cache.remove(id);
         }
         if let Some(track) = self.slot_tracks[slot as usize].remove(id) {
             let memory_mb = track.memory_usage() as f64 / 1024.0 / 1024.0;
