@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Deploy to Robert (Intel NUC10i3FNK) at 192.168.8.137
+# Deploy to Robert (Intel NUC10i3FNK) via Tailscale
 # Syncs source to Robert, builds natively there (ALSA/audio needs Linux headers)
 # Frontend built locally with Bun, synced as static files
 # NEVER overwrites runtime data (presets, boards.toml, programs, audio, history)
@@ -14,7 +14,7 @@
 set -e
 
 ROBERT_USER="mikael"
-ROBERT_IP="192.168.8.137"
+ROBERT_IP="100.126.128.13"
 DEPLOY_PATH="/opt/wled-server"
 BUILD_PATH="/home/mikael/Productivity/wled-server"
 
@@ -82,8 +82,8 @@ if systemctl is-active --quiet wled-server; then
     echo ""
     echo "WLED Server is running on Robert!"
     echo ""
-    echo "  Frontend: http://192.168.8.137:3010"
-    echo "  API:      http://192.168.8.137:3010/api/health"
+    echo "  Frontend: http://100.126.128.13:3010"
+    echo "  API:      http://100.126.128.13:3010/api/health"
     echo ""
     echo "Useful commands:"
     echo "  systemctl status wled-server"

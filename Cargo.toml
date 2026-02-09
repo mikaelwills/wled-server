@@ -35,3 +35,4 @@ symphonia = { version = "0.5", features = ["mp3", "wav", "pcm"] }
 rubato = "0.15"
 arc-swap = "1.7"
 parking_lot = "0.12"
+tokio-util = { version = "0.7", features = ["io"] }

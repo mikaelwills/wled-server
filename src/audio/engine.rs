@@ -46,6 +46,7 @@ pub struct SlotRouting {
     pub left_channel: usize,
     pub right_channel: usize,
     pub muted: bool,
+    pub volume: f32,
     pub is_stereo: bool,
 }
 
@@ -55,6 +56,7 @@ impl Default for SlotRouting {
             left_channel: 0,
             right_channel: 1,
             muted: false,
+            volume: 1.0,
             is_stereo: true,
         }
     }
@@ -75,24 +77,28 @@ impl Default for RoutingConfig {
                     left_channel: 0,
                     right_channel: 1,
                     muted: false,
+                    volume: 1.0,
                     is_stereo: true,
                 },
                 SlotRouting {
                     left_channel: 2,
                     right_channel: 2,
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
                 SlotRouting {
                     left_channel: 3,
                     right_channel: 3,
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
                 SlotRouting {
                     left_channel: 4,
                     right_channel: 4,
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
             ],
@@ -116,24 +122,28 @@ impl RoutingConfig {
                     left_channel: (routing.backing_left as usize).saturating_sub(1),
                     right_channel: (routing.backing_right as usize).saturating_sub(1),
                     muted: false,
+                    volume: 1.0,
                     is_stereo: true,
                 },
                 SlotRouting {
                     left_channel: (routing.guide as usize).saturating_sub(1),
                     right_channel: (routing.guide as usize).saturating_sub(1),
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
                 SlotRouting {
                     left_channel: (routing.click as usize).saturating_sub(1),
                     right_channel: (routing.click as usize).saturating_sub(1),
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
                 SlotRouting {
                     left_channel: 4,
                     right_channel: 4,
                     muted: false,
+                    volume: 1.0,
                     is_stereo: false,
                 },
             ],
@@ -142,6 +152,10 @@ impl RoutingConfig {
 
     pub fn set_mute(&mut self, slot: SlotId, muted: bool) {
         self.slots[slot as usize].muted = muted;
+    }
+
+    pub fn set_volume(&mut self, slot: SlotId, volume: f32) {
+        self.slots[slot as usize].volume = volume.clamp(0.0, 2.0);
     }
 }
 
@@ -156,6 +170,10 @@ pub enum PlaybackCommand {
     SetMute {
         slot: SlotId,
         muted: bool,
+    },
+    SetVolume {
+        slot: SlotId,
+        volume: f32,
     },
     LoadSlot {
         slot: SlotId,
@@ -569,6 +587,13 @@ impl AudioEngine {
         let _ = self
             .command_tx
             .send(PlaybackCommand::SetMute { slot, muted })
+            .await;
+    }
+
+    pub async fn set_volume(&self, slot: SlotId, volume: f32) {
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::SetVolume { slot, volume })
             .await;
     }
 

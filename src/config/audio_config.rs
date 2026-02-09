@@ -55,6 +55,40 @@ impl ResamplingQuality {
             ResamplingQuality::High => 256,
         }
     }
+
+    pub fn cache_key(&self) -> &'static str {
+        match self {
+            ResamplingQuality::Fast => "fast",
+            ResamplingQuality::Balanced => "balanced",
+            ResamplingQuality::High => "high",
+        }
+    }
+
+    pub fn from_cache_key(key: &str) -> Option<Self> {
+        match key {
+            "fast" => Some(ResamplingQuality::Fast),
+            "balanced" => Some(ResamplingQuality::Balanced),
+            "high" => Some(ResamplingQuality::High),
+            _ => None,
+        }
+    }
+
+    pub fn header_byte(&self) -> u8 {
+        match self {
+            ResamplingQuality::Fast => 0,
+            ResamplingQuality::Balanced => 1,
+            ResamplingQuality::High => 2,
+        }
+    }
+
+    pub fn from_header_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(ResamplingQuality::Fast),
+            1 => Some(ResamplingQuality::Balanced),
+            2 => Some(ResamplingQuality::High),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

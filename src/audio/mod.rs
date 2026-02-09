@@ -17,7 +17,7 @@ pub use file::AudioFile;
 pub use loader::{decode_file, decode_file_with_path, DecodedAudio};
 pub use resampler::{spawn_resampling, ResamplingJob};
 pub use resampling_progress::ResamplingProgress;
-pub use track::LoadedTrack;
+pub use track::{CachedVersion, LoadedTrack};
 
 use std::path::Path;
 use std::sync::Arc;

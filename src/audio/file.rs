@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct AudioFile;
 
@@ -32,7 +32,7 @@ impl AudioFile {
         Ok(filename)
     }
 
-    pub fn load(id: &str, audio_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pub fn find_path(id: &str, audio_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let extensions = ["mp3", "wav", "ogg", "flac"];
         let id = extensions.iter()
             .fold(id, |s, ext| s.strip_suffix(&format!(".{}", ext)).unwrap_or(s));
@@ -40,11 +40,16 @@ impl AudioFile {
         for ext in &extensions {
             let file_path = audio_path.join(format!("{}.{}", id, ext));
             if file_path.exists() {
-                return Ok(fs::read(&file_path)?);
+                return Ok(file_path);
             }
         }
 
         Err(format!("Audio file not found: {}", id).into())
+    }
+
+    pub fn load(id: &str, audio_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let path = Self::find_path(id, audio_path)?;
+        Ok(fs::read(&path)?)
     }
 
     pub fn delete(id: &str, audio_path: &Path) -> Result<(), Box<dyn std::error::Error>> {

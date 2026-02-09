@@ -129,7 +129,10 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/routing/:device_id", get(audio::get_routing).put(audio::update_routing))
         .route("/audio/devices/:device_id/outputs", get(audio::get_device_outputs))
         .route("/audio/mute", post(audio::set_mute))
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        .route("/audio/volume", post(audio::set_volume))
+        .route("/audio/resampled-info/:id", get(audio::get_resampled_info))
+        .route("/audio/resample", post(audio::resample_track))
+        .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
         .with_state(state)
 }
 

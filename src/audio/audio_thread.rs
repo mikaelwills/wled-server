@@ -119,6 +119,12 @@ impl InternalPlaybackState {
         self.routing.store(Arc::new(current));
     }
 
+    pub fn set_volume(&self, slot: SlotId, volume: f32) {
+        let mut current = (**self.routing.load()).clone();
+        current.set_volume(slot, volume);
+        self.routing.store(Arc::new(current));
+    }
+
     pub fn load_slot(&self, slot: SlotId, track: Arc<LoadedTrack>) {
         let device_rate = self.device_sample_rate.load(Ordering::Acquire);
         let samples = track.get_samples_for_rate(device_rate);
@@ -215,153 +221,175 @@ fn build_stream(
         state.routing.store(Arc::new(current_routing));
     }
 
+    let sample_format = config.sample_format();
+    eprintln!("[AudioThread] Device sample format: {:?}", sample_format);
     let config: cpal::StreamConfig = config.into();
 
-    let stream = device
-        .build_output_stream(
-            &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let now_us = health.now_us();
-                let last_us = health.last_callback_us.swap(now_us, Ordering::Relaxed);
+    macro_rules! build_output_stream {
+        ($sample_type:ty, $zero:expr, $convert:expr) => {{
+            device.build_output_stream(
+                &config,
+                move |data: &mut [$sample_type], _: &cpal::OutputCallbackInfo| {
+                    let now_us = health.now_us();
+                    let last_us = health.last_callback_us.swap(now_us, Ordering::Relaxed);
 
-                if last_us > 0 {
-                    let interval = now_us.saturating_sub(last_us);
-                    let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
-                    while interval > max {
-                        match health.max_callback_interval_us.compare_exchange_weak(
-                            max,
-                            interval,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => break,
-                            Err(current) => max = current,
+                    if last_us > 0 {
+                        let interval = now_us.saturating_sub(last_us);
+                        let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
+                        while interval > max {
+                            match health.max_callback_interval_us.compare_exchange_weak(
+                                max,
+                                interval,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            ) {
+                                Ok(_) => break,
+                                Err(current) => max = current,
+                            }
+                        }
+                        let expected_interval_us = (data.len() as u64 * 1_000_000)
+                            / (sample_rate as u64 * output_channels as u64);
+                        if interval > expected_interval_us * 2 {
+                            health.late_callbacks.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    let expected_interval_us = (data.len() as u64 * 1_000_000)
-                        / (sample_rate as u64 * output_channels as u64);
-                    if interval > expected_interval_us * 2 {
-                        health.late_callbacks.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
 
-                health.callback_count.fetch_add(1, Ordering::Relaxed);
-                health
-                    .last_buffer_size
-                    .store(data.len() as u32, Ordering::Relaxed);
+                    health.callback_count.fetch_add(1, Ordering::Relaxed);
+                    health
+                        .last_buffer_size
+                        .store(data.len() as u32, Ordering::Relaxed);
 
-                if !state.playing.load(Ordering::Relaxed) {
-                    data.fill(0.0);
-                    return;
-                }
-
-                let backing_slot = &state.slots[SlotId::Backing as usize];
-                let backing_guard = backing_slot.samples.load();
-                if backing_guard.is_none() {
-                    health.underrun_count.fetch_add(1, Ordering::Relaxed);
-                    data.fill(0.0);
-                    return;
-                }
-
-                let backing_sample_count = backing_slot.sample_count.load(Ordering::Acquire);
-                let backing_channels = backing_slot.channels.load(Ordering::Relaxed);
-
-                if backing_channels == 0 || backing_sample_count == 0 {
-                    health.underrun_count.fetch_add(1, Ordering::Relaxed);
-                    data.fill(0.0);
-                    return;
-                }
-
-                let mut idx = state.sample_index.load(Ordering::Relaxed);
-                let mut samples_written = 0u64;
-                let mut silence_written = 0u64;
-
-                let routing = state.routing.load();
-
-                let slot_guards: [_; SLOT_COUNT] = std::array::from_fn(|i| {
-                    state.slots[i].samples.load()
-                });
-                let slot_sample_counts: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
-                    state.slots[i].sample_count.load(Ordering::Acquire)
-                });
-                let slot_channels: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
-                    state.slots[i].channels.load(Ordering::Relaxed)
-                });
-
-                for frame in data.chunks_mut(output_channels) {
-                    if idx >= backing_sample_count {
-                        frame.fill(0.0);
-                        silence_written += 1;
-                        continue;
+                    if !state.playing.load(Ordering::Relaxed) {
+                        data.fill($zero);
+                        return;
                     }
 
-                    frame.fill(0.0);
+                    let backing_slot = &state.slots[SlotId::Backing as usize];
+                    let backing_guard = backing_slot.samples.load();
+                    if backing_guard.is_none() {
+                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
+                        data.fill($zero);
+                        return;
+                    }
 
-                    for (slot_idx, slot_routing) in routing.slots.iter().enumerate() {
-                        if slot_routing.muted {
+                    let backing_sample_count = backing_slot.sample_count.load(Ordering::Acquire);
+                    let backing_channels = backing_slot.channels.load(Ordering::Relaxed);
+
+                    if backing_channels == 0 || backing_sample_count == 0 {
+                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
+                        data.fill($zero);
+                        return;
+                    }
+
+                    let mut idx = state.sample_index.load(Ordering::Relaxed);
+                    let mut samples_written = 0u64;
+                    let mut silence_written = 0u64;
+
+                    let routing = state.routing.load();
+
+                    let slot_guards: [_; SLOT_COUNT] = std::array::from_fn(|i| {
+                        state.slots[i].samples.load()
+                    });
+                    let slot_sample_counts: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                        state.slots[i].sample_count.load(Ordering::Acquire)
+                    });
+                    let slot_channels: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                        state.slots[i].channels.load(Ordering::Relaxed)
+                    });
+
+                    let convert = $convert;
+
+                    for frame in data.chunks_mut(output_channels) {
+                        if idx >= backing_sample_count {
+                            frame.fill($zero);
+                            silence_written += 1;
                             continue;
                         }
 
-                        let sample_count = slot_sample_counts[slot_idx];
-                        let channels = slot_channels[slot_idx];
-                        if channels == 0 {
-                            continue;
-                        }
+                        frame.fill($zero);
 
-                        let frame_number = idx / backing_channels;
-                        let slot_sample_idx = frame_number * channels;
-                        if slot_sample_idx >= sample_count {
-                            continue;
-                        }
+                        let mut mix_buf = [0.0f32; 128];
+                        let ch = output_channels.min(128);
 
-                        if let Some(samples) = slot_guards[slot_idx].as_ref() {
-                            let left = samples.get(slot_sample_idx).copied().unwrap_or(0.0);
-                            let right = if channels > 1 {
-                                samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0)
-                            } else {
-                                left
-                            };
+                        for (slot_idx, slot_routing) in routing.slots.iter().enumerate() {
+                            if slot_routing.muted {
+                                continue;
+                            }
 
-                            if routing.is_stereo_mode() {
-                                frame[0] += left;
-                                frame[1] += right;
-                            } else if slot_routing.is_stereo {
-                                if slot_routing.left_channel < output_channels {
-                                    frame[slot_routing.left_channel] += left;
-                                }
-                                if slot_routing.right_channel < output_channels {
-                                    frame[slot_routing.right_channel] += right;
-                                }
-                            } else {
-                                let mono = (left + right) * 0.5;
-                                if slot_routing.left_channel < output_channels {
-                                    frame[slot_routing.left_channel] += mono;
+                            let sample_count = slot_sample_counts[slot_idx];
+                            let channels = slot_channels[slot_idx];
+                            if channels == 0 {
+                                continue;
+                            }
+
+                            let frame_number = idx / backing_channels;
+                            let slot_sample_idx = frame_number * channels;
+                            if slot_sample_idx >= sample_count {
+                                continue;
+                            }
+
+                            if let Some(samples) = slot_guards[slot_idx].as_ref() {
+                                let vol = slot_routing.volume;
+                                let left = samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
+                                let right = if channels > 1 {
+                                    samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0) * vol
+                                } else {
+                                    left
+                                };
+
+                                if routing.is_stereo_mode() {
+                                    mix_buf[0] += left;
+                                    mix_buf[1] += right;
+                                } else if slot_routing.is_stereo {
+                                    if slot_routing.left_channel < ch {
+                                        mix_buf[slot_routing.left_channel] += left;
+                                    }
+                                    if slot_routing.right_channel < ch {
+                                        mix_buf[slot_routing.right_channel] += right;
+                                    }
+                                } else {
+                                    let mono = (left + right) * 0.5;
+                                    if slot_routing.left_channel < ch {
+                                        mix_buf[slot_routing.left_channel] += mono;
+                                    }
                                 }
                             }
                         }
+
+                        for (i, sample) in frame.iter_mut().enumerate() {
+                            *sample = convert(mix_buf[i]);
+                        }
+
+                        samples_written += output_channels as u64;
+                        idx += backing_channels;
                     }
 
-                    samples_written += output_channels as u64;
-                    idx += backing_channels;
-                }
-
-                state.sample_index.store(idx, Ordering::Relaxed);
-                position.store(idx as u64, Ordering::Relaxed);
-                health
-                    .samples_delivered
-                    .fetch_add(samples_written, Ordering::Relaxed);
-                if silence_written > 0 {
+                    state.sample_index.store(idx, Ordering::Relaxed);
+                    position.store(idx as u64, Ordering::Relaxed);
                     health
-                        .silence_frames
-                        .fetch_add(silence_written, Ordering::Relaxed);
-                }
-            },
-            |err| {
-                eprintln!("Audio stream error: {}", err);
-            },
-            None,
-        )
-        .map_err(|e| format!("Failed to build stream: {}", e))?;
+                        .samples_delivered
+                        .fetch_add(samples_written, Ordering::Relaxed);
+                    if silence_written > 0 {
+                        health
+                            .silence_frames
+                            .fetch_add(silence_written, Ordering::Relaxed);
+                    }
+                },
+                |err| {
+                    eprintln!("Audio stream error: {}", err);
+                },
+                None,
+            )
+            .map_err(|e| format!("Failed to build stream: {}", e))
+        }};
+    }
+
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => build_output_stream!(f32, 0.0f32, |s: f32| s),
+        cpal::SampleFormat::I32 => build_output_stream!(i32, 0i32, |s: f32| (s * i32::MAX as f32) as i32),
+        cpal::SampleFormat::I16 => build_output_stream!(i16, 0i16, |s: f32| (s * i16::MAX as f32) as i16),
+        _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
+    }?;
 
     stream
         .play()
@@ -557,6 +585,9 @@ impl AudioThread {
                 }
                 PlaybackCommand::SetMute { slot, muted } => {
                     state.set_mute(slot, muted);
+                }
+                PlaybackCommand::SetVolume { slot, volume } => {
+                    state.set_volume(slot, volume);
                 }
                 PlaybackCommand::LoadSlot { slot, track } => {
                     eprintln!("[AudioThread] LoadSlot command: slot={:?}, track_channels={}, track_samples={}",

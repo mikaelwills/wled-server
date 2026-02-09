@@ -19,4 +19,11 @@ pub enum SseEvent {
         from_rate: u32,
         to_rate: u32,
     },
+    #[serde(rename = "resampling_complete")]
+    ResamplingComplete {
+        slot: String,
+        program_id: String,
+        target_rate: u32,
+        quality: String,
+    },
 }

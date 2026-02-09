@@ -40,22 +40,37 @@ fn build_alsa_friendly_names() -> HashMap<String, String> {
             continue;
         };
 
+        let card_friendly = line.split('[').nth(1)
+            .and_then(|s| s.split(']').next())
+            .unwrap_or(card_name)
+            .to_string();
+
         let dev_name = line.rsplit('[').next()
             .and_then(|s| s.split(']').next())
             .unwrap_or(dev_num)
             .to_string();
 
+        let display = if dev_name == card_friendly || dev_name.starts_with("USB ") {
+            card_friendly.clone()
+        } else {
+            format!("{} - {}", card_friendly, dev_name)
+        };
+
         names.insert(
             format!("hw:CARD={},DEV={}", card_name, dev_num),
-            dev_name.clone(),
+            display.clone(),
         );
         names.insert(
             format!("plughw:CARD={},DEV={}", card_name, dev_num),
-            format!("{} (plug)", dev_name),
+            format!("{} (plug)", display),
         );
         names.insert(
             format!("sysdefault:CARD={}", card_name),
-            format!("{} (default)", dev_name),
+            format!("{} (default)", display),
+        );
+        names.insert(
+            format!("dmix:CARD={},DEV={}", card_name, dev_num),
+            format!("{} (dmix)", display),
         );
     }
     names

@@ -107,3 +107,27 @@ pub async fn set_mute(
     info!("Set {} muted: {}", payload.track, payload.muted);
     Ok(StatusCode::OK)
 }
+
+#[derive(Deserialize)]
+pub struct SetVolumeRequest {
+    pub track: String,
+    pub volume: f32,
+}
+
+pub async fn set_volume(
+    State(state): State<SharedState>,
+    Json(payload): Json<SetVolumeRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let slot = match payload.track.as_str() {
+        "backing" => audio::SlotId::Backing,
+        "guide" => audio::SlotId::Guide,
+        "click" => audio::SlotId::Click,
+        "aux" => audio::SlotId::Aux,
+        _ => return Err((StatusCode::BAD_REQUEST, format!("Invalid track: {}", payload.track))),
+    };
+
+    let engine = state.audio_engine.lock().await;
+    engine.set_volume(slot, payload.volume).await;
+
+    Ok(StatusCode::OK)
+}

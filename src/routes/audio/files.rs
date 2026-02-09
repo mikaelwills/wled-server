@@ -1,14 +1,19 @@
 use axum::{
+    body::Body,
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use tokio_util::io::ReaderStream;
 use tracing::{error, info};
 
 use super::strip_audio_extension;
-use crate::audio;
+use crate::audio::{self, CachedVersion, SlotId};
+use crate::config::ResamplingQuality;
 use crate::types::{SharedState, UploadAudioRequest, UploadAudioResponse};
 
 #[derive(Serialize, Deserialize)]
@@ -115,14 +120,37 @@ pub async fn get_audio(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let bytes = audio::AudioFile::load(&id, &state.storage_paths.audio).map_err(|e| {
-        error!("Failed to load audio file '{}': {}", id, e);
+    let file_path = audio::AudioFile::find_path(&id, &state.storage_paths.audio).map_err(|e| {
+        error!("Failed to find audio file '{}': {}", id, e);
         StatusCode::NOT_FOUND
     })?;
 
-    let mime_type = audio::AudioFile::extension_to_mime(&id).to_string();
+    let mime_type = file_path
+        .to_str()
+        .map(|s| audio::AudioFile::extension_to_mime(s))
+        .unwrap_or("application/octet-stream")
+        .to_string();
 
-    Ok(([(axum::http::header::CONTENT_TYPE, mime_type)], bytes))
+    let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
+        error!("Failed to read metadata for '{}': {}", id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let file = tokio::fs::File::open(&file_path).await.map_err(|e| {
+        error!("Failed to open audio file '{}': {}", id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, mime_type),
+            (axum::http::header::CONTENT_LENGTH, metadata.len().to_string()),
+        ],
+        body,
+    ))
 }
 
 pub async fn delete_audio(
@@ -215,4 +243,92 @@ pub async fn save_peaks(
     info!("Saved peaks for: {}", id);
 
     Ok(StatusCode::CREATED)
+}
+
+#[derive(Serialize)]
+pub struct TrackResampledInfo {
+    pub track_id: String,
+    pub original_rate: u32,
+    pub channels: u16,
+    pub versions: Vec<CachedVersion>,
+}
+
+#[derive(Serialize)]
+pub struct ResampledInfoResponse {
+    pub backing: Option<TrackResampledInfo>,
+    pub guide: Option<TrackResampledInfo>,
+}
+
+pub async fn get_resampled_info(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<ResampledInfoResponse>, (StatusCode, String)> {
+    let engine = state.audio_engine.lock().await;
+
+    let backing = engine.get_track(&id).map(|track| {
+        TrackResampledInfo {
+            track_id: id.clone(),
+            original_rate: track.original_rate,
+            channels: track.channels,
+            versions: track.find_cached_versions(),
+        }
+    });
+
+    let guide_id = format!("{}_guide", id);
+    let guide = engine.get_guide_track(&guide_id).map(|track| {
+        TrackResampledInfo {
+            track_id: guide_id,
+            original_rate: track.original_rate,
+            channels: track.channels,
+            versions: track.find_cached_versions(),
+        }
+    });
+
+    Ok(Json(ResampledInfoResponse { backing, guide }))
+}
+
+#[derive(Deserialize)]
+pub struct ResampleRequest {
+    pub track_id: String,
+    pub target_rate: u32,
+    pub quality: ResamplingQuality,
+}
+
+pub async fn resample_track(
+    State(state): State<SharedState>,
+    Json(req): Json<ResampleRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let engine = state.audio_engine.lock().await;
+
+    let mut found_track = None;
+    let mut found_slot = None;
+    for (slot, track_id, track) in engine.get_all_tracks_with_ids() {
+        if track_id == req.track_id {
+            found_track = Some(track);
+            found_slot = Some(slot);
+            break;
+        }
+    }
+
+    let Some(track) = found_track else {
+        return Err((StatusCode::NOT_FOUND, format!("Track '{}' not loaded", req.track_id)));
+    };
+    let slot = found_slot.unwrap();
+
+    track.delete_cache_for_rate(req.target_rate);
+    track.clear_resampled_for_rate(req.target_rate);
+
+    audio::spawn_resampling(
+        vec![audio::ResamplingJob {
+            slot,
+            id: req.track_id,
+            track,
+            cancellation: Some(Arc::new(AtomicBool::new(false))),
+        }],
+        req.target_rate,
+        req.quality,
+        Some(state.broadcast_tx.clone()),
+    );
+
+    Ok(StatusCode::OK)
 }

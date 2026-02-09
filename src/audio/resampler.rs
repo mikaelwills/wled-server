@@ -76,12 +76,13 @@ pub fn spawn_resampling(
 
             let cancelled_clone = Arc::clone(&cancelled);
             let id_for_log = program_id.clone();
+            let track_for_save = Arc::clone(&track);
             let result = tokio::task::spawn_blocking(move || {
                 let callback = move |current: u32, total: u32| -> bool {
                     let _ = progress_tx.blocking_send((current, total));
                     !cancelled_clone.load(Ordering::Relaxed)
                 };
-                track.ensure_resampled_with_options(target_rate, quality, Some(callback))
+                track.resample_to_memory(target_rate, quality, Some(callback))
             })
             .await;
 
@@ -101,7 +102,23 @@ pub fn spawn_resampling(
             }
 
             match result {
-                Ok(Ok(())) => eprintln!("[Resampler] Complete for '{}'", id_for_log),
+                Ok(Ok(())) => {
+                    eprintln!("[Resampler] Complete for '{}'", id_for_log);
+                    if let Some(ref tx) = broadcast_tx_clone {
+                        let _ = tx.send(SseEvent::ResamplingComplete {
+                            slot: slot_name.clone(),
+                            program_id: program_id.clone(),
+                            target_rate,
+                            quality: quality.cache_key().to_string(),
+                        });
+                    }
+
+                    tokio::task::spawn_blocking(move || {
+                        if let Some(samples) = track_for_save.get_resampled_samples(target_rate) {
+                            track_for_save.save_to_cache(target_rate, quality, &samples);
+                        }
+                    });
+                }
                 Ok(Err(e)) if e.contains("cancelled") => {
                     eprintln!("[Resampler] Cancelled for '{}'", id_for_log)
                 }
