@@ -163,13 +163,16 @@ pub async fn play_program(
 
     let program = program.ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
 
-    info!("▶️ Playing program {} @ {}s", program.id, params.start);
+    let t0 = std::time::Instant::now();
+    println!("[TIMING] API play_program received program={} start={}s", program.id, params.start);
 
     state
         .program_engine
         .play(program, params.start)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    println!("[TIMING] API play_program .play() returned dt={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
 
     Ok(StatusCode::OK)
 }

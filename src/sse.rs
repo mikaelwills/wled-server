@@ -26,4 +26,20 @@ pub enum SseEvent {
         target_rate: u32,
         quality: String,
     },
+    #[serde(rename = "playback_started")]
+    PlaybackStarted {
+        program_id: String,
+        duration_secs: f64,
+    },
+    #[serde(rename = "playback_position")]
+    PlaybackPosition {
+        program_id: String,
+        position_secs: f64,
+        duration_secs: f64,
+    },
+    #[serde(rename = "playback_stopped")]
+    PlaybackStopped {
+        program_id: String,
+        reason: String,
+    },
 }

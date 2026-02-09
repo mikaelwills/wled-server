@@ -10,7 +10,7 @@
 	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram } from '$lib/db/audio-db';
 	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
-	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/stores/store';
+	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier, playbackPosition } from '$lib/stores/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import PresetPicker from '$lib/components/PresetPicker.svelte';
 	import CueEditor from '$lib/components/CueEditor.svelte';
@@ -283,51 +283,35 @@
 	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
 
-	// Simulated playhead animation (peaks-only mode, no real audio)
-	let playheadAnimationId: number | null = null;
-	let playheadStartTime = 0;
-	let playheadStartPosition = 0;
-
-	function startPlayheadAnimation(fromTime: number) {
-		stopPlayheadAnimation();
-		playheadStartTime = performance.now();
-		playheadStartPosition = fromTime;
-		isPlaying = true;
-
-		function tick() {
-			if (!wavesurfer || !isPlaying) return;
-			const elapsed = (performance.now() - playheadStartTime) / 1000;
-			const currentTime = playheadStartPosition + elapsed;
+	// SSE-driven playhead (backend broadcasts position at 10Hz)
+	$effect(() => {
+		const pos = $playbackPosition;
+		if (!wavesurfer || !isLoaded) return;
+		if (pos && pos.programId === programId) {
 			const duration = wavesurfer.getDuration();
-			if (duration > 0 && currentTime < duration) {
-				wavesurfer.seekTo(currentTime / duration);
-				playheadAnimationId = requestAnimationFrame(tick);
-			} else {
-				isPlaying = false;
+			if (duration > 0) {
+				console.log(`[TIMING] $effect seekTo t=${performance.now().toFixed(1)}ms pos=${pos.positionSecs.toFixed(3)}s ratio=${(pos.positionSecs / duration).toFixed(4)}`);
+				wavesurfer.seekTo(Math.min(pos.positionSecs / duration, 1));
 			}
+			isPlaying = true;
+		} else if (!pos && isPlaying) {
+			console.log(`[TIMING] $effect playback stopped t=${performance.now().toFixed(1)}ms`);
+			isPlaying = false;
 		}
-		playheadAnimationId = requestAnimationFrame(tick);
-	}
+	});
 
-	function stopPlayheadAnimation() {
-		if (playheadAnimationId !== null) {
-			cancelAnimationFrame(playheadAnimationId);
-			playheadAnimationId = null;
-		}
+	function stopPlayhead() {
 		isPlaying = false;
 	}
 
 	function getPlayheadTime(): number {
 		if (!wavesurfer) return 0;
-		if (isPlaying && playheadAnimationId !== null) {
-			const elapsed = (performance.now() - playheadStartTime) / 1000;
-			return playheadStartPosition + elapsed;
-		}
+		const pos = get(playbackPosition);
+		if (pos && pos.programId === programId) return pos.positionSecs;
 		const duration = wavesurfer.getDuration();
 		const wrapper = wavesurfer.getWrapper();
 		if (!wrapper || duration <= 0) return 0;
-		const progress = wavesurfer.getCurrentTime();
-		return progress;
+		return wavesurfer.getCurrentTime();
 	}
 
 	// Auto-save debounce
@@ -1059,20 +1043,20 @@ async function playFullProgram() {
 		}
 
 		const currentTime = getPlayheadTime();
-		console.log('▶️ PLAY pressed - starting from position:', currentTime);
+		const t0 = performance.now();
+		console.log(`[TIMING] ▶️ PLAY button pressed t0=${t0.toFixed(1)}ms pos=${currentTime}`);
 
-		if (wavesurfer) {
-			startPlayheadAnimation(currentTime);
-		}
-
-		playProgramService(currentProgram, currentTime);
+		isPlaying = true;
+		playProgramService(currentProgram, currentTime).then(() => {
+			console.log(`[TIMING] fetch returned dt=${(performance.now() - t0).toFixed(1)}ms`);
+		});
 	}
 
 	function stopFullProgram() {
 		lastActiveProgramId.set(programId);
 		console.log('⏸ PAUSE pressed');
 
-		stopPlayheadAnimation();
+		stopPlayhead();
 
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1086,7 +1070,7 @@ async function playFullProgram() {
 		lastActiveProgramId.set(programId);
 		console.log('⏹ STOP pressed');
 
-		stopPlayheadAnimation();
+		stopPlayhead();
 
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1327,7 +1311,7 @@ async function playFullProgram() {
 	});
 
 	onDestroy(() => {
-		stopPlayheadAnimation();
+		stopPlayhead();
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;

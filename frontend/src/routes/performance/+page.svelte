@@ -1,21 +1,19 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings } from '$lib/stores/store';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, playbackPosition } from '$lib/stores/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/db/playback-db';
 	import { updateProgram, reorderPrograms } from '$lib/db/programs-db';
 	import { setBoardBrightness } from '$lib/db/boards-db';
-	import { API_URL } from '$lib/api';
 	import { Program, type TransitionType } from '$lib/models/Program';
 
 	// Track playback progress for each program (0-100)
 	let playbackProgress = $state<Record<string, number>>({});
 
-	// Track animation frame ID for smooth progress updates
-	let animationFrameId: number | null = null;
-
 	// Flag to indicate manual stop (breaks chain)
 	let manualStop = false;
+
+	// Track the program that was last playing (for chain detection on stop)
+	let lastPlayedProgramId: string | null = null;
 
 	// Subscribe to currently playing program to sync state
 	let currentPlayingId = $derived($currentlyPlayingProgram?.id || null);
@@ -68,14 +66,33 @@
 		draggedElement: null
 	});
 
-	onMount(() => {
-		// Audio is now loaded globally in +layout.svelte via audio-db.ts
-		// Cleanup animation frame on unmount
-		return () => {
-			if (animationFrameId) {
-				cancelAnimationFrame(animationFrameId);
+	$effect(() => {
+		const pos = $playbackPosition;
+		if (pos) {
+			const pct = pos.durationSecs > 0
+				? Math.min((pos.positionSecs / pos.durationSecs) * 100, 100)
+				: 0;
+			playbackProgress[pos.programId] = pct;
+		}
+	});
+
+	$effect(() => {
+		const pos = $playbackPosition;
+		if (pos === null && lastPlayedProgramId && !manualStop) {
+			const ended = $programs.find(p => p.id === lastPlayedProgramId);
+			if (ended) {
+				playbackProgress[ended.id] = 0;
+				if (ended.nextProgramId) {
+					const nextProgram = $programs.find(p => p.id === ended.nextProgramId);
+					if (nextProgram) {
+						applyTransition(ended).then(() => playProgram(nextProgram));
+					}
+				}
 			}
-		};
+			lastPlayedProgramId = null;
+		} else if (pos === null) {
+			manualStop = false;
+		}
 	});
 
 	async function toggleProgram(program: Program) {
@@ -98,92 +115,8 @@
 	async function playProgram(program: Program) {
 		console.log('▶️ Playing program:', program.songName);
 
-		const audioSource = $loopyProSettings.audio_source;
-
-		const handleEnded = async () => {
-			console.log('🏁 Program ended:', program.songName);
-
-			playbackProgress[program.id] = 0;
-			if (animationFrameId) {
-				cancelAnimationFrame(animationFrameId);
-				animationFrameId = null;
-			}
-
-			if (manualStop) {
-				console.log('⛔ Manual stop - chain broken');
-				manualStop = false;
-				stopPlaybackService();
-				return;
-			}
-
-			if (program.nextProgramId) {
-				console.log(`⛓️  Chain detected - next program: ${program.nextProgramId}`);
-				const nextProgram = $programs.find(p => p.id === program.nextProgramId);
-
-				if (nextProgram) {
-					await applyTransition(program);
-					await playProgram(nextProgram);
-				} else {
-					console.warn(`⚠️  Next program "${program.nextProgramId}" not found`);
-					stopPlaybackService();
-				}
-			} else {
-				stopPlaybackService();
-			}
-		};
-
-		const playbackStartTime = performance.now();
-
-		if (audioSource === 'audio_engine') {
-			console.log('🔊 Using Audio Engine (backend)');
-		} else {
-			console.log('🎵 Using Loopy Pro (OSC)');
-		}
-
-		currentPlayingId = program.id;
+		lastPlayedProgramId = program.id;
 		playbackProgress[program.id] = 0;
-
-		let lastStatusCheck = 0;
-
-		const updateProgress = async () => {
-			if (currentPlayingId !== program.id) return;
-
-			if (audioSource === 'audio_engine') {
-				const now = performance.now();
-				if (now - lastStatusCheck > 100) {
-					lastStatusCheck = now;
-					try {
-						const res = await fetch(`${API_URL}/audio/engine/status`);
-						if (res.ok) {
-							const status = await res.json();
-							if (status.state === 'stopped' && playbackProgress[program.id] > 5) {
-								handleEnded();
-								return;
-							}
-							const duration = status.duration_secs || program.audioDuration;
-							if (duration && status.position_secs > 0) {
-								playbackProgress[program.id] = Math.min((status.position_secs / duration) * 100, 100);
-								if (status.position_secs >= duration) {
-									handleEnded();
-									return;
-								}
-							}
-						}
-					} catch (e) {}
-				}
-				animationFrameId = requestAnimationFrame(updateProgress);
-			} else if (program.audioDuration) {
-				const elapsed = (performance.now() - playbackStartTime) / 1000;
-				playbackProgress[program.id] = Math.min((elapsed / program.audioDuration) * 100, 100);
-
-				if (elapsed >= program.audioDuration) {
-					handleEnded();
-				} else {
-					animationFrameId = requestAnimationFrame(updateProgress);
-				}
-			}
-		};
-		animationFrameId = requestAnimationFrame(updateProgress);
 
 		playProgramService(program, 0);
 	}
@@ -192,17 +125,9 @@
 		console.log('⏹ Stopping program:', program.songName);
 
 		manualStop = true;
-
-		if (animationFrameId) {
-			cancelAnimationFrame(animationFrameId);
-			animationFrameId = null;
-		}
-
 		playbackProgress[program.id] = 0;
 
 		stopPlaybackService();
-
-		currentPlayingId = null;
 	}
 
 	// Drag-and-drop functions (desktop only - using pointer + HTML5 drag API)

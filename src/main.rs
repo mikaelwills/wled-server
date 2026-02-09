@@ -146,6 +146,7 @@ async fn main() {
         Some(timing_metrics.clone()),
         Some(playback_history.clone()),
         Some(audio_engine.clone()),
+        broadcast_tx.clone(),
     ));
 
     let state: SharedState = Arc::new(AppState {

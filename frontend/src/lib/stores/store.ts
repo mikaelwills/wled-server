@@ -44,6 +44,14 @@ export const currentlyPlayingProgram: Writable<Program | null> = writable(null);
 // Track which program ID should respond to spacebar (last played/paused)
 export const lastActiveProgramId: Writable<string | null> = writable(null);
 
+// SSE-driven playback position (backend broadcasts at 10Hz)
+export interface PlaybackPositionEvent {
+	programId: string;
+	positionSecs: number;
+	durationSecs: number;
+}
+export const playbackPosition: Writable<PlaybackPositionEvent | null> = writable(null);
+
 // Loopy Pro settings store
 export type AudioSource = 'audio_engine' | 'loopy_pro';
 

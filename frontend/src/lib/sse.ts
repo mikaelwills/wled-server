@@ -1,6 +1,6 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
-import { resamplingProgress, resamplingComplete, type SlotResamplingProgress } from '$lib/stores/store';
+import { resamplingProgress, resamplingComplete, playbackPosition, currentlyPlayingProgram, type SlotResamplingProgress } from '$lib/stores/store';
 
 export type { SlotResamplingProgress as ResamplingProgress };
 
@@ -9,6 +9,9 @@ export type SseEvent =
   | { type: 'connection_status'; board_id: string; connected: boolean }
   | { type: 'resampling_progress'; slot: string; program_id: string; track_name: string; current: number; total: number; active: boolean; from_rate: number; to_rate: number }
   | { type: 'resampling_complete'; slot: string; program_id: string; target_rate: number; quality: string }
+  | { type: 'playback_started'; program_id: string; duration_secs: number }
+  | { type: 'playback_position'; program_id: string; position_secs: number; duration_secs: number }
+  | { type: 'playback_stopped'; program_id: string; reason: string }
   | { type: 'connected'; message: string };
 
 export function createSseConnection(
@@ -60,6 +63,19 @@ export function createSseConnection(
           quality: data.quality,
           timestamp: Date.now(),
         });
+      } else if (data.type === 'playback_started') {
+        console.log(`[TIMING] SSE playback_started t=${performance.now().toFixed(1)}ms program=${data.program_id} duration=${data.duration_secs}`);
+      } else if (data.type === 'playback_position') {
+        console.log(`[TIMING] SSE playback_position t=${performance.now().toFixed(1)}ms pos=${data.position_secs.toFixed(3)}s`);
+        playbackPosition.set({
+          programId: data.program_id,
+          positionSecs: data.position_secs,
+          durationSecs: data.duration_secs,
+        });
+      } else if (data.type === 'playback_stopped') {
+        console.log(`[TIMING] SSE playback_stopped t=${performance.now().toFixed(1)}ms program=${data.program_id} reason=${data.reason}`);
+        playbackPosition.set(null);
+        currentlyPlayingProgram.set(null);
       }
     } catch (err) {
       console.error('Failed to parse SSE event:', err);

@@ -2,17 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use crate::audio::AudioEngine;
 use crate::config::{AudioSource, Config, PatternType};
-use crate::cue_scheduler::{AudioTimingConfig, CueScheduler, CueType, PatternCueConfig, ScheduledCue};
+use crate::cue_scheduler::{
+    AudioTimingConfig, CueScheduler, CueType, PatternCueConfig, ScheduledCue,
+};
 use crate::effects::EffectType;
 use crate::effects_engine::{BoardTarget, EffectConfig, EffectsEngine, EngineCommand};
 use crate::pattern_engine::{BoardInfo, PatternCommand, PatternEngine};
 use crate::playback_history::PlaybackHistory;
 use crate::program::Program;
 use crate::routes::send_osc_sync;
+use crate::sse::SseEvent;
 use crate::timing_metrics::TimingMetrics;
 
 pub type AudioPlayCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -80,6 +83,7 @@ impl ProgramEngine {
         timing_metrics: Option<Arc<TimingMetrics>>,
         playback_history: Option<Arc<PlaybackHistory>>,
         audio_engine: Option<Arc<Mutex<AudioEngine>>>,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let state = Arc::new(RwLock::new(PlaybackState {
@@ -93,7 +97,12 @@ impl ProgramEngine {
             let _ = completion_tx.blocking_send(PlaybackCommand::CuesCompleted);
         }));
 
-        let cue_scheduler = CueScheduler::new(effects_engine.clone(), pattern_engine.clone(), timing_metrics.clone(), on_cues_complete);
+        let cue_scheduler = CueScheduler::new(
+            effects_engine.clone(),
+            pattern_engine.clone(),
+            timing_metrics.clone(),
+            on_cues_complete,
+        );
 
         let state_clone = state.clone();
         let performance_mode_clone = performance_mode.clone();
@@ -110,6 +119,7 @@ impl ProgramEngine {
             timing_metrics,
             playback_history,
             audio_engine,
+            broadcast_tx,
         ));
 
         Self { command_tx }
@@ -145,14 +155,19 @@ impl ProgramEngine {
         timing_metrics: Option<Arc<TimingMetrics>>,
         playback_history: Option<Arc<PlaybackHistory>>,
         audio_engine: Option<Arc<Mutex<AudioEngine>>>,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     ) {
+        let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
+        let mut current_program_id: Option<String> = None;
+
         loop {
             match command_rx.recv().await {
                 Some(PlaybackCommand::Play {
                     program,
                     start_time,
                 }) => {
-                    println!("▶️ Program engine: Play {} @ {}s", program.id, start_time);
+                    let play_t0 = std::time::Instant::now();
+                    println!("[TIMING] engine: Play received program={} start={}s", program.id, start_time);
 
                     cue_scheduler.stop();
                     let _ = effects_engine.send_command(EngineCommand::Stop);
@@ -191,7 +206,8 @@ impl ProgramEngine {
                             let target_boards = cfg.get_target_boards(target);
                             if !target_boards.is_empty() {
                                 let mut boards: Vec<BoardTarget> = Vec::new();
-                                let mut board_info_by_id: HashMap<String, BoardInfo> = HashMap::new();
+                                let mut board_info_by_id: HashMap<String, BoardInfo> =
+                                    HashMap::new();
                                 let mut member_ids: Vec<String> = Vec::new();
 
                                 for b in &target_boards {
@@ -229,7 +245,11 @@ impl ProgramEngine {
                                 );
                                 target_map.insert(
                                     target.clone(),
-                                    TargetInfo { boards, board_info_by_id, member_ids },
+                                    TargetInfo {
+                                        boards,
+                                        board_info_by_id,
+                                        member_ids,
+                                    },
                                 );
                             }
                         }
@@ -362,6 +382,12 @@ impl ProgramEngine {
                         cfg.loopy_pro.audio_source.clone()
                     };
 
+                    let mut broadcast_position: Option<Arc<AtomicU64>> = None;
+                    let mut broadcast_rate: u32 = 44100;
+                    let mut broadcast_channels: u32 = 2;
+
+                    println!("[TIMING] engine: pre-audio dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
+
                     match audio_source {
                         AudioSource::LoopyPro => {
                             let simulated_position = Arc::new(AtomicU64::new(0));
@@ -371,21 +397,31 @@ impl ProgramEngine {
                             let light_delay_samples = if audio_sync_delay_ms < 0 {
                                 let delay_ms = audio_sync_delay_ms.unsigned_abs();
                                 println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
-                                (delay_ms as f64 / 1000.0 * simulated_sample_rate as f64 * simulated_channels as f64) as u64
+                                (delay_ms as f64 / 1000.0
+                                    * simulated_sample_rate as f64
+                                    * simulated_channels as f64)
+                                    as u64
                             } else {
                                 0
                             };
 
                             if audio_sync_delay_ms > 0 {
-                                println!("⏱️ Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
-                                tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
+                                println!(
+                                    "⏱️ Audio sync: +{}ms (delaying audio)",
+                                    audio_sync_delay_ms
+                                );
+                                tokio::time::sleep(Duration::from_millis(
+                                    audio_sync_delay_ms as u64,
+                                ))
+                                .await;
                             }
 
                             let perf_mode_clone = performance_mode.clone();
                             let position_clone = simulated_position.clone();
                             std::thread::spawn(move || {
                                 let start = std::time::Instant::now();
-                                let samples_per_second = (simulated_sample_rate * simulated_channels) as f64;
+                                let samples_per_second =
+                                    (simulated_sample_rate * simulated_channels) as f64;
                                 while perf_mode_clone.load(Ordering::Relaxed) {
                                     let elapsed_secs = start.elapsed().as_secs_f64();
                                     let current_sample = (elapsed_secs * samples_per_second) as u64;
@@ -406,9 +442,16 @@ impl ProgramEngine {
                             let _ = cue_scheduler.start(scheduled_cues, audio_timing);
 
                             if let Some(ref callback) = on_audio_play {
-                                println!("🎵 Triggering Loopy Pro playback: {}", program.loopy_pro_track);
+                                println!(
+                                    "🎵 Triggering Loopy Pro playback: {}",
+                                    program.loopy_pro_track
+                                );
                                 callback(&program.loopy_pro_track);
                             }
+
+                            broadcast_position = Some(simulated_position.clone());
+                            broadcast_rate = simulated_sample_rate;
+                            broadcast_channels = simulated_channels;
                         }
                         AudioSource::AudioEngine => {
                             if let Some(ref engine) = audio_engine {
@@ -419,7 +462,9 @@ impl ProgramEngine {
                                         .and_then(|s| s.to_str())
                                         .map(|s| s.to_string())
                                 });
+                                println!("[TIMING] engine: acquiring engine lock dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                 let mut eng = engine.lock().await;
+                                println!("[TIMING] engine: lock acquired dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
 
                                 if let Some(bpm) = program.bpm {
                                     if let Some(track) = eng.get_track(track_id) {
@@ -431,7 +476,9 @@ impl ProgramEngine {
                                             grid_offset,
                                             track.duration_secs,
                                             click_rate,
-                                        ).await;
+                                        )
+                                        .await;
+                                        println!("[TIMING] engine: click generated dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                     }
                                 }
 
@@ -439,7 +486,11 @@ impl ProgramEngine {
                                 let track_info = eng.get_track(track_id);
                                 let (playback_rate, channels) = track_info
                                     .map(|t| {
-                                        let rate = if device_rate > 0 { device_rate } else { t.original_rate };
+                                        let rate = if device_rate > 0 {
+                                            device_rate
+                                        } else {
+                                            t.original_rate
+                                        };
                                         (rate, t.channels as u32)
                                     })
                                     .unwrap_or((44100, 2));
@@ -453,7 +504,10 @@ impl ProgramEngine {
                                 let light_delay_samples = if audio_sync_delay_ms < 0 {
                                     let delay_ms = audio_sync_delay_ms.unsigned_abs();
                                     println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
-                                    (delay_ms as f64 / 1000.0 * playback_rate as f64 * channels as f64) as u64
+                                    (delay_ms as f64 / 1000.0
+                                        * playback_rate as f64
+                                        * channels as f64)
+                                        as u64
                                 } else {
                                     0
                                 };
@@ -471,28 +525,105 @@ impl ProgramEngine {
                                 let _ = cue_scheduler.start(scheduled_cues, audio_timing);
 
                                 if audio_sync_delay_ms > 0 {
-                                    println!("⏱️ Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
-                                    tokio::time::sleep(Duration::from_millis(audio_sync_delay_ms as u64)).await;
+                                    println!(
+                                        "⏱️ Audio sync: +{}ms (delaying audio)",
+                                        audio_sync_delay_ms
+                                    );
+                                    tokio::time::sleep(Duration::from_millis(
+                                        audio_sync_delay_ms as u64,
+                                    ))
+                                    .await;
                                 }
 
-                                let start_sample_opt = if start_sample > 0 { Some(start_sample) } else { None };
-                                if eng.play_with_guide(track_id, guide_id.as_deref(), start_sample_opt).await {
+                                let start_sample_opt = if start_sample > 0 {
+                                    Some(start_sample)
+                                } else {
+                                    None
+                                };
+                                println!("[TIMING] engine: pre-play_with_guide dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
+                                if eng
+                                    .play_with_guide(
+                                        track_id,
+                                        guide_id.as_deref(),
+                                        start_sample_opt,
+                                    )
+                                    .await
+                                {
+                                    println!("[TIMING] engine: play_with_guide returned dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                     if guide_id.is_some() {
                                         println!("🔊 Playing audio + guide via local engine: {} @ {:?} samples", track_id, start_sample_opt);
                                     } else {
-                                        println!("🔊 Playing audio via local engine: {} @ {:?} samples", track_id, start_sample_opt);
+                                        println!(
+                                            "🔊 Playing audio via local engine: {} @ {:?} samples",
+                                            track_id, start_sample_opt
+                                        );
                                     }
                                 } else {
                                     println!("⚠️ Track not loaded in audio engine: {}", track_id);
                                     cue_scheduler.stop();
                                 }
+
+                                  broadcast_position = Some(eng.get_position_arc());
+                            broadcast_rate = playback_rate;
+                            broadcast_channels = channels;
+
                             }
                         }
+                       
                     }
+
+                    println!("[TIMING] engine: post-audio dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
+
+                    if let Some(handle) = position_task.take() {
+                        handle.abort();
+                    }
+
+                    current_program_id = Some(program.id.clone());
+                    let duration_secs = program.audio_duration.unwrap_or(0.0);
+
+                    let _ = broadcast_tx.send(SseEvent::PlaybackStarted {
+                        program_id: program.id.clone(),
+                        duration_secs,
+                    });
+
+                    if let Some(pos_arc) = broadcast_position {
+                        let pos_tx = broadcast_tx.clone();
+                        let pos_id = program.id.clone();
+                        let pos_flag = performance_mode.clone();
+                        position_task = Some(tokio::spawn(async move {
+                            let mut interval = tokio::time::interval(Duration::from_millis(100));
+                            loop {
+                                interval.tick().await;
+                                if !pos_flag.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                let samples = pos_arc.load(Ordering::Acquire);
+                                let position_secs = samples as f64 / (broadcast_rate as f64 * broadcast_channels as f64);
+                                let _ = pos_tx.send(SseEvent::PlaybackPosition {
+                                    program_id: pos_id.clone(),
+                                    position_secs,
+                                    duration_secs,
+                                });
+                            }
+                        }));
+                    }
+
+                    println!("[TIMING] engine: Play fully done dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                 }
 
                 Some(PlaybackCommand::Stop) => {
                     println!("⏹️ Program engine: Stop command received");
+
+                    if let Some(handle) = position_task.take() {
+                        handle.abort();
+                    }
+                    if let Some(ref pid) = current_program_id {
+                        let _ = broadcast_tx.send(SseEvent::PlaybackStopped {
+                            program_id: pid.clone(),
+                            reason: "manual".to_string(),
+                        });
+                    }
+                    current_program_id = None;
 
                     cue_scheduler.stop();
 
@@ -502,7 +633,11 @@ impl ProgramEngine {
 
                     let (active_targets, session_id, audio_track) = {
                         let s = state.read().await;
-                        (s.active_targets.clone(), s.current_session_id.clone(), s.audio_track.clone())
+                        (
+                            s.active_targets.clone(),
+                            s.current_session_id.clone(),
+                            s.audio_track.clone(),
+                        )
                     };
 
                     let audio_source = {
@@ -516,8 +651,12 @@ impl ProgramEngine {
                                 let cfg = config.lock().await;
                                 let loopy = &cfg.loopy_pro;
                                 let stop_address = format!("/Stop/0:{}", track);
-                                println!("  → Sending OSC stop to Loopy Pro ({}:{}) - {}", loopy.ip, loopy.port, stop_address);
-                                if let Err(e) = send_osc_sync(&loopy.ip, loopy.port, &stop_address) {
+                                println!(
+                                    "  → Sending OSC stop to Loopy Pro ({}:{}) - {}",
+                                    loopy.ip, loopy.port, stop_address
+                                );
+                                if let Err(e) = send_osc_sync(&loopy.ip, loopy.port, &stop_address)
+                                {
                                     eprintln!("  ✗ Failed to send OSC stop: {}", e);
                                 } else {
                                     println!("  ✓ OSC stop sent to Loopy Pro");
@@ -533,7 +672,9 @@ impl ProgramEngine {
                         }
                     }
 
-                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {
+                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) =
+                        (&playback_history, &session_id, &timing_metrics)
+                    {
                         let snapshot = metrics.snapshot();
                         history.end_session(sid, &snapshot, false);
                         println!("📊 Ended playback session: {}", sid);
@@ -564,6 +705,17 @@ impl ProgramEngine {
                 Some(PlaybackCommand::CuesCompleted) => {
                     println!("✅ Program engine: All cues completed naturally");
 
+                    if let Some(handle) = position_task.take() {
+                        handle.abort();
+                    }
+                    if let Some(ref pid) = current_program_id {
+                        let _ = broadcast_tx.send(SseEvent::PlaybackStopped {
+                            program_id: pid.clone(),
+                            reason: "completed".to_string(),
+                        });
+                    }
+                    current_program_id = None;
+
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
 
                     let (active_targets, session_id) = {
@@ -571,7 +723,9 @@ impl ProgramEngine {
                         (s.active_targets.clone(), s.current_session_id.clone())
                     };
 
-                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) = (&playback_history, &session_id, &timing_metrics) {
+                    if let (Some(ref history), Some(ref sid), Some(ref metrics)) =
+                        (&playback_history, &session_id, &timing_metrics)
+                    {
                         let snapshot = metrics.snapshot();
                         history.end_session(sid, &snapshot, true);
                         println!("📊 Ended playback session (completed): {}", sid);
