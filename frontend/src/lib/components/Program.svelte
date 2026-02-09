@@ -5,19 +5,19 @@
 	import WaveSurfer from 'wavesurfer.js';
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
-	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/programs-db';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/playback-db';
-	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram } from '$lib/audio-db';
-	import { audioBlobUrls, audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks } from '$lib/store';
+	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/db/programs-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/db/playback-db';
+	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram } from '$lib/db/audio-db';
+	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
-	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/store';
+	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier } from '$lib/stores/store';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
-	import PresetPicker from '$lib/PresetPicker.svelte';
-	import CueEditor from '$lib/CueEditor.svelte';
-	import Track from '$lib/Track.svelte';
+	import PresetPicker from '$lib/components/PresetPicker.svelte';
+	import CueEditor from '$lib/components/CueEditor.svelte';
+	import Track from '$lib/components/Track.svelte';
 	import { getSlot } from '$lib/slots';
-	import { toggleSlotMute } from '$lib/audio-db';
-	import { slotMuted, resamplingProgress as resamplingProgressStore, type SlotResamplingProgress } from '$lib/store';
+	import { toggleSlotMute } from '$lib/db/audio-db';
+	import { slotMuted, resamplingProgress as resamplingProgressStore, resamplingComplete as resamplingCompleteStore, type SlotResamplingProgress } from '$lib/stores/store';
 	import type { MarkerType } from '$lib/models/Cue';
 
 	interface Marker {
@@ -56,9 +56,18 @@
 	let audioToUpload = $state(null);
 	let wavesurferInitialized = $state(false);
 
-	// Resampling state - derived from centralized store
-	let backingProgress = $derived($resamplingProgressStore.backing);
-	let guideProgress = $derived($resamplingProgressStore.guide);
+	let backingProgress = $derived.by(() => {
+		const p = $resamplingProgressStore.backing;
+		if (!p || p.programId !== programId) return null;
+		if (p.total > 0 && p.current >= p.total) return null;
+		return p;
+	});
+	let guideProgress = $derived.by(() => {
+		const p = $resamplingProgressStore.guide;
+		if (!p || p.programId !== programId) return null;
+		if (p.total > 0 && p.current >= p.total) return null;
+		return p;
+	});
 	let resamplingModalOpen = $state(false);
 	let resamplingModalMessage = $state('');
 
@@ -82,6 +91,61 @@
 
 	// Metadata modal state
 	let metadataModalOpen = $state(false);
+
+	// Resampled versions dialog state
+	let resampledDialogOpen = $state(false);
+	let resampledInfoRaw: { backing: any; guide: any } | null = $state(null);
+	let resampledLoading = $state(false);
+
+	let resampledInfo = $derived.by(() => {
+		if (!resampledInfoRaw) return null;
+		const complete = $resamplingCompleteStore;
+		if (!complete || complete.programId !== programId) return resampledInfoRaw;
+
+		const trackKey = complete.slot === 'guide' ? 'guide' : 'backing';
+		const trackInfo = resampledInfoRaw[trackKey];
+		if (!trackInfo) return resampledInfoRaw;
+
+		const idx = trackInfo.versions.findIndex((v: any) => v.target_rate === complete.targetRate);
+		if (idx < 0) return resampledInfoRaw;
+
+		const updatedVersions = [...trackInfo.versions];
+		updatedVersions[idx] = { ...updatedVersions[idx], quality: complete.quality };
+		return { ...resampledInfoRaw, [trackKey]: { ...trackInfo, versions: updatedVersions } };
+	});
+
+	async function fetchResampledInfo(showLoading = true) {
+		if (!programId) return;
+		if (showLoading) resampledLoading = true;
+		try {
+			const trackId = programId;
+			const res = await fetch(`${API_URL}/audio/resampled-info/${encodeURIComponent(trackId)}`);
+			if (res.ok) {
+				resampledInfoRaw = await res.json();
+			}
+		} catch (e) {
+			console.error('Failed to fetch resampled info:', e);
+		}
+		if (showLoading) resampledLoading = false;
+	}
+
+	async function triggerResample(trackId: string, targetRate: number, quality: string) {
+		try {
+			await fetch(`${API_URL}/audio/resample`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ track_id: trackId, target_rate: targetRate, quality })
+			});
+		} catch (e) {
+			console.error('Failed to trigger resample:', e);
+		}
+	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
 
 	// Edit mode (lighting vs midi markers)
 	let editMode: MarkerType = $state('lighting');
@@ -219,6 +283,53 @@
 	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
 
+	// Simulated playhead animation (peaks-only mode, no real audio)
+	let playheadAnimationId: number | null = null;
+	let playheadStartTime = 0;
+	let playheadStartPosition = 0;
+
+	function startPlayheadAnimation(fromTime: number) {
+		stopPlayheadAnimation();
+		playheadStartTime = performance.now();
+		playheadStartPosition = fromTime;
+		isPlaying = true;
+
+		function tick() {
+			if (!wavesurfer || !isPlaying) return;
+			const elapsed = (performance.now() - playheadStartTime) / 1000;
+			const currentTime = playheadStartPosition + elapsed;
+			const duration = wavesurfer.getDuration();
+			if (duration > 0 && currentTime < duration) {
+				wavesurfer.seekTo(currentTime / duration);
+				playheadAnimationId = requestAnimationFrame(tick);
+			} else {
+				isPlaying = false;
+			}
+		}
+		playheadAnimationId = requestAnimationFrame(tick);
+	}
+
+	function stopPlayheadAnimation() {
+		if (playheadAnimationId !== null) {
+			cancelAnimationFrame(playheadAnimationId);
+			playheadAnimationId = null;
+		}
+		isPlaying = false;
+	}
+
+	function getPlayheadTime(): number {
+		if (!wavesurfer) return 0;
+		if (isPlaying && playheadAnimationId !== null) {
+			const elapsed = (performance.now() - playheadStartTime) / 1000;
+			return playheadStartPosition + elapsed;
+		}
+		const duration = wavesurfer.getDuration();
+		const wrapper = wavesurfer.getWrapper();
+		if (!wrapper || duration <= 0) return 0;
+		const progress = wavesurfer.getCurrentTime();
+		return progress;
+	}
+
 	// Auto-save debounce
 	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -321,8 +432,7 @@
 			else if (event.code === 'KeyC') {
 				event.preventDefault();
 
-				// Get current playhead position
-				const currentTime = wavesurfer.getCurrentTime();
+				const currentTime = getPlayheadTime();
 
 				// Add marker at this position
 				addMarker(currentTime);
@@ -361,13 +471,13 @@
 		pendingCues = data.cues || [];
 	}
 
-	function initializeWaveSurfer(audioUrl: string) {
+	function initializeWaveSurfer(audioUrl?: string) {
 		regions = RegionsPlugin.create();
 
-		// Check for cached peaks once at the start
 		const cached = programId ? getCachedPeaks(programId) : null;
+		const peaksOnly = cached && !audioUrl;
 
-		wavesurfer = WaveSurfer.create({
+		const createOptions: any = {
 			container: `#waveform-${sanitizedProgramId}`,
 			waveColor: 'rgba(139, 92, 246, 0.5)',
 			progressColor: 'rgba(139, 92, 246, 0.8)',
@@ -376,9 +486,19 @@
 			barRadius: 3,
 			height: 120,
 			plugins: [regions]
-		});
+		};
 
-		wavesurfer.on('decode', () => {
+		if (peaksOnly) {
+			const media = new Audio();
+			media.preload = 'none';
+			createOptions.media = media;
+			createOptions.peaks = cached.peaks;
+			createOptions.duration = cached.duration;
+		}
+
+		wavesurfer = WaveSurfer.create(createOptions);
+
+		wavesurfer.on('ready', () => {
 			isLoaded = true;
 
 			const duration = wavesurfer.getDuration();
@@ -439,15 +559,6 @@
 				});
 				pendingCues = [];
 			}
-		});
-
-		// Track play/pause state
-		wavesurfer.on('play', () => {
-			isPlaying = true;
-		});
-
-		wavesurfer.on('pause', () => {
-			isPlaying = false;
 		});
 
 		// Handle seeking during playback - reschedule cues from new position (debounced)
@@ -566,11 +677,8 @@
 			console.log('Cleared selection');
 		});
 
-		// Load audio with cached peaks if available
-		if (cached) {
-			wavesurfer.load(audioUrl, cached.peaks, cached.duration);
-		} else {
-			wavesurfer.load(audioUrl);
+		if (audioUrl) {
+			wavesurfer.load(audioUrl, cached?.peaks, cached?.duration);
 		}
 
 		// Clear existing markers if not loading program
@@ -950,47 +1058,35 @@ async function playFullProgram() {
 			return;
 		}
 
-		const currentTime = wavesurfer ? wavesurfer.getCurrentTime() : 0;
+		const currentTime = getPlayheadTime();
 		console.log('▶️ PLAY pressed - starting from position:', currentTime);
 
-		const audioSource = get(loopyProSettings).audio_source;
 		if (wavesurfer) {
-			wavesurfer.setTime(currentTime);
-			if (audioSource === 'audio_engine') {
-				wavesurfer.setVolume(0);
-			} else {
-				wavesurfer.setVolume(1);
-			}
-			wavesurfer.play();
+			startPlayheadAnimation(currentTime);
 		}
 
 		playProgramService(currentProgram, currentTime);
 	}
 
 	function stopFullProgram() {
-		// Mark this program as the last active (for spacebar control)
 		lastActiveProgramId.set(programId);
+		console.log('⏸ PAUSE pressed');
 
-		const pausePosition = wavesurfer ? wavesurfer.getCurrentTime() : 0;
-		console.log('⏸ PAUSE pressed - paused at position:', pausePosition);
+		stopPlayheadAnimation();
 
-		if (wavesurfer) {
-			wavesurfer.pause();
-		}
-
-		// Clear any pending seek debounce timeout
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;
 		}
 
-		// Pause playback - clears timeouts but keeps lights as-is
 		pausePlaybackService();
 	}
 
 	function stopAndReset() {
 		lastActiveProgramId.set(programId);
 		console.log('⏹ STOP pressed');
+
+		stopPlayheadAnimation();
 
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1000,7 +1096,7 @@ async function playFullProgram() {
 		stopPlaybackService();
 
 		if (wavesurfer) {
-			wavesurfer.stop();
+			wavesurfer.seekTo(0);
 		}
 	}
 
@@ -1191,27 +1287,23 @@ async function playFullProgram() {
 		return defaultTargetBoard;
 	}
 
-	// Reactive audio loading: initializes WaveSurfer when blob URL becomes available
-	// Waits for global audio loading to complete before attempting on-demand load
 	$effect(() => {
 		if (!program?.audioId || wavesurferInitialized) return;
 
-		const blobUrl = $audioBlobUrls[program.id];
-		if (blobUrl) {
+		const peaks = programId ? $cachedPeaksStore[programId] : null;
+		if (peaks) {
 			wavesurferInitialized = true;
-			initializeWaveSurfer(blobUrl);
+			initializeWaveSurfer();
 		} else if (!$audioLoading) {
-			// Only trigger on-demand load after global init completes
 			loadAudioForProgram(program.id, program.audioId);
 		}
 	});
 
-	// Trigger guide audio loading when needed - Track handles wavesurfer init
 	$effect(() => {
 		if (!program?.guideAudioId || !isLoaded) return;
 
-		const blobUrl = $guideBlobUrls[program.id];
-		if (!blobUrl && !$audioLoading) {
+		const peaks = program.id ? $guideCachedPeaks[program.id] : null;
+		if (!peaks && !$audioLoading) {
 			loadGuideAudioForProgram(program.id, program.guideAudioId);
 		}
 	});
@@ -1235,6 +1327,7 @@ async function playFullProgram() {
 	});
 
 	onDestroy(() => {
+		stopPlayheadAnimation();
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
 			seekDebounceTimeout = null;
@@ -1301,6 +1394,7 @@ async function playFullProgram() {
 				{#if actionMenuOpen && programId}
 					<div class="action-menu-dropdown">
 						<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
+						<button class="action-menu-item" onclick={() => { resampledDialogOpen = true; fetchResampledInfo(); actionMenuOpen = false; }}>Resampled</button>
 						<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
 					</div>
 				{/if}
@@ -1558,6 +1652,70 @@ async function playFullProgram() {
 				<p class="resampling-hint">Please wait for resampling to complete.</p>
 			</div>
 			<button class="resampling-modal-close" onclick={() => resamplingModalOpen = false}>OK</button>
+		</div>
+	</div>
+{/if}
+
+{#if resampledDialogOpen}
+	<div class="modal-overlay" onclick={() => resampledDialogOpen = false}>
+		<div class="resampled-dialog" onclick={(e) => e.stopPropagation()}>
+			<div class="resampled-dialog-header">
+				<h3>Resampled Versions</h3>
+				<button class="modal-close-btn" onclick={() => resampledDialogOpen = false}>×</button>
+			</div>
+			<div class="resampled-dialog-body">
+				{#if resampledLoading}
+					<p class="resampled-loading">Loading...</p>
+				{:else if resampledInfo}
+					{#each [
+						{ label: 'Backing', info: resampledInfo.backing, progress: backingProgress },
+						{ label: 'Guide', info: resampledInfo.guide, progress: guideProgress }
+					] as track}
+						{#if track.info}
+							<div class="resampled-track-section">
+								<div class="resampled-track-header">
+									{track.label} — {(track.info.original_rate / 1000).toFixed(1)}kHz {track.info.channels === 2 ? 'stereo' : `${track.info.channels}ch`}
+								</div>
+								{#if track.info.versions.length === 0}
+									<p class="resampled-none">No resampled versions cached</p>
+								{:else}
+									{#each track.info.versions as version}
+									{@const isResampling = track.progress && track.progress.active && track.progress.toRate === version.target_rate}
+										<div class="resampled-version-row">
+											<div class="resampled-version-info">
+												<span class="resampled-rate">{(version.target_rate / 1000).toFixed(1)}kHz</span>
+												<span class="resampled-size">{formatBytes(version.size_bytes)}</span>
+											</div>
+											<div class="resampled-quality-row">
+											{#each ['fast', 'balanced', 'high'] as q}
+												<button
+													class="resampled-quality-btn"
+													class:active={version.quality === q}
+													disabled={isResampling}
+													onclick={() => {
+														if (version.quality !== q) {
+															triggerResample(track.info.track_id, version.target_rate, q);
+														}
+													}}
+												>{q.charAt(0).toUpperCase() + q.slice(1)}</button>
+											{/each}
+											{#if isResampling}
+												<span class="resampled-percent">{Math.round((track.progress.current / track.progress.total) * 100)}%</span>
+											{/if}
+										</div>
+										</div>
+									{/each}
+								{/if}
+							</div>
+						{/if}
+					{/each}
+					{#if !resampledInfo.backing && !resampledInfo.guide}
+						<p class="resampled-none">No tracks loaded in audio engine</p>
+					{/if}
+				{:else}
+					<p class="resampled-none">Could not load resampled info</p>
+				{/if}
+			</div>
 		</div>
 	</div>
 {/if}
@@ -2406,6 +2564,125 @@ async function playFullProgram() {
 	.resampling-modal-close:hover {
 		background: #222;
 		color: #ccc;
+	}
+
+	.resampled-dialog {
+		background: #0c0c0c;
+		border: 1px solid #1a1a1a;
+		border-radius: 12px;
+		min-width: 460px;
+		max-width: 560px;
+	}
+
+	.resampled-dialog-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 1rem 1.25rem;
+		border-bottom: 1px solid #1a1a1a;
+	}
+
+	.resampled-dialog-header h3 {
+		margin: 0;
+		font-size: 1rem;
+		color: #e5e5e5;
+	}
+
+	.resampled-dialog-body {
+		padding: 1rem 1.25rem;
+	}
+
+	.resampled-loading {
+		color: #666;
+		text-align: center;
+		margin: 1rem 0;
+	}
+
+	.resampled-track-section {
+		margin-bottom: 1rem;
+	}
+
+	.resampled-track-section:last-child {
+		margin-bottom: 0;
+	}
+
+	.resampled-track-header {
+		font-size: 0.85rem;
+		color: #888;
+		margin-bottom: 0.5rem;
+		font-weight: 500;
+	}
+
+	.resampled-none {
+		color: #555;
+		font-size: 0.85rem;
+		margin: 0.25rem 0;
+	}
+
+	.resampled-version-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 0.5rem 0;
+		border-top: 1px solid rgba(255, 255, 255, 0.03);
+	}
+
+	.resampled-version-info {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+	}
+
+	.resampled-rate {
+		color: #ccc;
+		font-size: 0.9rem;
+		font-weight: 500;
+	}
+
+	.resampled-size {
+		color: #555;
+		font-size: 0.8rem;
+	}
+
+	.resampled-quality-row {
+		display: flex;
+		gap: 0.35rem;
+	}
+
+	.resampled-quality-btn {
+		background: transparent;
+		border: 1px solid #222;
+		color: #555;
+		padding: 0.25rem 0.6rem;
+		border-radius: 6px;
+		font-size: 0.75rem;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+
+	.resampled-quality-btn:hover {
+		background: #111;
+		color: #888;
+		border-color: rgba(255, 255, 255, 0.08);
+	}
+
+	.resampled-quality-btn.active {
+		background: rgba(34, 197, 94, 0.1);
+		color: #22c55e;
+		border-color: rgba(34, 197, 94, 0.3);
+	}
+
+	.resampled-quality-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.resampled-percent {
+		color: #a78bfa;
+		font-size: 0.8rem;
+		font-weight: 500;
+		min-width: 2.5em;
+		text-align: right;
 	}
 
 </style>

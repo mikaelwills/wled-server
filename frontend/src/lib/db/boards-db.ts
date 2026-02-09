@@ -1,18 +1,18 @@
 // frontend/src/lib/boards-db.ts
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { boards, boardsLoading, boardsError, presets, performancePresets, patternPresets } from './store';
-import { API_URL } from './api';
-import { createSseConnection } from './sse';
-import { 
-  setGroupPower, 
-  setGroupColor, 
-  setGroupBrightness, 
-  setGroupEffect, 
+import { boards, boardsLoading, boardsError, presets, performancePresets, patternPresets } from '$lib/stores/store';
+import { API_URL } from '$lib/api';
+import { createSseConnection } from '$lib/sse';
+import {
+  setGroupPower,
+  setGroupColor,
+  setGroupBrightness,
+  setGroupEffect,
   setGroupPreset,
-  type GroupOperationResult 
-} from './groups-api';
-import type { BoardState } from './types';
+  type GroupOperationResult
+} from '$lib/db/groups-api';
+import type { BoardState } from '$lib/types';
 
 let sseConnection: EventSource | null = null;
 

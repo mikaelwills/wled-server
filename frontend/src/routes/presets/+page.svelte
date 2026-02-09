@@ -1,6 +1,6 @@
 <script lang="ts">
-	import PerformancePresetsPage from '$lib/PerformancePresetsPage.svelte';
-	import WledPresetsPage from '$lib/WledPresetsPage.svelte';
+	import PerformancePresetsPage from '$lib/components/PerformancePresetsPage.svelte';
+	import WledPresetsPage from '$lib/components/WledPresetsPage.svelte';
 </script>
 
 <PerformancePresetsPage />

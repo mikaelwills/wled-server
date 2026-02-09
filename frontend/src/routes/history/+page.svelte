@@ -11,8 +11,8 @@
 		formatTimestamp,
 		getDriftStatus,
 		type PlaybackSession
-	} from '$lib/history-store';
-	import { timingSnapshot, fetchTimingSnapshot } from '$lib/timing-store';
+	} from '$lib/stores/history-store';
+	import { timingSnapshot, fetchTimingSnapshot } from '$lib/stores/timing-store';
 
 	let expandedId: string | null = $state(null);
 	let pollInterval: ReturnType<typeof setInterval> | null = null;

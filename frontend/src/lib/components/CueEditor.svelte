@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { boards, performancePresets } from '$lib/store';
+	import { boards, performancePresets } from '$lib/stores/store';
 
 	let {
 		marker,

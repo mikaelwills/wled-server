@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { presets } from '$lib/store';
-	import { fetchPresets } from '$lib/boards-db';
+	import { presets } from '$lib/stores/store';
+	import { fetchPresets } from '$lib/db/boards-db';
 	import { API_URL } from '$lib/api';
 
 	let deleting: number | null = null;

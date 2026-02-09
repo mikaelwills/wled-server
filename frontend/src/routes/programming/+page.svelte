@@ -1,8 +1,8 @@
 <script lang="ts">
-	import Program from '$lib/Program.svelte';
+	import Program from '$lib/components/Program.svelte';
 	import { API_URL } from '$lib/api';
-	import { programs, programsLoading, programsError, resamplingProgress } from '$lib/store';
-	import { saveProgram, deleteProgram } from '$lib/programs-db';
+	import { programs, programsLoading, programsError, resamplingProgress } from '$lib/stores/store';
+	import { saveProgram, deleteProgram } from '$lib/db/programs-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
 
 	let isDragging = $state(false);

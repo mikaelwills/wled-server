@@ -2,8 +2,8 @@
 // Centralized audio loading and management
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs, resamplingQuality, resamplingQualityLoading, slotMuted } from './store';
-import type { ResamplingQuality } from './store';
+import { audioElements, audioLoading, audioError, audioBlobUrls, cachedPeaks, guideBlobUrls, guideCachedPeaks, programs, resamplingQuality, resamplingQualityLoading, slotMuted, slotVolume } from '$lib/stores/store';
+import type { ResamplingQuality } from '$lib/stores/store';
 import { API_URL } from '$lib/api';
 
 // Track programs currently being loaded to prevent duplicate fetches
@@ -61,15 +61,10 @@ export async function initAudio(): Promise<void> {
 	try {
 		const currentPrograms = get(programs);
 		const totalStart = performance.now();
-		console.log(`[initAudio] Starting - ${currentPrograms.length} programs (parallel)`);
+		console.log(`[initAudio] Starting - ${currentPrograms.length} programs (peaks only)`);
 
-		const loadedAudio: Record<string, HTMLAudioElement> = {};
-		const loadedBlobUrls: Record<string, string> = {};
 		const loadedPeaks: Record<string, { peaks: Array<number[]>; duration: number }> = {};
-		const loadedGuideBlobUrls: Record<string, string> = {};
 		const loadedGuidePeaks: Record<string, { peaks: Array<number[]>; duration: number }> = {};
-
-		const ctx = getAudioContext();
 
 		await Promise.all(
 			currentPrograms
@@ -78,93 +73,37 @@ export async function initAudio(): Promise<void> {
 					try {
 						const programStart = performance.now();
 
-						const [peaksResponse, audioResponse] = await Promise.all([
-							fetch(`${API_URL}/audio/${program.audioId}/peaks`),
-							fetch(`${API_URL}/audio/${program.audioId}`)
-						]);
-
-						if (!audioResponse.ok) {
-						console.error(`[initAudio] Failed to fetch audio for ${program.songName}: ${audioResponse.status} ${audioResponse.statusText}`);
-						return;
-					}
-
-						const blob = await audioResponse.blob();
-						const blobUrl = URL.createObjectURL(blob);
-					console.log(`[initAudio] Created blob URL for ${program.songName}: ${blobUrl.substring(0, 60)}...`);
-
-						const audio = new Audio();
-						audio.src = blobUrl;
-						loadedAudio[program.id] = audio;
-						loadedBlobUrls[program.id] = blobUrl;
-
+						const peaksResponse = await fetch(`${API_URL}/audio/${program.audioId}/peaks`);
 						if (peaksResponse.ok) {
-							const peaksData = await peaksResponse.json();
-							loadedPeaks[program.id] = peaksData;
-							console.log(`[initAudio] ✓ Cached peaks: ${program.songName} (${(performance.now() - programStart).toFixed(0)}ms)`);
-						} else {
-							const arrayBuffer = await blob.arrayBuffer();
-							const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-							const peaks = computePeaksFromBuffer(audioBuffer);
-							loadedPeaks[program.id] = { peaks, duration: audioBuffer.duration };
-
-							fetch(`${API_URL}/audio/${program.audioId}/peaks`, {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ peaks, duration: audioBuffer.duration })
-							}).catch(err => console.warn(`Failed to save peaks for ${program.songName}:`, err));
-
-							console.log(`[initAudio] ✓ Computed & saved: ${program.songName} (${(performance.now() - programStart).toFixed(0)}ms)`);
+							loadedPeaks[program.id] = await peaksResponse.json();
+							console.log(`[initAudio] ✓ Peaks: ${program.songName} (${(performance.now() - programStart).toFixed(0)}ms)`);
 						}
 
 						if (program.guideAudioId) {
 							try {
-								const [guidePeaksRes, guideAudioRes] = await Promise.all([
-									fetch(`${API_URL}/audio/${program.guideAudioId}/peaks`),
-									fetch(`${API_URL}/audio/${program.guideAudioId}`)
-								]);
-
-								if (guideAudioRes.ok) {
-									const guideBlob = await guideAudioRes.blob();
-									const guideBlobUrl = URL.createObjectURL(guideBlob);
-									loadedGuideBlobUrls[program.id] = guideBlobUrl;
-
-									if (guidePeaksRes.ok) {
-										loadedGuidePeaks[program.id] = await guidePeaksRes.json();
-									} else {
-										const arrayBuffer = await guideBlob.arrayBuffer();
-										const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-										const peaks = computePeaksFromBuffer(audioBuffer);
-										loadedGuidePeaks[program.id] = { peaks, duration: audioBuffer.duration };
-
-										fetch(`${API_URL}/audio/${program.guideAudioId}/peaks`, {
-											method: 'POST',
-											headers: { 'Content-Type': 'application/json' },
-											body: JSON.stringify({ peaks, duration: audioBuffer.duration })
-										}).catch(() => {});
-									}
-									console.log(`[initAudio] ✓ Guide loaded: ${program.songName}`);
+								const guidePeaksRes = await fetch(`${API_URL}/audio/${program.guideAudioId}/peaks`);
+								if (guidePeaksRes.ok) {
+									loadedGuidePeaks[program.id] = await guidePeaksRes.json();
+									console.log(`[initAudio] ✓ Guide peaks: ${program.songName}`);
 								}
 							} catch (err) {
-								console.warn(`Error loading guide for ${program.songName}:`, err);
+								console.warn(`Error loading guide peaks for ${program.songName}:`, err);
 							}
 						}
 					} catch (err) {
-						console.warn(`Error loading audio for ${program.songName}:`, err);
+						console.warn(`Error loading peaks for ${program.songName}:`, err);
 					}
 				})
 		);
 
-		audioElements.set(loadedAudio);
-		audioBlobUrls.set(loadedBlobUrls);
 		cachedPeaks.set(loadedPeaks);
-		guideBlobUrls.set(loadedGuideBlobUrls);
 		guideCachedPeaks.set(loadedGuidePeaks);
 		audioLoading.set(false);
-		const guideCount = Object.keys(loadedGuideBlobUrls).length;
+		const guideCount = Object.keys(loadedGuidePeaks).length;
 		console.log(`[initAudio] Complete - ${Object.keys(loadedPeaks).length} programs ready, ${guideCount} with guide (${(performance.now() - totalStart).toFixed(0)}ms total)`);
 	} catch (error) {
-		console.error('Failed to load audio:', error);
-		audioError.set('Failed to load audio files.');
+		console.error('Failed to load peaks:', error);
+		audioError.set('Failed to load audio peaks.');
 		audioLoading.set(false);
 	}
 }
@@ -234,70 +173,27 @@ async function isBlobUrlValid(url: string): Promise<boolean> {
  * Fetches peaks from backend first, computes and saves if missing
  * Guards against duplicate concurrent fetches
  */
-export async function loadAudioForProgram(programId: string, audioId: string): Promise<string | undefined> {
-	if (!browser) return undefined;
+export async function loadAudioForProgram(programId: string, audioId: string): Promise<void> {
+	if (!browser) return;
 
-	const existingUrl = get(audioBlobUrls)[programId];
-	if (existingUrl) {
-		console.log(`[loadAudioForProgram] ${programId} - checking existing URL`);
-		const isValid = await isBlobUrlValid(existingUrl);
-		if (isValid) {
-			console.log(`[loadAudioForProgram] ${programId} - existing URL valid, reusing`);
-			return existingUrl;
-		}
-		console.log(`[loadAudioForProgram] ${programId} - existing URL INVALID, will reload`);
-		audioBlobUrls.update(urls => {
-			const { [programId]: _, ...rest } = urls;
-			return rest;
-		});
-	}
+	const existingPeaks = get(cachedPeaks)[programId];
+	if (existingPeaks) return;
 
-	if (loadingPrograms.has(programId)) return undefined;
+	if (loadingPrograms.has(programId)) return;
 	loadingPrograms.add(programId);
 
 	try {
-		const audioResponse = await fetch(`${API_URL}/audio/${audioId}`);
-		if (!audioResponse.ok) return undefined;
-
-		const blob = await audioResponse.blob();
-		const blobUrl = URL.createObjectURL(blob);
-
-		const audio = new Audio();
-		audio.src = blobUrl;
-		audioElements.update(elements => ({ ...elements, [programId]: audio }));
-		audioBlobUrls.update(urls => ({ ...urls, [programId]: blobUrl }));
-
 		const peaksResponse = await fetch(`${API_URL}/audio/${audioId}/peaks`);
 		if (peaksResponse.ok) {
 			const peaksData = await peaksResponse.json();
 			cachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
-			console.log(`[loadAudio] ${programId} - using cached peaks`);
-			return blobUrl;
+			console.log(`[loadAudio] ${programId} - peaks loaded`);
 		}
-
-		console.log(`[loadAudio] ${programId} - no cached peaks, computing locally...`);
-		const ctx = getAudioContext();
-		const arrayBuffer = await blob.arrayBuffer();
-		const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-		const peaks = computePeaksFromBuffer(audioBuffer);
-		cachedPeaks.update(cache => ({
-			...cache,
-			[programId]: { peaks, duration: audioBuffer.duration }
-		}));
-
-		fetch(`${API_URL}/audio/${audioId}/peaks`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ peaks, duration: audioBuffer.duration })
-		}).catch(err => console.warn(`[loadAudio] Failed to save peaks for ${programId}:`, err));
-
-		return blobUrl;
 	} catch (err) {
-		console.warn(`Error loading audio for program ${programId}:`, err);
+		console.warn(`Error loading peaks for program ${programId}:`, err);
 	} finally {
 		loadingPrograms.delete(programId);
 	}
-	return undefined;
 }
 
 /**
@@ -337,61 +233,27 @@ const loadingGuides = new Set<string>();
 /**
  * Load guide audio for a program
  */
-export async function loadGuideAudioForProgram(programId: string, guideAudioId: string): Promise<string | undefined> {
-	if (!browser) return undefined;
+export async function loadGuideAudioForProgram(programId: string, guideAudioId: string): Promise<void> {
+	if (!browser) return;
 
-	const existingUrl = get(guideBlobUrls)[programId];
-	if (existingUrl) {
-		const isValid = await isBlobUrlValid(existingUrl);
-		if (isValid) return existingUrl;
-		guideBlobUrls.update(urls => {
-			const { [programId]: _, ...rest } = urls;
-			return rest;
-		});
-	}
+	const existingPeaks = get(guideCachedPeaks)[programId];
+	if (existingPeaks) return;
 
-	if (loadingGuides.has(programId)) return undefined;
+	if (loadingGuides.has(programId)) return;
 	loadingGuides.add(programId);
 
 	try {
-		const [peaksResponse, audioResponse] = await Promise.all([
-			fetch(`${API_URL}/audio/${guideAudioId}/peaks`),
-			fetch(`${API_URL}/audio/${guideAudioId}`)
-		]);
-
-		if (!audioResponse.ok) return undefined;
-
-		const blob = await audioResponse.blob();
-		const blobUrl = URL.createObjectURL(blob);
-		guideBlobUrls.update(urls => ({ ...urls, [programId]: blobUrl }));
-
+		const peaksResponse = await fetch(`${API_URL}/audio/${guideAudioId}/peaks`);
 		if (peaksResponse.ok) {
 			const peaksData = await peaksResponse.json();
 			guideCachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
-		} else {
-			const ctx = getAudioContext();
-			const arrayBuffer = await blob.arrayBuffer();
-			const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-			const peaks = computePeaksFromBuffer(audioBuffer);
-			guideCachedPeaks.update(cache => ({
-				...cache,
-				[programId]: { peaks, duration: audioBuffer.duration }
-			}));
-
-			fetch(`${API_URL}/audio/${guideAudioId}/peaks`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ peaks, duration: audioBuffer.duration })
-			}).catch(() => {});
+			console.log(`[loadGuide] ${programId} - guide peaks loaded`);
 		}
-
-		return blobUrl;
 	} catch (err) {
-		console.warn(`Error loading guide for program ${programId}:`, err);
+		console.warn(`Error loading guide peaks for program ${programId}:`, err);
 	} finally {
 		loadingGuides.delete(programId);
 	}
-	return undefined;
 }
 
 /**
@@ -493,6 +355,23 @@ export async function updateResamplingQuality(quality: ResamplingQuality): Promi
 }
 
 export type SlotId = 'backing' | 'guide' | 'click' | 'aux';
+
+export async function setSlotVolume(track: SlotId, volume: number): Promise<void> {
+	if (!browser) return;
+
+	const clamped = Math.max(0, Math.min(2, volume));
+	slotVolume.update(state => ({ ...state, [track]: clamped }));
+
+	try {
+		await fetch(`${API_URL}/audio/volume`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ track, volume: clamped })
+		});
+	} catch (e) {
+		console.error(`Failed to set ${track} volume:`, e);
+	}
+}
 
 export async function toggleSlotMute(track: SlotId): Promise<void> {
 	if (!browser) return;

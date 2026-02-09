@@ -1,6 +1,6 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
-import { resamplingProgress, type SlotResamplingProgress } from './store';
+import { resamplingProgress, resamplingComplete, type SlotResamplingProgress } from '$lib/stores/store';
 
 export type { SlotResamplingProgress as ResamplingProgress };
 
@@ -8,6 +8,7 @@ export type SseEvent =
   | { type: 'state_update'; board_id: string; state: BoardState }
   | { type: 'connection_status'; board_id: string; connected: boolean }
   | { type: 'resampling_progress'; slot: string; program_id: string; track_name: string; current: number; total: number; active: boolean; from_rate: number; to_rate: number }
+  | { type: 'resampling_complete'; slot: string; program_id: string; target_rate: number; quality: string }
   | { type: 'connected'; message: string };
 
 export function createSseConnection(
@@ -36,7 +37,6 @@ export function createSseConnection(
       } else if (data.type === 'connection_status') {
         onConnectionStatus(data.board_id, data.connected);
       } else if (data.type === 'resampling_progress') {
-        console.log('[SSE] resampling_progress event:', data);
         const progress: ResamplingProgress = {
           slot: data.slot,
           programId: data.program_id,
@@ -47,12 +47,19 @@ export function createSseConnection(
           fromRate: data.from_rate,
           toRate: data.to_rate,
         };
-        console.log('[SSE] Updating store slot:', progress.slot, 'active:', progress.active);
         if (progress.active) {
           resamplingProgress.update(state => ({ ...state, [progress.slot]: progress }));
         } else {
           resamplingProgress.update(state => ({ ...state, [progress.slot]: null }));
         }
+      } else if (data.type === 'resampling_complete') {
+        resamplingComplete.set({
+          slot: data.slot,
+          programId: data.program_id,
+          targetRate: data.target_rate,
+          quality: data.quality,
+          timestamp: Date.now(),
+        });
       }
     } catch (err) {
       console.error('Failed to parse SSE event:', err);

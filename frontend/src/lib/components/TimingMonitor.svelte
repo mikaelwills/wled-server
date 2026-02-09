@@ -9,7 +9,7 @@
 		startTimingPolling,
 		stopTimingPolling,
 		type DriftEvent
-	} from './timing-store';
+	} from '$lib/stores/timing-store';
 
 	let expanded = $state(false);
 

@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
-import { currentlyPlayingProgram } from './store';
-import { API_URL } from './api';
-import type { Program } from './models/Program';
+import { currentlyPlayingProgram } from '$lib/stores/store';
+import { API_URL } from '$lib/api';
+import type { Program } from '$lib/models/Program';
 
 export async function playProgram(program: Program, startTime: number = 0): Promise<void> {
   if (!browser) return;

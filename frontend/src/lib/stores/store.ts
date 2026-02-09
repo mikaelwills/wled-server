@@ -1,7 +1,7 @@
 // frontend/src/lib/store.ts
 import { writable, type Writable } from 'svelte/store';
-import type { Program } from './models/Program';
-import type { BoardState } from './types';
+import type { Program } from '$lib/models/Program';
+import type { BoardState } from '$lib/types';
 
 // Programs store - state triplet pattern
 export const programs: Writable<Program[]> = writable([]);
@@ -101,6 +101,14 @@ export const slotMuted: Writable<Record<string, boolean>> = writable({
 	aux: false,
 });
 
+// Slot volume state - per-slot volume levels (0.0 to 2.0, default 1.0)
+export const slotVolume: Writable<Record<string, number>> = writable({
+	backing: 1.0,
+	guide: 1.0,
+	click: 1.0,
+	aux: 1.0,
+});
+
 // Resampling progress store - centralized SSE progress state
 export interface SlotResamplingProgress {
 	slot: string;
@@ -119,3 +127,13 @@ export const resamplingProgress: Writable<Record<string, SlotResamplingProgress 
 	click: null,
 	aux: null,
 });
+
+export interface ResamplingCompleteEvent {
+	slot: string;
+	programId: string;
+	targetRate: number;
+	quality: string;
+	timestamp: number;
+}
+
+export const resamplingComplete: Writable<ResamplingCompleteEvent | null> = writable(null);

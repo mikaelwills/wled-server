@@ -1,6 +1,6 @@
 // frontend/src/lib/groups-db.ts
 import { browser } from '$app/environment';
-import { API_URL } from './api';
+import { API_URL } from '$lib/api';
 
 /**
  * Add a new group

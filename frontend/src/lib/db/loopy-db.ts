@@ -2,9 +2,9 @@
 // All Loopy Pro related backend operations
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { loopyProSettings, loopyProSettingsLoading, loopyProSettingsError } from './store';
+import { loopyProSettings, loopyProSettingsLoading, loopyProSettingsError } from '$lib/stores/store';
 import { API_URL } from '$lib/api';
-import type { LoopyProSettings } from './store';
+import type { LoopyProSettings } from '$lib/stores/store';
 
 /**
  * Initialize Loopy Pro settings from API

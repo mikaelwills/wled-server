@@ -1,6 +1,6 @@
 import { writable, type Writable } from 'svelte/store';
 import { browser } from '$app/environment';
-import { API_URL } from './api';
+import { API_URL } from '$lib/api';
 
 export interface DriftEvent {
 	timestamp: number;

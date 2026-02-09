@@ -1,7 +1,7 @@
 // frontend/src/lib/groups-api.ts
 import { browser } from '$app/environment';
-import { API_URL } from './api';
-import type { BoardState } from './types';
+import { API_URL } from '$lib/api';
+import type { BoardState } from '$lib/types';
 
 export interface GroupOperationResult {
   group_id: string;

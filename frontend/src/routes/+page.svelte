@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { boards, boardsLoading, boardsError, presets } from '$lib/store';
+	import { boards, boardsLoading, boardsError, presets } from '$lib/stores/store';
 	import {
 		setBoardPower,
 		setBoardColor,
@@ -19,11 +19,11 @@
 		fetchBoards,
 		fetchPresets,
 		syncPresetsToBoard,
-	} from '$lib/boards-db';
-	import { addGroup, deleteGroup, updateGroup } from '$lib/groups-db';
+	} from '$lib/db/boards-db';
+	import { addGroup, deleteGroup, updateGroup } from '$lib/db/groups-db';
 	import { WLED_EFFECTS } from '$lib/wled-effects';
 	import { API_URL } from '$lib/api';
-	import ColorWheel from '$lib/ColorWheel.svelte';
+	import ColorWheel from '$lib/components/ColorWheel.svelte';
 	import type { BoardState, WledPreset } from '$lib/types';
 
 	// Per-board presets loaded from API

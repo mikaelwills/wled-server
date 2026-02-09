@@ -3,14 +3,14 @@
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import favicon from '$lib/assets/favicon.svg';
-	import { initBoardsListener, cleanupBoardsListener, fetchPresets, fetchPerformancePresets, fetchPatternPresets } from '$lib/boards-db';
-	import { initPrograms, cleanupPrograms } from '$lib/programs-db';
-	import { initLoopyProSettings } from '$lib/loopy-db';
-	import { initAudio, cleanupAudio, initResamplingQuality } from '$lib/audio-db';
-	import TimingMonitor from '$lib/TimingMonitor.svelte';
-	import { toggleTimingMonitor } from '$lib/timing-store';
-	import AudioHealthMonitor from '$lib/AudioHealthMonitor.svelte';
-	import { toggleAudioHealthMonitor } from '$lib/audio-health-store';
+	import { initBoardsListener, cleanupBoardsListener, fetchPresets, fetchPerformancePresets, fetchPatternPresets } from '$lib/db/boards-db';
+	import { initPrograms, cleanupPrograms } from '$lib/db/programs-db';
+	import { initLoopyProSettings } from '$lib/db/loopy-db';
+	import { initAudio, cleanupAudio, initResamplingQuality } from '$lib/db/audio-db';
+	import TimingMonitor from '$lib/components/TimingMonitor.svelte';
+	import { toggleTimingMonitor } from '$lib/stores/timing-store';
+	import AudioHealthMonitor from '$lib/components/AudioHealthMonitor.svelte';
+	import { toggleAudioHealthMonitor } from '$lib/stores/audio-health-store';
 	import { API_URL } from '$lib/api';
 
 	let { children } = $props();

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { performancePresets, patternPresets } from '$lib/store';
+	import { performancePresets, patternPresets } from '$lib/stores/store';
 
 	let {
 		open = false,

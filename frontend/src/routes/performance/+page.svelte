@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings } from '$lib/store';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/playback-db';
-	import { updateProgram, reorderPrograms } from '$lib/programs-db';
-	import { setBoardBrightness } from '$lib/boards-db';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, loopyProSettings } from '$lib/stores/store';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/db/playback-db';
+	import { updateProgram, reorderPrograms } from '$lib/db/programs-db';
+	import { setBoardBrightness } from '$lib/db/boards-db';
 	import { API_URL } from '$lib/api';
 	import { Program, type TransitionType } from '$lib/models/Program';
 
@@ -775,7 +775,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 0.75rem;
-		padding: 2rem;
+		padding: clamp(0.75rem, 3vw, 2rem);
 		width: 100%;
 		height: 100%;
 		text-align: center;
@@ -784,7 +784,7 @@
 	}
 
 	.song-name {
-		font-size: 1.75rem;
+		font-size: clamp(1rem, 4vw, 1.75rem);
 		font-weight: 700;
 		color: #e5e5e5;
 		word-break: break-word;

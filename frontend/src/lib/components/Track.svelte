@@ -2,13 +2,13 @@
 	import { onMount, onDestroy } from 'svelte';
 	import WaveSurfer from 'wavesurfer.js';
 	import type { SlotConfig } from '$lib/slots';
-	import { toggleSlotMute } from '$lib/audio-db';
-	import { slotMuted, type SlotResamplingProgress } from '$lib/store';
+	import { toggleSlotMute, setSlotVolume } from '$lib/db/audio-db';
+	import { slotMuted, slotVolume, type SlotResamplingProgress } from '$lib/stores/store';
 
 	interface Props {
 		track: SlotConfig;
 		programId: string;
-		blobUrl: string | null;
+		blobUrl?: string | null;
 		cachedPeaks: { peaks: Array<number[]>; duration: number } | null;
 		resamplingProgress: SlotResamplingProgress | null;
 		mainWavesurfer: WaveSurfer | null;
@@ -18,7 +18,7 @@
 	let {
 		track,
 		programId,
-		blobUrl,
+		blobUrl = null,
 		cachedPeaks,
 		resamplingProgress,
 		mainWavesurfer,
@@ -29,12 +29,12 @@
 	let isLoaded = $state(false);
 	let containerId = $derived(`${track.id}-waveform-${programId.replace(/[^a-zA-Z0-9-_]/g, '-')}`);
 
-	function initWaveSurfer(url: string) {
+	function initWaveSurfer() {
 		if (wavesurfer) {
 			wavesurfer.destroy();
 		}
 
-		wavesurfer = WaveSurfer.create({
+		const createOptions: any = {
 			container: `#${containerId}`,
 			waveColor: track.waveformColor,
 			progressColor: track.progressColor,
@@ -43,17 +43,21 @@
 			barRadius: 3,
 			height: 80,
 			interact: false,
-		});
-
-		wavesurfer.on('decode', () => {
-			isLoaded = true;
-		});
+		};
 
 		if (cachedPeaks) {
-			wavesurfer.load(url, cachedPeaks.peaks, cachedPeaks.duration);
-		} else {
-			wavesurfer.load(url);
+			const media = new Audio();
+			media.preload = 'none';
+			createOptions.media = media;
+			createOptions.peaks = cachedPeaks.peaks;
+			createOptions.duration = cachedPeaks.duration;
 		}
+
+		wavesurfer = WaveSurfer.create(createOptions);
+
+		wavesurfer.on('ready', () => {
+			isLoaded = true;
+		});
 	}
 
 	function syncPlayhead() {
@@ -67,8 +71,8 @@
 	}
 
 	$effect(() => {
-		if (blobUrl && !wavesurfer) {
-			setTimeout(() => initWaveSurfer(blobUrl), 0);
+		if (cachedPeaks && !wavesurfer) {
+			setTimeout(() => initWaveSurfer(), 0);
 		}
 	});
 
@@ -90,6 +94,15 @@
 <div class="track" style="--track-color: {track.color}">
 	<div class="track-label">
 		<button class="mute-btn" class:muted={$slotMuted[track.id]} onclick={() => toggleSlotMute(track.id)}>{track.label}</button>
+		<input
+			type="range"
+			class="volume-slider"
+			min="0"
+			max="200"
+			value={($slotVolume[track.id] ?? 1.0) * 100}
+			oninput={(e) => setSlotVolume(track.id, parseInt(e.currentTarget.value) / 100)}
+			title={`Volume: ${Math.round(($slotVolume[track.id] ?? 1.0) * 100)}%`}
+		/>
 		{#if resamplingProgress}
 			<span class="resampling-inline">
 				{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {resamplingProgress.total > 0 ? Math.round((resamplingProgress.current / resamplingProgress.total) * 100) : 0}%
@@ -98,7 +111,7 @@
 		<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>
 	</div>
 	<div class="waveform-inner">
-		{#if blobUrl && !isLoaded}
+		{#if cachedPeaks && !isLoaded}
 			<div class="waveform-skeleton"></div>
 		{/if}
 		<div id={containerId} class:hidden={!isLoaded}></div>
@@ -140,6 +153,35 @@
 
 	.mute-btn.muted {
 		color: #444;
+	}
+
+	.volume-slider {
+		width: 60px;
+		height: 3px;
+		-webkit-appearance: none;
+		appearance: none;
+		background: #333;
+		border-radius: 2px;
+		outline: none;
+		cursor: pointer;
+	}
+
+	.volume-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: var(--track-color, #888);
+		cursor: pointer;
+	}
+
+	.volume-slider::-moz-range-thumb {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: var(--track-color, #888);
+		border: none;
+		cursor: pointer;
 	}
 
 	.resampling-inline {

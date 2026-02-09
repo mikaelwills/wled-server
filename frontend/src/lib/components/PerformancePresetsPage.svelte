@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { performancePresets } from '$lib/store';
-	import { fetchPerformancePresets } from '$lib/boards-db';
+	import { performancePresets } from '$lib/stores/store';
+	import { fetchPerformancePresets } from '$lib/db/boards-db';
 
 	let collapsedGroups: Set<string> = new Set();
 	let allCollapsed = false;

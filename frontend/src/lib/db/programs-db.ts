@@ -1,10 +1,10 @@
 // frontend/src/lib/programs-db.ts
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
-import { programs, programsLoading, programsError } from './store';
-import { Program } from './models/Program';
+import { programs, programsLoading, programsError } from '$lib/stores/store';
+import { Program } from '$lib/models/Program';
 import { API_URL } from '$lib/api';
-import { removeAudioForProgram, removeGuideAudioForProgram } from './audio-db';
+import { removeAudioForProgram, removeGuideAudioForProgram } from '$lib/db/audio-db';
 
 /**
  * Initialize programs from API

@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { loopyProSettings, loopyProSettingsLoading, resamplingQuality, resamplingQualityLoading } from '$lib/store';
-	import { updateLoopyProSettings } from '$lib/loopy-db';
-	import { updateResamplingQuality } from '$lib/audio-db';
-	import { initPrograms } from '$lib/programs-db';
-	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/timing-store';
-	import { audioHealthMonitorVisible, toggleAudioHealthMonitor } from '$lib/audio-health-store';
+	import { loopyProSettings, loopyProSettingsLoading, resamplingQuality, resamplingQualityLoading } from '$lib/stores/store';
+	import { updateLoopyProSettings } from '$lib/db/loopy-db';
+	import { updateResamplingQuality } from '$lib/db/audio-db';
+	import { initPrograms } from '$lib/db/programs-db';
+	import { timingMonitorVisible, toggleTimingMonitor, timingSnapshot, updateDriftThreshold } from '$lib/stores/timing-store';
+	import { audioHealthMonitorVisible, toggleAudioHealthMonitor } from '$lib/stores/audio-health-store';
 	import { API_URL } from '$lib/api';
-	import RoutingModal from '$lib/RoutingModal.svelte';
+	import RoutingModal from '$lib/components/RoutingModal.svelte';
 
-	import type { AudioSource, ResamplingQuality } from '$lib/store';
+	import type { AudioSource, ResamplingQuality } from '$lib/stores/store';
 
 	let ip = $state($loopyProSettings.ip);
 	let port = $state($loopyProSettings.port);
