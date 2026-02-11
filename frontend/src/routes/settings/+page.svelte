@@ -31,7 +31,9 @@
 		id: string;
 		name: string;
 		output_channels: number;
+		sample_rate: number;
 		is_default: boolean;
+		is_selected: boolean;
 	}
 
 	let storageStatus = $state<StorageStatus | null>(null);

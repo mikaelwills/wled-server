@@ -6,16 +6,12 @@ import type { Program } from '$lib/models/Program';
 export async function playProgram(program: Program, startTime: number = 0): Promise<void> {
   if (!browser) return;
 
-  const t0 = performance.now();
-  console.log(`[TIMING] playProgramService called t0=${t0.toFixed(1)}ms program=${program.id}`);
-
   currentlyPlayingProgram.set(program);
 
   try {
     const response = await fetch(`${API_URL}/programs/${program.id}/play?start=${startTime}`, {
       method: 'POST'
     });
-    console.log(`[TIMING] play API response dt=${(performance.now() - t0).toFixed(1)}ms status=${response.status}`);
     if (!response.ok) {
       console.error('Failed to start program:', response.statusText);
     }
@@ -45,11 +41,9 @@ export async function stopPlayback(): Promise<void> {
 
 export async function pausePlayback(): Promise<void> {
   if (!browser) return;
-  console.log('⏸️ Pausing playback');
-  currentlyPlayingProgram.set(null);
 
   try {
-    const response = await fetch(`${API_URL}/programs/stop`, {
+    const response = await fetch(`${API_URL}/audio/engine/pause`, {
       method: 'POST'
     });
     if (!response.ok) {
@@ -57,6 +51,21 @@ export async function pausePlayback(): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to call pause API:', err);
+  }
+}
+
+export async function resumePlayback(): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/audio/engine/resume`, {
+      method: 'POST'
+    });
+    if (!response.ok) {
+      console.error('Failed to resume program:', response.statusText);
+    }
+  } catch (err) {
+    console.error('Failed to call resume API:', err);
   }
 }
 

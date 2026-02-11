@@ -66,10 +66,22 @@
 	async function fetchData() {
 		loading = true;
 		try {
-			const settingsRes = await fetch(`${API_URL}/audio/settings`);
+			const [settingsRes, devicesRes] = await Promise.all([
+				fetch(`${API_URL}/audio/settings`),
+				fetch(`${API_URL}/audio/devices`)
+			]);
+
 			if (settingsRes.ok) {
 				const settings = await settingsRes.json();
 				deviceId = settings.preferred_device_id;
+			}
+
+			if (devicesRes.ok && deviceId) {
+				const devices = await devicesRes.json();
+				const selected = devices.find((d: any) => d.id === deviceId);
+				if (selected) {
+					outputChannels = selected.output_channels;
+				}
 			}
 
 			if (!deviceId) {
@@ -77,17 +89,9 @@
 				return;
 			}
 
-			const [routingRes, outputsRes] = await Promise.all([
-				fetch(`${API_URL}/audio/routing/${encodeURIComponent(deviceId)}`),
-				fetch(`${API_URL}/audio/devices/${encodeURIComponent(deviceId)}/outputs`)
-			]);
-
+			const routingRes = await fetch(`${API_URL}/audio/routing/${encodeURIComponent(deviceId)}`);
 			if (routingRes.ok) {
 				routing = await routingRes.json();
-			}
-			if (outputsRes.ok) {
-				const data = await outputsRes.json();
-				outputChannels = data.output_channels;
 			}
 		} catch (e) {
 			console.error('Failed to fetch routing data:', e);

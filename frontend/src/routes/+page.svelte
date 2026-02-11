@@ -147,10 +147,10 @@
 				const presets = [];
 				if (presetsData && Object.keys(presetsData).length > 0) {
 					for (const [slot, preset] of Object.entries(presetsData)) {
-						if (preset && preset.n) { // Only include presets with names
+						if (preset && (preset as any).n) {
 							presets.push({
 								wled_slot: parseInt(slot),
-								name: preset.n,
+								name: (preset as any).n,
 								data: preset
 							});
 						}

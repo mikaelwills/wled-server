@@ -33,15 +33,15 @@
 <div class="waveform-header">
 	{#if isPlaying}
 		<button class="btn-program-pause" onclick={onPause}>
-			⏸
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12"/><rect x="9" y="2" width="4" height="12"/></svg>
 		</button>
 	{:else}
 		<button class="btn-program-play" onclick={onPlay}>
-			▶
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="3,1 14,8 3,15"/></svg>
 		</button>
 	{/if}
 	<button class="btn-program-stop" onclick={onStop} title="Stop and reset to start">
-		⏹
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="1"/></svg>
 	</button>
 	<input
 		type="text"

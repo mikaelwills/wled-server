@@ -6,8 +6,8 @@
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/db/programs-db';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService } from '$lib/db/playback-db';
-	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram } from '$lib/db/audio-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService, resumePlayback as resumePlaybackService } from '$lib/db/playback-db';
+	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram, setSlotVolume } from '$lib/db/audio-db';
 	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier, playbackPosition } from '$lib/stores/store';
@@ -24,12 +24,12 @@
 		id: string;
 		time: number;
 		type: MarkerType;
-		label?: string;
-		boards?: string[];
+		label: string;
+		boards: string[];
 		presetName?: string;
 		preset?: number;
 		effect?: number;
-		color?: [number, number, number];
+		color?: string;
 		brightness?: number;
 		syncRate?: number;
 	}
@@ -53,7 +53,8 @@
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
-	let audioToUpload = $state(null);
+	let isPaused = $state(false);
+	let audioToUpload: string | ArrayBuffer | null = $state(null);
 	let wavesurferInitialized = $state(false);
 
 	let backingProgress = $derived.by(() => {
@@ -84,6 +85,7 @@
 	let bpm: number | null = $state(null); // BPM for speed-synced effects
 	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
 	let clickRate = $state(1); // Click track rate (0.5 = half, 1 = normal, 2 = double)
+	let guideVolume = $state(1.0);
 
 	// Preset picker modal state
 	let presetPickerOpen = $state(false);
@@ -254,7 +256,7 @@
 			const barNumber = Math.round(relativeTime / barInterval);
 			const isDownbeat = barNumber % 4 === 0;
 
-			const region = regions.addRegion({
+			const region = regions!.addRegion({
 				start: t,
 				end: t,
 				color: isDownbeat ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.06)',
@@ -283,20 +285,25 @@
 	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
 
+	// Track the current playhead time ourselves (wavesurfer.getCurrentTime unreliable with peaks-only mode)
+	let playheadTimeSecs = $state(0);
+
 	// SSE-driven playhead (backend broadcasts position at 10Hz)
 	$effect(() => {
 		const pos = $playbackPosition;
 		if (!wavesurfer || !isLoaded) return;
 		if (pos && pos.programId === programId) {
+			playheadTimeSecs = pos.positionSecs;
 			const duration = wavesurfer.getDuration();
 			if (duration > 0) {
-				console.log(`[TIMING] $effect seekTo t=${performance.now().toFixed(1)}ms pos=${pos.positionSecs.toFixed(3)}s ratio=${(pos.positionSecs / duration).toFixed(4)}`);
 				wavesurfer.seekTo(Math.min(pos.positionSecs / duration, 1));
 			}
-			isPlaying = true;
-		} else if (!pos && isPlaying) {
-			console.log(`[TIMING] $effect playback stopped t=${performance.now().toFixed(1)}ms`);
+			if (!isPaused) {
+				isPlaying = true;
+			}
+		} else if (!pos && (isPlaying || isPaused)) {
 			isPlaying = false;
+			isPaused = false;
 		}
 	});
 
@@ -305,13 +312,7 @@
 	}
 
 	function getPlayheadTime(): number {
-		if (!wavesurfer) return 0;
-		const pos = get(playbackPosition);
-		if (pos && pos.programId === programId) return pos.positionSecs;
-		const duration = wavesurfer.getDuration();
-		const wrapper = wavesurfer.getWrapper();
-		if (!wrapper || duration <= 0) return 0;
-		return wavesurfer.getCurrentTime();
+		return playheadTimeSecs;
 	}
 
 	// Auto-save debounce
@@ -366,72 +367,48 @@
 		return { ready: true, message: '' };
 	}
 
-	onMount(async () => {
+	onMount(() => {
 		if (program?.id) {
 			programId = program.id;
 		}
 
 		if (program) {
-			console.log(`[Program.svelte] onMount - program for ${program.id}:`, {
-				hasAudioId: !!program.audioId,
-				hasAudioData: !!program.audioData,
-				audioId: program.audioId
-			});
-
 			loadProgramData(program);
 
 			if (!program.audioId && program.audioData) {
-				console.log(`[Program.svelte] Loading legacy embedded audio`);
 				setTimeout(() => {
 					loadCompressedAudio(program.audioData);
 				}, 50);
 			}
 		}
 
-		// Keyboard handler for play/pause (Space) and add cue (C)
 		function handleKeyPress(event: KeyboardEvent) {
-			// Only respond on the programming page
 			const currentPath = get(page).url.pathname;
 			if (currentPath !== '/programming') return;
 
-			// Check if this is the last active program
 			const lastActiveId = get(lastActiveProgramId);
 			if (lastActiveId !== programId) return;
 
-			// Only respond if this program has audio loaded
 			if (!wavesurfer || !isLoaded) return;
 
-			// Handle spacebar - play/pause
 			if (event.code === 'Space') {
 				event.preventDefault();
-
-				// Toggle play/pause
 				if (isPlaying) {
 					stopFullProgram();
 				} else {
 					playFullProgram();
 				}
-			}
-			// Handle 'C' key - add cue marker at current playhead position
-			else if (event.code === 'KeyC') {
+			} else if (event.code === 'KeyC') {
 				event.preventDefault();
-
 				const currentTime = getPlayheadTime();
-
-				// Add marker at this position
 				addMarker(currentTime);
-
-				// Select the newly created marker (it's the last one added)
 				const newMarker = markers[markers.length - 1];
 				if (newMarker) {
 					currentlySelectedMarker = newMarker.id;
 				}
-
-				console.log(`🎯 Added cue marker at ${currentTime.toFixed(3)}s via 'C' key`);
 			}
 		}
 
-		// Add keyboard listener
 		document.addEventListener('keydown', handleKeyPress);
 
 		return () => {
@@ -442,7 +419,7 @@
 		};
 	});
 
-	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; cues?: Marker[] }) {
+	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Marker[] }) {
 		songName = data.songName || '';
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
@@ -450,6 +427,7 @@
 		bpm = data.bpm || null;
 		gridOffset = data.gridOffset || 0;
 		clickRate = data.clickRate ?? 1;
+		guideVolume = data.guideVolume ?? 1.0;
 		// Note: cues will need to be restored after audio file is loaded
 		// Store them temporarily in component-scoped variable
 		pendingCues = data.cues || [];
@@ -485,7 +463,7 @@
 		wavesurfer.on('ready', () => {
 			isLoaded = true;
 
-			const duration = wavesurfer.getDuration();
+			const duration = wavesurfer!.getDuration();
 			if (duration && duration > 0) {
 				audioDuration = duration;
 				updateBeatGrid();
@@ -504,18 +482,16 @@
 						}
 					}
 
-					// Create region first to get ID
-					const markerRegion = regions.addRegion({
+					const markerRegion = regions!.addRegion({
 						start: cue.time,
-						content: document.createElement('div'), // Temporary placeholder
+						content: document.createElement('div'),
 						color: 'rgba(168, 85, 247, 0.3)',
 						drag: true,
 						resize: false
 					});
 
-					// Now create label with the region ID and replace content
-					const labelElement = createRegionLabel(cue.label, cue.time, markerRegion.id);
-					markerRegion.element.replaceChildren(labelElement);
+					const labelElement = createRegionLabel(cue.label || '', cue.time, markerRegion.id);
+					markerRegion.element!.replaceChildren(labelElement);
 
 					// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
 					setTimeout(() => {
@@ -548,14 +524,13 @@
 		// Handle seeking during playback - reschedule cues from new position (debounced)
 		wavesurfer.on('seeking', (currentTime) => {
 			// Check if this program is currently playing
-			let currentProgram = null;
+			let currentProgram: ProgramModel | null = null;
 			const unsub = currentlyPlayingProgram.subscribe(p => {
 				currentProgram = p;
 			});
 			unsub();
 
-			// Only reschedule if THIS program is playing
-			if (currentProgram && currentProgram.id === programId && isPlaying) {
+			if (currentProgram && (currentProgram as ProgramModel).id === programId && isPlaying) {
 				// Clear any pending reschedule
 				if (seekDebounceTimeout) {
 					clearTimeout(seekDebounceTimeout);
@@ -569,15 +544,14 @@
 					console.log(`⏩ Seeking to ${currentTime.toFixed(2)}s during playback - rescheduling cues`);
 					lastSeekTime = currentTime;
 
-					// Get the current program data
-					let program = null;
+					let seekProgram: ProgramModel | undefined;
 					const unsubPrograms = programsStore.subscribe(programs => {
-						program = programs.find(p => p.id === programId);
+						seekProgram = programs.find(p => p.id === programId);
 					});
 					unsubPrograms();
 
-					if (program) {
-						playProgramService(program, currentTime);
+					if (seekProgram) {
+						playProgramService(seekProgram, currentTime);
 					}
 				}, 150);
 			}
@@ -595,13 +569,12 @@
 
 			const bounds = waveformContainer.getBoundingClientRect();
 			const relativeX = (event.clientX - bounds.left) / bounds.width;
-			const duration = wavesurfer.getDuration();
+			const duration = wavesurfer!.getDuration();
 			const clickTime = relativeX * duration;
 
 			if (event.button === 0) {
-				// Left-click: Seek to position
-				console.log('🖱️ Left-click: Seeking to', clickTime);
-				wavesurfer.seekTo(relativeX);
+				playheadTimeSecs = clickTime;
+				wavesurfer!.seekTo(relativeX);
 			} else if (event.button === 2 && event.shiftKey) {
 				gridOffset = clickTime;
 				console.log('🎵 Downbeat set at:', clickTime.toFixed(3) + 's');
@@ -671,7 +644,7 @@
 		}
 	}
 
-	async function handleGuideUpload(file) {
+	async function handleGuideUpload(file: File) {
 		if (!programId) return;
 		if (program?.guideAudioId) {
 			console.warn('[handleGuideUpload] Guide already exists, ignoring upload');
@@ -682,7 +655,7 @@
 
 		const reader = new FileReader();
 		reader.onload = async (e) => {
-			const dataUrl = e.target.result;
+			const dataUrl = e.target!.result;
 			const guideId = `${programId}_guide`;
 
 			try {
@@ -731,7 +704,7 @@
 		}
 	}
 
-	export function loadAudioFile(file) {
+	export function loadAudioFile(file: File) {
 		console.log('Loading file:', file.name, file.type);
 
 		// Check if it's an audio file
@@ -741,8 +714,7 @@
 			// Store for upload
 			const reader = new FileReader();
 			reader.onload = (e) => {
-				audioToUpload = e.target.result;
-				console.log('[Program.svelte] Audio file stored for upload.');
+				audioToUpload = e.target!.result;
 			};
 			reader.readAsDataURL(file);
 
@@ -757,7 +729,7 @@
 		}
 	}
 
-	function loadCompressedAudio(audioDataURL) {
+	function loadCompressedAudio(audioDataURL: string) {
 		console.log('[Program.svelte] Loading compressed audio, data URL length:', audioDataURL?.length);
 		console.log('[Program.svelte] programId:', programId);
 
@@ -789,7 +761,7 @@
 	}
 
 	// Helper function to create styled label elements - always centered
-	function createRegionLabel(text, time, markerId) {
+	function createRegionLabel(text: string, time: number, markerId: string) {
 		const label = document.createElement('div');
 		label.textContent = text;
 		label.title = text; // Tooltip for full text
@@ -843,7 +815,7 @@
 			const programIndex = programs.findIndex(p => p.id === programId);
 			if (programIndex !== -1) {
 				const updatedProgram = programs[programIndex];
-				updatedProgram.cues = markers;
+				updatedProgram.cues = markers as any;
 				programs[programIndex] = updatedProgram;
 			}
 			return [...programs];
@@ -852,13 +824,10 @@
 		debouncedSave();
 	}
 
-	function addMarker(time) {
-		console.log('📍 addMarker called with time:', time);
-		const currentCount = markers.length;
-		const labelText = 'No Preset'; // Default label for new markers with preset action
+	function addMarker(time: number) {
+		const labelText = 'No Preset';
 
-		// Create region first to get ID
-		const markerRegion = regions.addRegion({
+		const markerRegion = regions!.addRegion({
 			start: time,
 			content: document.createElement('div'), // Temporary placeholder
 			color: 'rgba(168, 85, 247, 0.3)',
@@ -866,11 +835,9 @@
 			resize: false
 		});
 
-		// Now create label with the region ID and replace content
 		const labelElement = createRegionLabel(labelText, time, markerRegion.id);
-		markerRegion.element.replaceChildren(labelElement);
+		markerRegion.element!.replaceChildren(labelElement);
 
-		// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
 		setTimeout(() => {
 			if (labelElement.parentElement) {
 				labelElement.style.marginTop = ''; // Remove plugin's marginTop
@@ -907,10 +874,10 @@
 	 * @param {string} property - Property name (e.g., 'effect', 'color', 'brightness', etc.)
 	 * @param {any} value - New value for the property
 	 */
-	function updateMarkerProperty(markerId, property, value) {
+	function updateMarkerProperty(markerId: string, property: keyof Marker, value: unknown) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
-			marker[property] = value;
+			(marker as any)[property] = value;
 			markers = [...markers];
 			syncMarkersToStore();
 		}
@@ -921,13 +888,13 @@
 	 * @param {string} markerId - Region ID
 	 * @param {string} newLabel - New label text
 	 */
-	function regenerateMarkerLabel(markerId, newLabel) {
+	function regenerateMarkerLabel(markerId: string, newLabel: string) {
 		if (regions) {
 			const allRegions = regions.getRegions();
 			const region = allRegions.find(r => r.id === markerId);
 			if (region) {
 				const newLabelElement = createRegionLabel(newLabel, region.start, markerId);
-				region.element.replaceChildren(newLabelElement);
+				region.element!.replaceChildren(newLabelElement);
 
 				// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
 				setTimeout(() => {
@@ -946,7 +913,7 @@
 		}
 	}
 
-	function updateMarkerPreset(markerId, presetName) {
+	function updateMarkerPreset(markerId: string, presetName: string) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			marker.presetName = presetName;
@@ -960,11 +927,11 @@
 		}
 	}
 
-	function toggleBoardSelection(markerId, boardId) {
+	function toggleBoardSelection(markerId: string, boardId: string) {
 		const marker = markers.find(m => m.id === markerId);
 		if (marker) {
 			if (marker.boards.includes(boardId)) {
-				marker.boards = marker.boards.filter(id => id !== boardId);
+				marker.boards = marker.boards.filter((id: string) => id !== boardId);
 			} else {
 				marker.boards = [...marker.boards, boardId];
 			}
@@ -973,8 +940,8 @@
 		}
 	}
 
-	function deleteMarker(markerId) {
-		const allRegions = regions.getRegions();
+	function deleteMarker(markerId: string) {
+		const allRegions = regions!.getRegions();
 		const region = allRegions.find(r => r.id === markerId);
 		if (region) {
 			region.remove();
@@ -1027,7 +994,14 @@
 async function playFullProgram() {
 		lastActiveProgramId.set(programId);
 
-		let currentProgram = null;
+		if (isPaused) {
+			isPaused = false;
+			isPlaying = true;
+			resumePlaybackService();
+			return;
+		}
+
+		let currentProgram: ProgramModel | undefined;
 		const unsubscribe = programsStore.subscribe(programs => {
 			currentProgram = programs.find(p => p.id === programId);
 		});
@@ -1043,19 +1017,15 @@ async function playFullProgram() {
 		}
 
 		const currentTime = getPlayheadTime();
-		const t0 = performance.now();
-		console.log(`[TIMING] ▶️ PLAY button pressed t0=${t0.toFixed(1)}ms pos=${currentTime}`);
 
 		isPlaying = true;
-		playProgramService(currentProgram, currentTime).then(() => {
-			console.log(`[TIMING] fetch returned dt=${(performance.now() - t0).toFixed(1)}ms`);
-		});
+		playProgramService(currentProgram, currentTime);
 	}
 
 	function stopFullProgram() {
 		lastActiveProgramId.set(programId);
-		console.log('⏸ PAUSE pressed');
 
+		isPaused = true;
 		stopPlayhead();
 
 		if (seekDebounceTimeout) {
@@ -1068,8 +1038,9 @@ async function playFullProgram() {
 
 	function stopAndReset() {
 		lastActiveProgramId.set(programId);
-		console.log('⏹ STOP pressed');
 
+		isPaused = false;
+		playheadTimeSecs = 0;
 		stopPlayhead();
 
 		if (seekDebounceTimeout) {
@@ -1094,7 +1065,7 @@ async function playFullProgram() {
 		const newProgramId = programId || `${sanitizedSongName}${trackSuffix}-${timestamp}`;
 
 		// Get existing program data to preserve audioId
-		let existingProgram = null;
+		let existingProgram: ProgramModel | undefined;
 		if (programId) {
 			programsStore.subscribe(programs => {
 				existingProgram = programs.find(p => p.id === programId);
@@ -1126,6 +1097,7 @@ async function playFullProgram() {
 			bpm: bpm ? Number(bpm) : undefined,
 			gridOffset: gridOffset || 0,
 			clickRate: clickRate,
+			guideVolume: guideVolume,
 			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0
 		};
 
@@ -1133,7 +1105,7 @@ async function playFullProgram() {
 		const programInstance = ProgramModel.fromJson(programData);
 
 		if (programInstance) {
-			saveProgramToStore(programInstance, audioToUpload);
+			saveProgramToStore(programInstance, audioToUpload as string | null);
 			console.log('💾 Auto-saved program:', newProgramId);
 
 			audioToUpload = null;
@@ -1150,7 +1122,7 @@ async function playFullProgram() {
 
 		// Remove regions for current type only
 		toClear.forEach(marker => {
-			const region = regions.getRegions().find(r => r.id === marker.id);
+			const region = regions!.getRegions().find(r => r.id === marker.id);
 			if (region) region.remove();
 		});
 
@@ -1254,13 +1226,13 @@ async function playFullProgram() {
 		// Apply default board to visible cues only
 		markers = markers.map(marker => {
 			if (marker.type !== editMode) return marker;
-			return { ...marker, boards: [defaultTargetBoard] };
+			return { ...marker, boards: [defaultTargetBoard!] };
 		});
 
 		syncMarkersToStore();
 	}
 
-	function selectDefaultBoard(boardId) {
+	function selectDefaultBoard(boardId: string) {
 		defaultTargetBoard = boardId;
 		defaultBoardDropdownOpen = false;
 		debouncedSave();
@@ -1289,6 +1261,12 @@ async function playFullProgram() {
 		const peaks = program.id ? $guideCachedPeaks[program.id] : null;
 		if (!peaks && !$audioLoading) {
 			loadGuideAudioForProgram(program.id, program.guideAudioId);
+		}
+	});
+
+	$effect(() => {
+		if (guideBlobUrl && guideVolume !== 1.0) {
+			setSlotVolume('guide', guideVolume);
 		}
 	});
 
@@ -1328,15 +1306,15 @@ async function playFullProgram() {
 		<div class="program-transport-controls">
 			{#if isPlaying}
 				<button class="btn-program-pause" onclick={stopFullProgram}>
-					⏸
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12"/><rect x="9" y="2" width="4" height="12"/></svg>
 				</button>
 			{:else}
 				<button class="btn-program-play" onclick={playFullProgram}>
-					▶
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="3,1 14,8 3,15"/></svg>
 				</button>
 			{/if}
 			<button class="btn-program-stop" onclick={stopAndReset} title="Stop and reset to start">
-				⏹
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="1"/></svg>
 			</button>
 			<button class="song-name-btn" onclick={() => metadataModalOpen = true}>
 				{songName || 'Untitled'}
@@ -1512,7 +1490,7 @@ async function playFullProgram() {
 					{marker}
 					onToggleBoardSelection={toggleBoardSelection}
 					onOpenPresetPicker={openPresetPicker}
-					onUpdateSyncRate={(markerId, rate) => updateMarkerProperty(markerId, 'syncRate', rate)}
+					onUpdateSyncRate={(markerId: string, rate: number) => updateMarkerProperty(markerId, 'syncRate', rate)}
 					onDelete={deleteMarker}
 				/>
 			{/if}
@@ -1529,6 +1507,12 @@ async function playFullProgram() {
 						resamplingProgress={guideProgress}
 						mainWavesurfer={wavesurfer}
 						onRemove={removeGuide}
+						volume={guideVolume}
+						onVolumeChange={(vol) => {
+							guideVolume = vol;
+							setSlotVolume('guide', vol);
+							debouncedSave();
+						}}
 					/>
 				{:else}
 					<div
@@ -1550,7 +1534,7 @@ async function playFullProgram() {
 							accept="audio/*"
 							style="display: none"
 							onchange={(e) => {
-								const file = e.target?.files?.[0];
+								const file = (e.target as HTMLInputElement)?.files?.[0];
 								if (file) handleGuideUpload(file);
 							}}
 						/>
@@ -1684,7 +1668,7 @@ async function playFullProgram() {
 												>{q.charAt(0).toUpperCase() + q.slice(1)}</button>
 											{/each}
 											{#if isResampling}
-												<span class="resampled-percent">{Math.round((track.progress.current / track.progress.total) * 100)}%</span>
+												<span class="resampled-percent">{Math.round((track.progress!.current / track.progress!.total) * 100)}%</span>
 											{/if}
 										</div>
 										</div>

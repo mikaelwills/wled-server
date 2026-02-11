@@ -2,8 +2,6 @@ import { API_URL } from './api';
 import type { BoardState } from './types';
 import { resamplingProgress, resamplingComplete, playbackPosition, currentlyPlayingProgram, type SlotResamplingProgress } from '$lib/stores/store';
 
-export type { SlotResamplingProgress as ResamplingProgress };
-
 export type SseEvent =
   | { type: 'state_update'; board_id: string; state: BoardState }
   | { type: 'connection_status'; board_id: string; connected: boolean }
@@ -40,7 +38,7 @@ export function createSseConnection(
       } else if (data.type === 'connection_status') {
         onConnectionStatus(data.board_id, data.connected);
       } else if (data.type === 'resampling_progress') {
-        const progress: ResamplingProgress = {
+        const progress: SlotResamplingProgress = {
           slot: data.slot,
           programId: data.program_id,
           trackName: data.track_name,
@@ -64,16 +62,13 @@ export function createSseConnection(
           timestamp: Date.now(),
         });
       } else if (data.type === 'playback_started') {
-        console.log(`[TIMING] SSE playback_started t=${performance.now().toFixed(1)}ms program=${data.program_id} duration=${data.duration_secs}`);
       } else if (data.type === 'playback_position') {
-        console.log(`[TIMING] SSE playback_position t=${performance.now().toFixed(1)}ms pos=${data.position_secs.toFixed(3)}s`);
         playbackPosition.set({
           programId: data.program_id,
           positionSecs: data.position_secs,
           durationSecs: data.duration_secs,
         });
       } else if (data.type === 'playback_stopped') {
-        console.log(`[TIMING] SSE playback_stopped t=${performance.now().toFixed(1)}ms program=${data.program_id} reason=${data.reason}`);
         playbackPosition.set(null);
         currentlyPlayingProgram.set(null);
       }

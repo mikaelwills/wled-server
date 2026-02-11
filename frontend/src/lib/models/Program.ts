@@ -27,6 +27,7 @@ export interface ProgramData {
   gridOffset?: number;
   // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
   clickRate?: number;
+  guideVolume?: number;
 }
 
 export class Program implements ProgramData {
@@ -53,6 +54,7 @@ export class Program implements ProgramData {
   gridOffset?: number;
   // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
   clickRate?: number;
+  guideVolume?: number;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -73,6 +75,7 @@ export class Program implements ProgramData {
     this.bpm = data.bpm;
     this.gridOffset = data.gridOffset;
     this.clickRate = data.clickRate;
+    this.guideVolume = data.guideVolume;
   }
 
   /**
@@ -125,6 +128,7 @@ export class Program implements ProgramData {
       bpm: data.bpm,
       gridOffset: data.gridOffset ?? data.grid_offset ?? 0,
       clickRate: data.clickRate ?? data.click_rate ?? 1.0,
+      guideVolume: data.guideVolume ?? data.guide_volume,
     });
   }
 
@@ -151,6 +155,7 @@ export class Program implements ProgramData {
       bpm: this.bpm,
       grid_offset: this.gridOffset,
       click_rate: this.clickRate,
+      guide_volume: this.guideVolume,
     };
   }
 }

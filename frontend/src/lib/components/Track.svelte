@@ -13,6 +13,8 @@
 		resamplingProgress: SlotResamplingProgress | null;
 		mainWavesurfer: WaveSurfer | null;
 		onRemove: () => void;
+		volume?: number;
+		onVolumeChange?: (volume: number) => void;
 	}
 
 	let {
@@ -23,6 +25,8 @@
 		resamplingProgress,
 		mainWavesurfer,
 		onRemove,
+		volume,
+		onVolumeChange,
 	}: Props = $props();
 
 	let wavesurfer: WaveSurfer | null = $state(null);
@@ -99,9 +103,16 @@
 			class="volume-slider"
 			min="0"
 			max="200"
-			value={($slotVolume[track.id] ?? 1.0) * 100}
-			oninput={(e) => setSlotVolume(track.id, parseInt(e.currentTarget.value) / 100)}
-			title={`Volume: ${Math.round(($slotVolume[track.id] ?? 1.0) * 100)}%`}
+			value={(volume !== undefined ? volume : ($slotVolume[track.id] ?? 1.0)) * 100}
+			oninput={(e) => {
+				const vol = parseInt(e.currentTarget.value) / 100;
+				if (onVolumeChange) {
+					onVolumeChange(vol);
+				} else {
+					setSlotVolume(track.id, vol);
+				}
+			}}
+			title={`Volume: ${Math.round((volume !== undefined ? volume : ($slotVolume[track.id] ?? 1.0)) * 100)}%`}
 		/>
 		{#if resamplingProgress}
 			<span class="resampling-inline">

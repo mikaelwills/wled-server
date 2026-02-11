@@ -8,7 +8,7 @@
 	let isDragging = $state(false);
 	let isLoading = $state(false);
 
-	let activeResamplingProgress = $derived(() => {
+	let activeResamplingProgress = $derived.by(() => {
 		const progress = $resamplingProgress;
 		return progress.backing || progress.guide || progress.click || progress.aux;
 	});
@@ -231,7 +231,7 @@
 			// Option 1: Raw Audio (default)
 			audioDataURL = await new Promise((resolve, reject) => {
 				const reader = new FileReader();
-				reader.onload = (e) => resolve(e.target.result);
+				reader.onload = (e) => resolve(e.target!.result);
 				reader.onerror = reject;
 				reader.readAsDataURL(file);
 			});
