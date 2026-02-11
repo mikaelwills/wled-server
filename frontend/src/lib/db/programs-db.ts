@@ -218,6 +218,34 @@ export async function deleteProgram(programId: string): Promise<void> {
   }
 }
 
+export async function duplicateProgram(programId: string): Promise<Program | null> {
+  if (!browser) return null;
+
+  try {
+    const response = await fetch(`${API_URL}/programs/${programId}/duplicate`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to duplicate program: ${text}`);
+    }
+
+    const data = await response.json();
+    const newProgram = Program.fromJson(data);
+
+    if (newProgram) {
+      programs.update(currentPrograms => [...currentPrograms, newProgram]);
+    }
+
+    return newProgram;
+  } catch (error) {
+    console.error('Failed to duplicate program:', error);
+    programsError.set('Failed to duplicate program.');
+    throw error;
+  }
+}
+
 /**
  * Reorder programs and persist to backend
  */

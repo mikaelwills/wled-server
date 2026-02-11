@@ -1,6 +1,7 @@
 use axum::{extract::{Path, State}, http::StatusCode, Json};
-use tracing::info;
+use tracing::{info, warn, error};
 
+use crate::audio;
 use crate::program;
 use crate::types::SharedState;
 
@@ -227,4 +228,220 @@ pub async fn reload_programs(
     info!("✅ Reloaded {} program(s) from disk", loaded);
 
     Ok(Json(ReloadResponse { loaded, previous }))
+}
+
+fn copy_file_if_exists(src: &std::path::Path, dst: &std::path::Path, label: &str) {
+    if src.exists() {
+        match std::fs::copy(src, dst) {
+            Ok(bytes) => {
+                info!("Copied {} ({} bytes): {} -> {}", label, bytes, src.display(), dst.display());
+                if let Ok(src_meta) = std::fs::metadata(src) {
+                    if let Ok(mtime) = src_meta.modified() {
+                        if let Ok(dst_file) = std::fs::File::options().write(true).open(dst) {
+                            let _ = dst_file.set_modified(mtime);
+                        }
+                    }
+                }
+            }
+            Err(e) => warn!("Failed to copy {}: {} -> {}: {}", label, src.display(), dst.display(), e),
+        }
+    } else {
+        warn!("Source {} not found, skipping: {}", label, src.display());
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn duplicate_program(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<program::Program>), (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
+    }
+
+    let (source, max_order) = {
+        let programs = state.programs.read().await;
+        let source = programs
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+        let max_order = programs.values().map(|p| p.display_order).max().unwrap_or(0);
+        (source, max_order)
+    };
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let new_song_name = format!("{} (Copy)", source.song_name);
+
+    let sanitized: String = new_song_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let collapsed = sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let new_id = format!("{}-{}", collapsed, timestamp);
+
+    let mut clone = source.clone();
+    clone.id = new_id.clone();
+    clone.song_name = new_song_name;
+    clone.created_at = chrono::Utc::now().to_rfc3339();
+    clone.next_program_id = None;
+    clone.display_order = max_order + 1;
+
+    let audio_dir = &state.storage_paths.audio;
+    let resampled_dir = audio_dir.join("resampled");
+
+    if let Some(ref old_audio_file) = source.audio_file {
+        let ext = std::path::Path::new(old_audio_file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3");
+        let new_audio_file = format!("{}.{}", new_id, ext);
+
+        copy_file_if_exists(
+            &audio_dir.join(old_audio_file),
+            &audio_dir.join(&new_audio_file),
+            "backing audio",
+        );
+        copy_file_if_exists(
+            &audio_dir.join(format!("{}.peaks.json", old_audio_file)),
+            &audio_dir.join(format!("{}.peaks.json", new_audio_file)),
+            "backing peaks",
+        );
+
+        let old_cache_dir = resampled_dir.join(old_audio_file);
+        if old_cache_dir.exists() {
+            let new_cache_dir = resampled_dir.join(&new_audio_file);
+            match copy_dir_recursive(&old_cache_dir, &new_cache_dir) {
+                Ok(_) => info!("Copied resampled cache: {} -> {}", old_cache_dir.display(), new_cache_dir.display()),
+                Err(e) => warn!("Failed to copy resampled cache: {}", e),
+            }
+        }
+
+        clone.audio_file = Some(new_audio_file);
+    }
+
+    if let Some(ref old_guide_file) = source.guide_audio_file {
+        let ext = std::path::Path::new(old_guide_file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3");
+        let new_guide_file = format!("{}_guide.{}", new_id, ext);
+
+        copy_file_if_exists(
+            &audio_dir.join(old_guide_file),
+            &audio_dir.join(&new_guide_file),
+            "guide audio",
+        );
+        copy_file_if_exists(
+            &audio_dir.join(format!("{}.peaks.json", old_guide_file)),
+            &audio_dir.join(format!("{}.peaks.json", new_guide_file)),
+            "guide peaks",
+        );
+
+        let old_cache_dir = resampled_dir.join(old_guide_file);
+        if old_cache_dir.exists() {
+            let new_cache_dir = resampled_dir.join(&new_guide_file);
+            match copy_dir_recursive(&old_cache_dir, &new_cache_dir) {
+                Ok(_) => info!("Copied guide resampled cache: {} -> {}", old_cache_dir.display(), new_cache_dir.display()),
+                Err(e) => warn!("Failed to copy guide resampled cache: {}", e),
+            }
+        }
+
+        clone.guide_audio_file = Some(new_guide_file);
+    }
+
+    clone
+        .save_to_file(&state.storage_paths.programs)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to save duplicated program: {}", e),
+            )
+        })?;
+
+    info!("Duplicated program '{}' -> '{}' ({})", source.id, clone.id, clone.song_name);
+
+    let cache_dir = audio_dir.join("resampled");
+    if let Some(ref new_audio_file) = clone.audio_file {
+        let audio_path = audio_dir.join(new_audio_file);
+        let audio_engine = state.audio_engine.clone();
+        let track_id = std::path::Path::new(new_audio_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(new_audio_file)
+            .to_string();
+        let cache_dir_clone = cache_dir.clone();
+        tokio::spawn(async move {
+            let path = audio_path;
+            let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&path)).await;
+            match decode_result {
+                Ok(Ok(decoded)) => {
+                    let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                    let mut engine = audio_engine.lock().await;
+                    engine.load_track(track_id.clone(), track).await;
+                    info!("Loaded duplicated backing track into engine: {}", track_id);
+                }
+                Ok(Err(e)) => error!("Failed to decode duplicated backing audio: {}", e),
+                Err(e) => error!("Decode task failed for duplicated backing: {}", e),
+            }
+        });
+    }
+
+    if let Some(ref new_guide_file) = clone.guide_audio_file {
+        let guide_path = audio_dir.join(new_guide_file);
+        let audio_engine = state.audio_engine.clone();
+        let track_id = std::path::Path::new(new_guide_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(new_guide_file)
+            .to_string();
+        let cache_dir_clone = cache_dir.clone();
+        tokio::spawn(async move {
+            let path = guide_path;
+            let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&path)).await;
+            match decode_result {
+                Ok(Ok(decoded)) => {
+                    let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                    let mut engine = audio_engine.lock().await;
+                    engine.load_guide_track(track_id.clone(), track).await;
+                    info!("Loaded duplicated guide track into engine: {}", track_id);
+                }
+                Ok(Err(e)) => error!("Failed to decode duplicated guide audio: {}", e),
+                Err(e) => error!("Decode task failed for duplicated guide: {}", e),
+            }
+        });
+    }
+
+    let result = clone.clone();
+    {
+        let mut programs = state.programs.write().await;
+        programs.insert(clone.id.clone(), clone);
+    }
+
+    Ok((StatusCode::CREATED, Json(result)))
 }

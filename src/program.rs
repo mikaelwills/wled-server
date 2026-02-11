@@ -124,6 +124,11 @@ impl Program {
                 fs::remove_file(&guide_peaks_path)?;
                 info!("Deleted guide peaks: {}.peaks.json", guide_file);
             }
+            let guide_cache_dir = audio_path.join("resampled").join(guide_file);
+            if guide_cache_dir.exists() {
+                fs::remove_dir_all(&guide_cache_dir)?;
+                info!("Deleted guide resampled cache: resampled/{}", guide_file);
+            }
         }
 
         if let Some(audio_file) = &self.audio_file {
@@ -136,6 +141,11 @@ impl Program {
             if peaks_path.exists() {
                 fs::remove_file(&peaks_path)?;
                 info!("Deleted peaks: {}.peaks.json", audio_file);
+            }
+            let cache_dir = audio_path.join("resampled").join(audio_file);
+            if cache_dir.exists() {
+                fs::remove_dir_all(&cache_dir)?;
+                info!("Deleted resampled cache: resampled/{}", audio_file);
             }
         }
 

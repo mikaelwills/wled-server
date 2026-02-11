@@ -76,6 +76,7 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/programs/:id", get(programs::get_program))
         .route("/programs/:id", delete(programs::delete_program))
         .route("/programs/:id", put(programs::update_program))
+        .route("/programs/:id/duplicate", post(programs::duplicate_program))
         .route("/programs/:id/play", post(programs::play_program))
         .route("/programs/stop", post(programs::stop_program))
         .route("/programs/reload", post(programs::reload_programs))

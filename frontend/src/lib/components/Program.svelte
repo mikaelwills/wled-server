@@ -5,7 +5,7 @@
 	import WaveSurfer from 'wavesurfer.js';
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
-	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore } from '$lib/db/programs-db';
+	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore, duplicateProgram as duplicateProgramService } from '$lib/db/programs-db';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService, resumePlayback as resumePlaybackService } from '$lib/db/playback-db';
 	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram, setSlotVolume } from '$lib/db/audio-db';
 	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
@@ -1131,6 +1131,15 @@ async function playFullProgram() {
 		syncMarkersToStore();
 	}
 
+	async function handleDuplicate() {
+		if (!programId) return;
+		try {
+			await duplicateProgramService(programId);
+		} catch (err) {
+			console.error('Failed to duplicate program:', err);
+		}
+	}
+
 	function deleteProgram() {
 		if (!programId) return;
 
@@ -1355,6 +1364,7 @@ async function playFullProgram() {
 				</button>
 				{#if actionMenuOpen && programId}
 					<div class="action-menu-dropdown">
+						<button class="action-menu-item" onclick={() => { handleDuplicate(); actionMenuOpen = false; }}>Duplicate</button>
 						<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
 						<button class="action-menu-item" onclick={() => { resampledDialogOpen = true; fetchResampledInfo(); actionMenuOpen = false; }}>Resampled</button>
 						<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
@@ -2130,8 +2140,8 @@ async function playFullProgram() {
 	}
 
 	.guide-section {
-		margin-top: 0.5rem;
-		padding-top: 0.5rem;
+		margin-top: 0;
+		padding-top: 0;
 		padding-bottom: 0.5rem;
 	}
 
