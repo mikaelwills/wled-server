@@ -490,8 +490,20 @@ impl AudioThread {
             let device = match resolve_device(&device_manager, &current_device_name) {
                 Some(d) => d,
                 None => {
-                    error!("No audio output device available");
-                    return;
+                    warn!("No audio output device available, waiting for device...");
+                    let _ = broadcast_tx.send(SseEvent::AudioDeviceLost {
+                        device_name: current_device_name
+                            .clone()
+                            .unwrap_or_else(|| "none".into()),
+                    });
+                    Self::wait_for_device_recovery(
+                        &mut command_rx,
+                        &state,
+                        &current_device_name,
+                        &broadcast_tx,
+                    )
+                    .await;
+                    continue;
                 }
             };
 
@@ -515,8 +527,20 @@ impl AudioThread {
             ) {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("Failed to build audio stream: {}", e);
-                    return;
+                    warn!("Failed to build audio stream: {}, waiting for device...", e);
+                    let _ = broadcast_tx.send(SseEvent::AudioDeviceLost {
+                        device_name: current_device_name
+                            .clone()
+                            .unwrap_or_else(|| "unknown".into()),
+                    });
+                    Self::wait_for_device_recovery(
+                        &mut command_rx,
+                        &state,
+                        &current_device_name,
+                        &broadcast_tx,
+                    )
+                    .await;
+                    continue;
                 }
             };
 
