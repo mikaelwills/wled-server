@@ -35,6 +35,8 @@ pub struct Program {
     pub guide_audio_file: Option<String>,  // Guide track filename
     #[serde(skip_serializing_if = "Option::is_none")]
     pub click_rate: Option<f64>,  // Click track rate multiplier (0.5, 1.0, or 2.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guide_volume: Option<f64>,
 }
 
 fn default_transition_type() -> String {

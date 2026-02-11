@@ -128,9 +128,8 @@ impl AudioConfig {
         let (device_id, output_channels) = if device_exists {
             device_manager.select_device(Some(preferred_device.clone()));
             tracing::info!("Restored preferred audio device: {}", preferred_device);
-            let channels = device_manager
-                .get_device_output_channels(preferred_device)
-                .unwrap_or(2) as usize;
+            let dev = available_devices.iter().find(|d| &d.id == preferred_device);
+            let channels = dev.map(|d| d.output_channels).unwrap_or(2) as usize;
             (preferred_device.clone(), channels)
         } else {
             let dev = available_devices.iter().find(|d| d.is_default)

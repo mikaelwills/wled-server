@@ -6,9 +6,10 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingConfig, SlotId, SLOT_COUNT};
+use crate::sse::SseEvent;
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 
@@ -181,6 +182,7 @@ impl Drop for AudioThread {
 
 enum CommandResult {
     RebuildStream(String),
+    StreamError,
     Shutdown,
 }
 
@@ -198,11 +200,31 @@ fn find_device_by_name(name: &str) -> Option<cpal::Device> {
     None
 }
 
+fn resolve_device(
+    device_manager: &DeviceManager,
+    override_name: &Option<String>,
+) -> Option<cpal::Device> {
+    if let Some(ref name) = override_name {
+        if let Some(d) = find_device_by_name(name) {
+            return Some(d);
+        }
+        eprintln!("[AudioThread] Device '{}' not found, falling back to default", name);
+    } else if let Some(ref name) = device_manager.get_selected_device() {
+        if let Some(d) = find_device_by_name(name) {
+            return Some(d);
+        }
+        eprintln!("[AudioThread] Selected device '{}' not found, using default", name);
+    }
+    cpal::default_host().default_output_device()
+}
+
 fn build_stream(
     device: &cpal::Device,
     state: Arc<InternalPlaybackState>,
     position: Arc<AtomicU64>,
     health: Arc<PlaybackHealth>,
+    stream_error: Arc<AtomicBool>,
+    device_manager: &DeviceManager,
 ) -> Result<Stream, String> {
     let config = device
         .default_output_config()
@@ -214,6 +236,8 @@ fn build_stream(
 
     let output_channels = config.channels() as usize;
     eprintln!("[AudioThread] Device output channels: {}", output_channels);
+
+    device_manager.set_active_device_info(output_channels as u16, sample_rate);
 
     {
         let mut current_routing = (**state.routing.load()).clone();
@@ -375,8 +399,13 @@ fn build_stream(
                             .fetch_add(silence_written, Ordering::Relaxed);
                     }
                 },
-                |err| {
-                    eprintln!("Audio stream error: {}", err);
+                {
+                    let stream_error = Arc::clone(&stream_error);
+                    move |err| {
+                        if !stream_error.swap(true, Ordering::SeqCst) {
+                            eprintln!("[AudioThread] Stream error (device lost): {}", err);
+                        }
+                    }
                 },
                 None,
             )
@@ -404,6 +433,7 @@ impl AudioThread {
         position: Arc<AtomicU64>,
         health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     ) -> Result<Self, String> {
         let handle = thread::Builder::new()
             .name("audio-playback".into())
@@ -418,6 +448,7 @@ impl AudioThread {
                     position,
                     health,
                     device_manager,
+                    broadcast_tx,
                 ));
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
@@ -432,61 +463,37 @@ impl AudioThread {
         position: Arc<AtomicU64>,
         health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
+        broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     ) {
         let state = InternalPlaybackState::new();
         let mut current_device_name: Option<String> = None;
 
         loop {
-            let device = if let Some(ref name) = current_device_name {
-                match find_device_by_name(name) {
-                    Some(d) => d,
-                    None => {
-                        eprintln!("Device '{}' not found, falling back to default", name);
-                        match cpal::default_host().default_output_device() {
-                            Some(d) => d,
-                            None => {
-                                eprintln!("No audio output device available");
-                                return;
-                            }
-                        }
-                    }
-                }
-            } else {
-                let selected = device_manager.get_selected_device();
-                if let Some(ref name) = selected {
-                    current_device_name = Some(name.clone());
-                    match find_device_by_name(name) {
-                        Some(d) => d,
-                        None => {
-                            eprintln!("Selected device '{}' not found, using default", name);
-                            match cpal::default_host().default_output_device() {
-                                Some(d) => d,
-                                None => {
-                                    eprintln!("No audio output device available");
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    match cpal::default_host().default_output_device() {
-                        Some(d) => d,
-                        None => {
-                            eprintln!("No audio output device available");
-                            return;
-                        }
-                    }
+            let device = match resolve_device(&device_manager, &current_device_name) {
+                Some(d) => d,
+                None => {
+                    eprintln!("[AudioThread] No audio output device available");
+                    return;
                 }
             };
 
             let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
-            eprintln!("Audio output device: {}", device_name);
+            if current_device_name.is_none() {
+                if let Some(ref selected) = device_manager.get_selected_device() {
+                    current_device_name = Some(selected.clone());
+                }
+            }
+            eprintln!("[AudioThread] Audio output device: {}", device_name);
+
+            let stream_error = Arc::new(AtomicBool::new(false));
 
             let stream = match build_stream(
                 &device,
                 Arc::clone(&state),
                 Arc::clone(&position),
                 Arc::clone(&health),
+                Arc::clone(&stream_error),
+                &device_manager,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -495,7 +502,7 @@ impl AudioThread {
                 }
             };
 
-            match Self::process_commands(&mut command_rx, &state).await {
+            match Self::process_commands(&mut command_rx, &state, &stream_error).await {
                 CommandResult::RebuildStream(new_device) => {
                     eprintln!("[AudioThread] Switching device to: {}", new_device);
 
@@ -514,6 +521,28 @@ impl AudioThread {
                     eprintln!("[AudioThread] Old stream dropped, rebuilding...");
 
                     current_device_name = Some(new_device);
+                    continue;
+                }
+                CommandResult::StreamError => {
+                    let lost_name = current_device_name.clone().unwrap_or_else(|| device_name.clone());
+                    eprintln!("[AudioThread] Device lost: {}", lost_name);
+
+                    let _ = broadcast_tx.send(SseEvent::AudioDeviceLost {
+                        device_name: lost_name.clone(),
+                    });
+
+                    state.playing.store(false, Ordering::SeqCst);
+                    state.clear_all_slots();
+                    let _ = stream.pause();
+                    drop(stream);
+
+                    Self::wait_for_device_recovery(
+                        &mut command_rx,
+                        &state,
+                        &current_device_name,
+                        &broadcast_tx,
+                    ).await;
+
                     continue;
                 }
                 CommandResult::Shutdown => {
@@ -539,66 +568,129 @@ impl AudioThread {
         }
     }
 
+    async fn wait_for_device_recovery(
+        command_rx: &mut mpsc::Receiver<PlaybackCommand>,
+        state: &Arc<InternalPlaybackState>,
+        device_name: &Option<String>,
+        broadcast_tx: &Arc<broadcast::Sender<SseEvent>>,
+    ) {
+        const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+        let mut attempts = 0u32;
+
+        loop {
+            let found = if let Some(ref name) = device_name {
+                find_device_by_name(name).is_some()
+            } else {
+                cpal::default_host().default_output_device().is_some()
+            };
+
+            if found {
+                let name = device_name.clone().unwrap_or_else(|| "default".to_string());
+                eprintln!("[AudioThread] Device restored: {} (after {} retries)", name, attempts);
+                let _ = broadcast_tx.send(SseEvent::AudioDeviceRestored {
+                    device_name: name,
+                });
+                return;
+            }
+
+            attempts += 1;
+            if attempts % 15 == 1 {
+                let name = device_name.clone().unwrap_or_else(|| "default".to_string());
+                eprintln!("[AudioThread] Waiting for device '{}' (attempt {})...", name, attempts);
+            }
+
+            tokio::select! {
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(PlaybackCommand::SetDevice(new_device)) => {
+                            eprintln!("[AudioThread] Device switch requested during recovery: {}", new_device);
+                            state.playing.store(false, Ordering::Release);
+                            return;
+                        }
+                        Some(_) => {}
+                        None => return,
+                    }
+                }
+                _ = tokio::time::sleep(RETRY_INTERVAL) => {}
+            }
+        }
+    }
+
     async fn process_commands(
         command_rx: &mut mpsc::Receiver<PlaybackCommand>,
         state: &Arc<InternalPlaybackState>,
+        stream_error: &Arc<AtomicBool>,
     ) -> CommandResult {
-        while let Some(cmd) = command_rx.recv().await {
-            match cmd {
-                PlaybackCommand::Play(track) => {
-                    state.playing.store(false, Ordering::Release);
-                    state.sample_index.store(0, Ordering::Release);
-                    state.load_slot(SlotId::Backing, track);
-                    state.playing.store(true, Ordering::Release);
+        let mut error_check = tokio::time::interval(Duration::from_millis(500));
+        error_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                    let routing = state.routing.load();
-                    eprintln!("[AudioThread] PLAY started - output_channels={}, stereo_mode={}",
-                        routing.output_channels, routing.is_stereo_mode());
-                    for (i, slot_routing) in routing.slots.iter().enumerate() {
-                        let slot_samples = state.slots[i].sample_count.load(Ordering::Acquire);
-                        let slot_channels = state.slots[i].channels.load(Ordering::Relaxed);
-                        eprintln!("[AudioThread]   Slot {}: samples={}, ch={}, route_to={}/{}, muted={}",
-                            i, slot_samples, slot_channels,
-                            slot_routing.left_channel, slot_routing.right_channel, slot_routing.muted);
+        loop {
+            tokio::select! {
+                cmd = command_rx.recv() => {
+                    let Some(cmd) = cmd else {
+                        return CommandResult::Shutdown;
+                    };
+                    match cmd {
+                        PlaybackCommand::Play(track) => {
+                            state.playing.store(false, Ordering::Release);
+                            state.sample_index.store(0, Ordering::Release);
+                            state.load_slot(SlotId::Backing, track);
+                            state.playing.store(true, Ordering::Release);
+
+                            let routing = state.routing.load();
+                            eprintln!("[AudioThread] PLAY started - output_channels={}, stereo_mode={}",
+                                routing.output_channels, routing.is_stereo_mode());
+                            for (i, slot_routing) in routing.slots.iter().enumerate() {
+                                let slot_samples = state.slots[i].sample_count.load(Ordering::Acquire);
+                                let slot_channels = state.slots[i].channels.load(Ordering::Relaxed);
+                                eprintln!("[AudioThread]   Slot {}: samples={}, ch={}, route_to={}/{}, muted={}",
+                                    i, slot_samples, slot_channels,
+                                    slot_routing.left_channel, slot_routing.right_channel, slot_routing.muted);
+                            }
+                        }
+                        PlaybackCommand::Stop => {
+                            state.playing.store(false, Ordering::Release);
+                            state.sample_index.store(0, Ordering::Release);
+                            state.clear_all_slots();
+                        }
+                        PlaybackCommand::Pause => {
+                            state.playing.store(false, Ordering::Release);
+                        }
+                        PlaybackCommand::Resume => {
+                            state.playing.store(true, Ordering::Release);
+                        }
+                        PlaybackCommand::Seek(pos) => {
+                            state.sample_index.store(pos as usize, Ordering::Release);
+                        }
+                        PlaybackCommand::SetDevice(device_id) => {
+                            state.playing.store(false, Ordering::Release);
+                            return CommandResult::RebuildStream(device_id);
+                        }
+                        PlaybackCommand::UpdateRouting(routing) => {
+                            state.update_routing(routing);
+                        }
+                        PlaybackCommand::SetMute { slot, muted } => {
+                            state.set_mute(slot, muted);
+                        }
+                        PlaybackCommand::SetVolume { slot, volume } => {
+                            state.set_volume(slot, volume);
+                        }
+                        PlaybackCommand::LoadSlot { slot, track } => {
+                            eprintln!("[AudioThread] LoadSlot command: slot={:?}, track_channels={}, track_samples={}",
+                                slot, track.channels, track.original_samples.len());
+                            state.load_slot(slot, track);
+                        }
+                        PlaybackCommand::ClearSlot(slot) => {
+                            state.clear_slot(slot);
+                        }
                     }
                 }
-                PlaybackCommand::Stop => {
-                    state.playing.store(false, Ordering::Release);
-                    state.sample_index.store(0, Ordering::Release);
-                    state.clear_all_slots();
-                }
-                PlaybackCommand::Pause => {
-                    state.playing.store(false, Ordering::Release);
-                }
-                PlaybackCommand::Resume => {
-                    state.playing.store(true, Ordering::Release);
-                }
-                PlaybackCommand::Seek(pos) => {
-                    state.sample_index.store(pos as usize, Ordering::Release);
-                }
-                PlaybackCommand::SetDevice(device_id) => {
-                    state.playing.store(false, Ordering::Release);
-                    return CommandResult::RebuildStream(device_id);
-                }
-                PlaybackCommand::UpdateRouting(routing) => {
-                    state.update_routing(routing);
-                }
-                PlaybackCommand::SetMute { slot, muted } => {
-                    state.set_mute(slot, muted);
-                }
-                PlaybackCommand::SetVolume { slot, volume } => {
-                    state.set_volume(slot, volume);
-                }
-                PlaybackCommand::LoadSlot { slot, track } => {
-                    eprintln!("[AudioThread] LoadSlot command: slot={:?}, track_channels={}, track_samples={}",
-                        slot, track.channels, track.original_samples.len());
-                    state.load_slot(slot, track);
-                }
-                PlaybackCommand::ClearSlot(slot) => {
-                    state.clear_slot(slot);
+                _ = error_check.tick() => {
+                    if stream_error.load(Ordering::SeqCst) {
+                        return CommandResult::StreamError;
+                    }
                 }
             }
         }
-        CommandResult::Shutdown
     }
 }

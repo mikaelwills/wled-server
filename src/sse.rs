@@ -42,4 +42,12 @@ pub enum SseEvent {
         program_id: String,
         reason: String,
     },
+    #[serde(rename = "audio_device_lost")]
+    AudioDeviceLost {
+        device_name: String,
+    },
+    #[serde(rename = "audio_device_restored")]
+    AudioDeviceRestored {
+        device_name: String,
+    },
 }

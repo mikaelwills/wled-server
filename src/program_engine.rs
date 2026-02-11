@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
-use crate::audio::AudioEngine;
+use crate::audio::{AudioEngine, SlotId};
 use crate::config::{AudioSource, Config, PatternType};
 use crate::cue_scheduler::{
     AudioTimingConfig, CueScheduler, CueType, PatternCueConfig, ScheduledCue,
@@ -465,6 +465,9 @@ impl ProgramEngine {
                                 println!("[TIMING] engine: acquiring engine lock dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                 let mut eng = engine.lock().await;
                                 println!("[TIMING] engine: lock acquired dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
+
+                                let guide_vol = program.guide_volume.unwrap_or(1.0).clamp(0.0, 2.0) as f32;
+                                eng.set_volume(SlotId::Guide, guide_vol).await;
 
                                 if let Some(bpm) = program.bpm {
                                     if let Some(track) = eng.get_track(track_id) {

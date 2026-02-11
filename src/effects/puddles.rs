@@ -11,7 +11,7 @@ struct ActivePuddle {
 
 struct PuddlesState {
     leds: Vec<[u8; 3]>,
-    next_puddle_time: f64,
+    last_beat: i32,
     active_puddles: Vec<ActivePuddle>,
 }
 
@@ -19,7 +19,7 @@ impl Default for PuddlesState {
     fn default() -> Self {
         Self {
             leds: vec![[0, 0, 0]; 512],
-            next_puddle_time: 0.0,
+            last_beat: -1,
             active_puddles: Vec::new(),
         }
     }
@@ -30,16 +30,18 @@ pub struct Puddles {
     fade_rate: u8,
     puddle_size: usize,
     fade_in_duration: f64,
+    beat_duration: f64,
     states: HashMap<u16, PuddlesState>,
 }
 
 impl Puddles {
-    pub fn new(color: [u8; 3], _bpm: f64) -> Self {
+    pub fn new(color: [u8; 3], bpm: f64) -> Self {
         Self {
             color,
             fade_rate: 240,
             puddle_size: 8,
             fade_in_duration: 0.15,
+            beat_duration: 60.0 / bpm,
             states: HashMap::new(),
         }
     }
@@ -57,16 +59,21 @@ impl Effect for Puddles {
             led[2] = (led[2] as u16 * fade / 256) as u8;
         }
 
-        if elapsed >= state.next_puddle_time {
+        let current_beat = (elapsed / self.beat_duration) as i32;
+        if current_beat != state.last_beat {
+            state.last_beat = current_beat;
+
             let mut rng = rand::rng();
-            let pos = rng.random_range(0..led_count);
-            let size = rng.random_range(1..self.puddle_size + 1);
-            state.active_puddles.push(ActivePuddle {
-                position: pos,
-                size,
-                age: 0.0,
-            });
-            state.next_puddle_time = elapsed + rng.random_range(0.03..0.12);
+            let spawn_count = rng.random_range(2..=4);
+            for _ in 0..spawn_count {
+                let pos = rng.random_range(0..led_count);
+                let size = rng.random_range(1..self.puddle_size + 1);
+                state.active_puddles.push(ActivePuddle {
+                    position: pos,
+                    size,
+                    age: 0.0,
+                });
+            }
         }
 
         let dt = 0.025;
