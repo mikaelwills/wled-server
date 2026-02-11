@@ -11,6 +11,7 @@
 	import { toggleTimingMonitor } from '$lib/stores/timing-store';
 	import AudioHealthMonitor from '$lib/components/AudioHealthMonitor.svelte';
 	import { toggleAudioHealthMonitor } from '$lib/stores/audio-health-store';
+	import ReadinessDialog from '$lib/components/ReadinessDialog.svelte';
 	import { API_URL } from '$lib/api';
 
 	let { children } = $props();
@@ -111,6 +112,7 @@
 
 <TimingMonitor />
 <AudioHealthMonitor />
+<ReadinessDialog />
 
 <div class="app">
 	<nav class="nav">

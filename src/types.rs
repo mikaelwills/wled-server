@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use crate::audio::{AudioEngine, AudioThread, DeviceManager};
@@ -179,6 +180,7 @@ pub struct AppState {
     pub device_manager: Arc<DeviceManager>,
     pub audio_engine: Arc<Mutex<AudioEngine>>,
     pub audio_thread: Option<Arc<AudioThread>>,
+    pub startup_time: Instant,
 }
 
 pub type SharedState = Arc<AppState>;

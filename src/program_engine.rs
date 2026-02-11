@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tracing::{error, info, warn};
 
 use crate::audio::{AudioEngine, SlotId};
 use crate::config::{AudioSource, Config, PatternType};
@@ -55,10 +56,13 @@ pub struct PlaybackState {
     pub audio_track: Option<String>,
     pub active_targets: Vec<ActiveTarget>,
     pub current_session_id: Option<String>,
+    pub program_id: Option<String>,
+    pub duration_secs: f64,
 }
 
 pub struct ProgramEngine {
     command_tx: mpsc::Sender<PlaybackCommand>,
+    state: Arc<RwLock<PlaybackState>>,
 }
 
 fn send_blackout(effects_engine: &EffectsEngine, boards: Vec<BoardTarget>) {
@@ -90,6 +94,8 @@ impl ProgramEngine {
             audio_track: None,
             active_targets: Vec::new(),
             current_session_id: None,
+            program_id: None,
+            duration_secs: 0.0,
         }));
 
         let completion_tx = command_tx.clone();
@@ -122,7 +128,10 @@ impl ProgramEngine {
             broadcast_tx,
         ));
 
-        Self { command_tx }
+        Self {
+            command_tx,
+            state: state.clone(),
+        }
     }
 
     pub async fn play(&self, program: Program, start_time: f64) -> Result<(), String> {
@@ -133,6 +142,12 @@ impl ProgramEngine {
             })
             .await
             .map_err(|e| e.to_string())
+    }
+
+    pub async fn get_playback_state(&self) -> Option<(String, f64)> {
+        let s = self.state.read().await;
+        let program_id = s.program_id.as_ref()?;
+        Some((program_id.clone(), s.duration_secs))
     }
 
     pub async fn stop(&self) -> Result<(), String> {
@@ -167,14 +182,13 @@ impl ProgramEngine {
                     start_time,
                 }) => {
                     let play_t0 = std::time::Instant::now();
-                    println!("[TIMING] engine: Play received program={} start={}s", program.id, start_time);
 
                     cue_scheduler.stop();
                     let _ = effects_engine.send_command(EngineCommand::Stop);
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
 
                     performance_mode.store(true, Ordering::SeqCst);
-                    println!("🎭 Performance mode: ON (WebSocket reconnection paused)");
+                    info!("Performance mode: ON (WebSocket reconnection paused)");
 
                     if let Some(ref metrics) = timing_metrics {
                         metrics.reset();
@@ -182,7 +196,7 @@ impl ProgramEngine {
 
                     let session_id = if let Some(ref history) = playback_history {
                         let id = history.start_session(&program.id, &program.song_name);
-                        println!("📊 Started playback session: {}", id);
+                        info!("Started playback session: {}", id);
                         Some(id)
                     } else {
                         None
@@ -230,15 +244,15 @@ impl ProgramEngine {
                                 }
 
                                 if boards.is_empty() {
-                                    println!(
-                                        "⚠️ Target '{}' has no online boards (0/{} online)",
+                                    warn!(
+                                        "Target '{}' has no online boards (0/{} online)",
                                         target,
                                         target_boards.len()
                                     );
                                     continue;
                                 }
-                                println!(
-                                    "🎯 Target '{}': {}/{} boards online",
+                                info!(
+                                    "Target '{}': {}/{} boards online",
                                     target,
                                     boards.len(),
                                     target_boards.len()
@@ -287,7 +301,7 @@ impl ProgramEngine {
                             let fire_at = Duration::from_secs_f64((cue.time - start_time).max(0.0));
 
                             if cue.targets.is_empty() {
-                                eprintln!("⚠️ Skipping cue '{}': no targets", cue.label);
+                                warn!("Skipping cue '{}': no targets", cue.label);
                                 continue;
                             }
 
@@ -296,8 +310,8 @@ impl ProgramEngine {
                                     let target_info = match target_map.get(target) {
                                         Some(t) => t,
                                         None => {
-                                            eprintln!(
-                                                "⚠️ Skipping pattern cue '{}': target '{}' not found or offline",
+                                            warn!(
+                                                "Skipping pattern cue '{}': target '{}' not found or offline",
                                                 cue.label, target
                                             );
                                             continue;
@@ -320,8 +334,8 @@ impl ProgramEngine {
                                     let target_info = match target_map.get(target) {
                                         Some(t) => t,
                                         None => {
-                                            eprintln!(
-                                                "⚠️ Skipping cue '{}': target '{}' not found",
+                                            warn!(
+                                                "Skipping cue '{}': target '{}' not found",
                                                 cue.label, target
                                             );
                                             continue;
@@ -343,7 +357,7 @@ impl ProgramEngine {
                                         },
                                     });
                                 } else {
-                                    eprintln!("⚠️ Skipping cue '{}': preset '{}' not found in effects or patterns", cue.label, preset_name);
+                                    warn!("Skipping cue '{}': preset '{}' not found in effects or patterns", cue.label, preset_name);
                                 }
                             }
                         }
@@ -351,22 +365,24 @@ impl ProgramEngine {
                         (target_map, scheduled_cues, audio_sync_delay_ms)
                     };
 
-                    println!(
-                        "🔌 Sending Off to {} targets before playback",
+                    info!(
+                        "Sending Off to {} targets before playback",
                         target_map.len()
                     );
                     for (_, target_info) in &target_map {
                         send_blackout(&effects_engine, target_info.boards.clone());
                     }
 
-                    println!(
-                        "📍 Scheduling {} cues from {}s",
+                    info!(
+                        "Scheduling {} cues from {}s",
                         scheduled_cues.len(),
                         start_time
                     );
 
                     {
                         let mut s = state.write().await;
+                        s.program_id = Some(program.id.clone());
+                        s.duration_secs = program.audio_duration.unwrap_or(0.0);
                         s.audio_track = Some(program.loopy_pro_track.clone());
                         s.active_targets = target_map
                             .values()
@@ -386,8 +402,6 @@ impl ProgramEngine {
                     let mut broadcast_rate: u32 = 44100;
                     let mut broadcast_channels: u32 = 2;
 
-                    println!("[TIMING] engine: pre-audio dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
-
                     match audio_source {
                         AudioSource::LoopyPro => {
                             let simulated_position = Arc::new(AtomicU64::new(0));
@@ -396,7 +410,7 @@ impl ProgramEngine {
 
                             let light_delay_samples = if audio_sync_delay_ms < 0 {
                                 let delay_ms = audio_sync_delay_ms.unsigned_abs();
-                                println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
+                                info!("Audio sync: -{}ms (delaying lights)", delay_ms);
                                 (delay_ms as f64 / 1000.0
                                     * simulated_sample_rate as f64
                                     * simulated_channels as f64)
@@ -406,10 +420,7 @@ impl ProgramEngine {
                             };
 
                             if audio_sync_delay_ms > 0 {
-                                println!(
-                                    "⏱️ Audio sync: +{}ms (delaying audio)",
-                                    audio_sync_delay_ms
-                                );
+                                info!("Audio sync: +{}ms (delaying audio)", audio_sync_delay_ms);
                                 tokio::time::sleep(Duration::from_millis(
                                     audio_sync_delay_ms as u64,
                                 ))
@@ -430,7 +441,7 @@ impl ProgramEngine {
                                 }
                             });
 
-                            std::thread::sleep(Duration::from_millis(5));
+                            tokio::time::sleep(Duration::from_millis(5)).await;
 
                             let audio_timing = AudioTimingConfig {
                                 position: simulated_position.clone(),
@@ -442,10 +453,7 @@ impl ProgramEngine {
                             let _ = cue_scheduler.start(scheduled_cues, audio_timing);
 
                             if let Some(ref callback) = on_audio_play {
-                                println!(
-                                    "🎵 Triggering Loopy Pro playback: {}",
-                                    program.loopy_pro_track
-                                );
+                                info!("Triggering Loopy Pro playback: {}", program.loopy_pro_track);
                                 callback(&program.loopy_pro_track);
                             }
 
@@ -462,11 +470,10 @@ impl ProgramEngine {
                                         .and_then(|s| s.to_str())
                                         .map(|s| s.to_string())
                                 });
-                                println!("[TIMING] engine: acquiring engine lock dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                 let mut eng = engine.lock().await;
-                                println!("[TIMING] engine: lock acquired dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
 
-                                let guide_vol = program.guide_volume.unwrap_or(1.0).clamp(0.0, 2.0) as f32;
+                                let guide_vol =
+                                    program.guide_volume.unwrap_or(1.0).clamp(0.0, 2.0) as f32;
                                 eng.set_volume(SlotId::Guide, guide_vol).await;
 
                                 if let Some(bpm) = program.bpm {
@@ -481,7 +488,6 @@ impl ProgramEngine {
                                             click_rate,
                                         )
                                         .await;
-                                        println!("[TIMING] engine: click generated dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                     }
                                 }
 
@@ -506,7 +512,7 @@ impl ProgramEngine {
 
                                 let light_delay_samples = if audio_sync_delay_ms < 0 {
                                     let delay_ms = audio_sync_delay_ms.unsigned_abs();
-                                    println!("⏱️ Audio sync: -{}ms (delaying lights)", delay_ms);
+                                    info!("Audio sync: -{}ms (delaying lights)", delay_ms);
                                     (delay_ms as f64 / 1000.0
                                         * playback_rate as f64
                                         * channels as f64)
@@ -528,8 +534,8 @@ impl ProgramEngine {
                                 let _ = cue_scheduler.start(scheduled_cues, audio_timing);
 
                                 if audio_sync_delay_ms > 0 {
-                                    println!(
-                                        "⏱️ Audio sync: +{}ms (delaying audio)",
+                                    info!(
+                                        "Audio sync: +{}ms (delaying audio)",
                                         audio_sync_delay_ms
                                     );
                                     tokio::time::sleep(Duration::from_millis(
@@ -543,7 +549,6 @@ impl ProgramEngine {
                                 } else {
                                     None
                                 };
-                                println!("[TIMING] engine: pre-play_with_guide dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
                                 if eng
                                     .play_with_guide(
                                         track_id,
@@ -552,30 +557,18 @@ impl ProgramEngine {
                                     )
                                     .await
                                 {
-                                    println!("[TIMING] engine: play_with_guide returned dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
-                                    if guide_id.is_some() {
-                                        println!("🔊 Playing audio + guide via local engine: {} @ {:?} samples", track_id, start_sample_opt);
-                                    } else {
-                                        println!(
-                                            "🔊 Playing audio via local engine: {} @ {:?} samples",
-                                            track_id, start_sample_opt
-                                        );
-                                    }
+                                    info!("Playing audio via local engine: {} @ {:?} samples (guide: {})", track_id, start_sample_opt, guide_id.is_some());
                                 } else {
-                                    println!("⚠️ Track not loaded in audio engine: {}", track_id);
+                                    warn!("Track not loaded in audio engine: {}", track_id);
                                     cue_scheduler.stop();
                                 }
 
-                                  broadcast_position = Some(eng.get_position_arc());
-                            broadcast_rate = playback_rate;
-                            broadcast_channels = channels;
-
+                                broadcast_position = Some(eng.get_position_arc());
+                                broadcast_rate = playback_rate;
+                                broadcast_channels = channels;
                             }
                         }
-                       
                     }
-
-                    println!("[TIMING] engine: post-audio dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
 
                     if let Some(handle) = position_task.take() {
                         handle.abort();
@@ -601,7 +594,8 @@ impl ProgramEngine {
                                     break;
                                 }
                                 let samples = pos_arc.load(Ordering::Acquire);
-                                let position_secs = samples as f64 / (broadcast_rate as f64 * broadcast_channels as f64);
+                                let position_secs = samples as f64
+                                    / (broadcast_rate as f64 * broadcast_channels as f64);
                                 let _ = pos_tx.send(SseEvent::PlaybackPosition {
                                     program_id: pos_id.clone(),
                                     position_secs,
@@ -611,11 +605,14 @@ impl ProgramEngine {
                         }));
                     }
 
-                    println!("[TIMING] engine: Play fully done dt={:.1}ms", play_t0.elapsed().as_secs_f64() * 1000.0);
+                    info!(
+                        "Playback started in {:.1}ms",
+                        play_t0.elapsed().as_secs_f64() * 1000.0
+                    );
                 }
 
                 Some(PlaybackCommand::Stop) => {
-                    println!("⏹️ Program engine: Stop command received");
+                    info!("Program engine: Stop command received");
 
                     if let Some(handle) = position_task.take() {
                         handle.abort();
@@ -630,9 +627,9 @@ impl ProgramEngine {
 
                     cue_scheduler.stop();
 
-                    println!("  → Sending Stop to pattern engine...");
+                    info!("Sending Stop to pattern engine");
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
-                    println!("  ✓ Stop sent to pattern engine");
+                    info!("Stop sent to pattern engine");
 
                     let (active_targets, session_id, audio_track) = {
                         let s = state.read().await;
@@ -654,15 +651,15 @@ impl ProgramEngine {
                                 let cfg = config.lock().await;
                                 let loopy = &cfg.loopy_pro;
                                 let stop_address = format!("/Stop/0:{}", track);
-                                println!(
-                                    "  → Sending OSC stop to Loopy Pro ({}:{}) - {}",
+                                info!(
+                                    "Sending OSC stop to Loopy Pro ({}:{}) - {}",
                                     loopy.ip, loopy.port, stop_address
                                 );
                                 if let Err(e) = send_osc_sync(&loopy.ip, loopy.port, &stop_address)
                                 {
-                                    eprintln!("  ✗ Failed to send OSC stop: {}", e);
+                                    error!("Failed to send OSC stop: {}", e);
                                 } else {
-                                    println!("  ✓ OSC stop sent to Loopy Pro");
+                                    info!("OSC stop sent to Loopy Pro");
                                 }
                             }
                         }
@@ -670,7 +667,7 @@ impl ProgramEngine {
                             if let Some(ref engine) = audio_engine {
                                 let mut eng = engine.lock().await;
                                 eng.stop().await;
-                                println!("  ✓ Stopped local audio engine");
+                                info!("Stopped local audio engine");
                             }
                         }
                     }
@@ -680,33 +677,32 @@ impl ProgramEngine {
                     {
                         let snapshot = metrics.snapshot();
                         history.end_session(sid, &snapshot, false);
-                        println!("📊 Ended playback session: {}", sid);
+                        info!("Ended playback session: {}", sid);
                     }
 
-                    println!(
-                        "  → Sending blackout to {} targets...",
-                        active_targets.len()
-                    );
+                    info!("Sending blackout to {} targets", active_targets.len());
                     for target in &active_targets {
                         send_blackout(&effects_engine, target.boards.clone());
                     }
-                    println!("  ✓ Blackout sent to all targets");
+                    info!("Blackout sent to all targets");
 
                     let _ = effects_engine.send_command(EngineCommand::Stop);
 
                     performance_mode.store(false, Ordering::SeqCst);
-                    println!("🎭 Performance mode: OFF (WebSocket reconnection resumed)");
+                    info!("Performance mode: OFF (WebSocket reconnection resumed)");
 
                     {
                         let mut s = state.write().await;
                         s.audio_track = None;
+                        s.program_id = None;
+                        s.duration_secs = 0.0;
                         s.active_targets.clear();
                         s.current_session_id = None;
                     }
                 }
 
                 Some(PlaybackCommand::CuesCompleted) => {
-                    println!("✅ Program engine: All cues completed naturally");
+                    info!("Program engine: All cues completed naturally");
 
                     if let Some(handle) = position_task.take() {
                         handle.abort();
@@ -731,7 +727,7 @@ impl ProgramEngine {
                     {
                         let snapshot = metrics.snapshot();
                         history.end_session(sid, &snapshot, true);
-                        println!("📊 Ended playback session (completed): {}", sid);
+                        info!("Ended playback session (completed): {}", sid);
                     }
 
                     for target in &active_targets {
@@ -741,11 +737,13 @@ impl ProgramEngine {
                     let _ = effects_engine.send_command(EngineCommand::Stop);
 
                     performance_mode.store(false, Ordering::SeqCst);
-                    println!("🎭 Performance mode: OFF (WebSocket reconnection resumed)");
+                    info!("Performance mode: OFF (WebSocket reconnection resumed)");
 
                     {
                         let mut s = state.write().await;
                         s.active_targets.clear();
+                        s.program_id = None;
+                        s.duration_secs = 0.0;
                         s.current_session_id = None;
                     }
                 }

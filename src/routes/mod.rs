@@ -17,6 +17,7 @@ use axum::{
     Json, Router,
 };
 use futures::Stream;
+use serde::Serialize;
 use std::convert::Infallible;
 use tokio_stream::StreamExt;
 use tracing::info;
@@ -30,6 +31,7 @@ pub use settings::send_osc_sync;
 pub fn build_api_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(hello))
+        .route("/ready", get(readiness_check))
         .route("/boards", get(list_boards).post(boards::register_board))
         .route(
             "/boards/:id",
@@ -77,13 +79,35 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/programs/:id/play", post(programs::play_program))
         .route("/programs/stop", post(programs::stop_program))
         .route("/programs/reload", post(programs::reload_programs))
-        .route("/presets", post(presets::save_preset).get(presets::list_presets))
-        .route("/presets/:id", get(presets::get_preset).put(presets::update_preset).delete(presets::delete_preset))
-        .route("/audio/:id", post(audio::upload_audio).get(audio::get_audio).delete(audio::delete_audio))
-        .route("/audio/:id/peaks", get(audio::get_peaks).post(audio::save_peaks))
+        .route(
+            "/presets",
+            post(presets::save_preset).get(presets::list_presets),
+        )
+        .route(
+            "/presets/:id",
+            get(presets::get_preset)
+                .put(presets::update_preset)
+                .delete(presets::delete_preset),
+        )
+        .route(
+            "/audio/:id",
+            post(audio::upload_audio)
+                .get(audio::get_audio)
+                .delete(audio::delete_audio),
+        )
+        .route(
+            "/audio/:id/peaks",
+            get(audio::get_peaks).post(audio::save_peaks),
+        )
         .route("/osc", post(settings::send_osc))
-        .route("/settings/loopy-pro", get(settings::get_loopy_pro_settings).put(settings::update_loopy_pro_settings))
-        .route("/settings/timecode", get(settings::get_timecode_settings).put(settings::update_timecode_settings))
+        .route(
+            "/settings/loopy-pro",
+            get(settings::get_loopy_pro_settings).put(settings::update_loopy_pro_settings),
+        )
+        .route(
+            "/settings/timecode",
+            get(settings::get_timecode_settings).put(settings::update_timecode_settings),
+        )
         .route("/settings/storage", get(settings::get_storage_status))
         .route("/server/restart", post(settings::restart_server))
         .route("/effects/start", post(effects::start_effects_engine))
@@ -113,7 +137,10 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/devices", get(audio::list_devices))
         .route("/audio/settings", get(audio::get_audio_settings))
         .route("/audio/device/select", post(audio::select_device))
-        .route("/audio/resampling-quality", get(audio::get_resampling_quality).put(audio::set_resampling_quality))
+        .route(
+            "/audio/resampling-quality",
+            get(audio::get_resampling_quality).put(audio::set_resampling_quality),
+        )
         .route("/audio/test-decode/:id", get(audio::test_decode))
         .route("/audio/engine/load/:id", post(audio::load_track))
         .route("/audio/engine/play/:id", post(audio::play_track))
@@ -123,11 +150,23 @@ pub fn build_api_router(state: SharedState) -> Router {
         .route("/audio/engine/seek", post(audio::seek_playback))
         .route("/audio/engine/status", get(audio::get_playback_status))
         .route("/audio/engine/memory", get(audio::get_memory_stats))
-        .route("/audio/engine/health", get(audio::get_engine_health).delete(audio::reset_engine_health))
-        .route("/audio/engine/resampling", get(audio::get_resampling_status))
+        .route(
+            "/audio/engine/health",
+            get(audio::get_engine_health).delete(audio::reset_engine_health),
+        )
+        .route(
+            "/audio/engine/resampling",
+            get(audio::get_resampling_status),
+        )
         .route("/audio/engine/readiness", get(audio::get_track_readiness))
-        .route("/audio/routing/:device_id", get(audio::get_routing).put(audio::update_routing))
-        .route("/audio/devices/:device_id/outputs", get(audio::get_device_outputs))
+        .route(
+            "/audio/routing/:device_id",
+            get(audio::get_routing).put(audio::update_routing),
+        )
+        .route(
+            "/audio/devices/:device_id/outputs",
+            get(audio::get_device_outputs),
+        )
         .route("/audio/mute", post(audio::set_mute))
         .route("/audio/volume", post(audio::set_volume))
         .route("/audio/resampled-info/:id", get(audio::get_resampled_info))
@@ -141,12 +180,94 @@ async fn hello() -> &'static str {
     "WLED Server Running"
 }
 
+#[derive(Serialize)]
+struct ReadinessResponse {
+    ready: bool,
+    boards_total: usize,
+    boards_connected: usize,
+    audio_thread_active: bool,
+    audio_device_found: bool,
+    programs_loaded: usize,
+    e131_transports: usize,
+    errors: Vec<String>,
+}
+
+async fn readiness_check(State(state): State<SharedState>) -> Json<ReadinessResponse> {
+    let mut errors = Vec::new();
+
+    let boards_total = state.boards.read().await.len();
+    let boards_connected = state.connected_ips.read().await.len();
+    if boards_connected == 0 {
+        errors.push("No boards connected".into());
+    }
+
+    let audio_thread_active = state
+        .audio_thread
+        .as_ref()
+        .map(|t| t.is_alive())
+        .unwrap_or(false);
+
+    if !audio_thread_active {
+        errors.push("Audio thread not running".into());
+    }
+
+    let audio_device_found = state.device_manager.get_selected_device().is_some();
+
+    let programs_loaded = state.programs.read().await.len();
+
+    let e131_transports = state.group_e131_transports.read().await.len();
+
+    let ready = boards_connected > 0 && audio_thread_active && programs_loaded > 0;
+
+    Json(ReadinessResponse {
+        ready,
+        boards_total,
+        boards_connected,
+        audio_thread_active,
+        audio_device_found,
+        programs_loaded,
+        e131_transports,
+        errors,
+    })
+}
+
 async fn sse_handler(
     State(state): State<SharedState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut initial_events: Vec<Result<Event, Infallible>> = Vec::new();
+
+    let connected_ips = state.connected_ips.read().await;
+    let boards = state.boards.read().await;
+    for (board_id, entry) in boards.iter() {
+        let connected = connected_ips.contains(&entry.ip);
+        let event = crate::sse::SseEvent::ConnectionStatus {
+            board_id: board_id.clone(),
+            connected,
+        };
+        if let Ok(data) = serde_json::to_string(&event) {
+            initial_events.push(Ok(Event::default().data(data)));
+        }
+    }
+    drop(boards);
+    drop(connected_ips);
+
+    if let Some((program_id, duration_secs)) =
+        state.program_engine.get_playback_state().await
+    {
+        let event = crate::sse::SseEvent::PlaybackStarted {
+            program_id,
+            duration_secs,
+        };
+        if let Ok(data) = serde_json::to_string(&event) {
+            initial_events.push(Ok(Event::default().data(data)));
+        }
+    }
+
+    let initial = futures::stream::iter(initial_events);
+
     let rx = state.broadcast_tx.subscribe();
-    let stream =
-        tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
+    let live = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|result| match result {
             Ok(event) => match serde_json::to_string(&event) {
                 Ok(data) => Some(Ok(Event::default().data(data))),
                 Err(_) => None,
@@ -154,7 +275,7 @@ async fn sse_handler(
             Err(_) => None,
         });
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(initial.chain(live)).keep_alive(KeepAlive::default())
 }
 
 #[derive(serde::Serialize)]

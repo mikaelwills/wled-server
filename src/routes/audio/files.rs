@@ -313,7 +313,9 @@ pub async fn resample_track(
     let Some(track) = found_track else {
         return Err((StatusCode::NOT_FOUND, format!("Track '{}' not loaded", req.track_id)));
     };
-    let slot = found_slot.unwrap();
+    let Some(slot) = found_slot else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "Slot tracking mismatch".to_string()));
+    };
 
     track.delete_cache_for_rate(req.target_rate);
     track.clear_resampled_for_rate(req.target_rate);

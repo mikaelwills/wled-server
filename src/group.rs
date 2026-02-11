@@ -95,7 +95,10 @@ pub async fn execute_group_command(
                         info!(group_id = %group_id, brightness = brightness, universe = universe, "Sending brightness via Mode 6");
                         e131.send_solid_color(r, g, b, *brightness)
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        warn!(group_id = %group_id, "Command not supported for E1.31 groups");
+                        Ok(())
+                    }
                 };
 
                 if let Err(e) = result {
@@ -108,19 +111,15 @@ pub async fn execute_group_command(
                     "E1.31 transport not available"
                 )));
             }
-        }; // guard dropped here
+        };
 
-        // E1.31 succeeded - now synchronize actor state for all member boards
-        // This prevents WebSocket reconnection logic from restoring old cached state
         info!(group_id = %group_id, "Synchronizing actor state after E1.31 command");
 
         let boards_lock = state.boards.read().await;
         for board_id in &group.members {
             if let Some(board_entry) = boards_lock.get(board_id) {
-                // Convert GroupCommand to state sync commands (no WebSocket send)
                 match &command {
                     GroupCommand::SetPreset(preset, _transition) => {
-                        // Preset command affects multiple state fields
                         if let Err(e) = board_entry.sender.send(BoardCommand::SyncPresetState(*preset)).await {
                             warn!(board_id = %board_id, "Failed to sync preset state: {}", e);
                         }
@@ -135,7 +134,7 @@ pub async fn execute_group_command(
                             warn!(board_id = %board_id, "Failed to sync brightness state: {}", e);
                         }
                     }
-                    _ => unreachable!(),
+                    _ => {}
                 }
             }
         }

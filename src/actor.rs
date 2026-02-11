@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -18,6 +19,8 @@ pub struct BoardActor {
     broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
     connected_ips: Arc<RwLock<HashSet<String>>>,
     performance_mode: Arc<AtomicBool>,
+    startup_time: Option<Instant>,
+    total_boards: usize,
 }
 
 impl BoardActor {
@@ -35,6 +38,8 @@ impl BoardActor {
             broadcast_tx,
             connected_ips,
             performance_mode,
+            startup_time: None,
+            total_boards: 0,
         }
     }
 
@@ -47,6 +52,8 @@ impl BoardActor {
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
         connected_ips: Arc<RwLock<HashSet<String>>>,
         performance_mode: Arc<AtomicBool>,
+        startup_time: Option<Instant>,
+        total_boards: usize,
     ) -> Self {
         let mut state = BoardState::new(id.clone(), ip.clone());
         if let Some(trans) = transition {
@@ -65,6 +72,8 @@ impl BoardActor {
             broadcast_tx,
             connected_ips,
             performance_mode,
+            startup_time,
+            total_boards,
         }
     }
 
@@ -111,6 +120,29 @@ impl BoardActor {
         self.state.connected = true;
         let mut ips = self.connected_ips.write().await;
         ips.insert(self.ip.clone());
+        if let Some(startup) = self.startup_time {
+            let elapsed = startup.elapsed();
+            info!(
+                board_id = %self.id,
+                elapsed_ms = elapsed.as_millis(),
+                connected = ips.len(),
+                total = self.total_boards,
+                "Board connected {:.1}s after startup ({}/{})",
+                elapsed.as_secs_f64(),
+                ips.len(),
+                self.total_boards
+            );
+            if ips.len() == self.total_boards && self.total_boards > 0 {
+                info!(
+                    elapsed_ms = elapsed.as_millis(),
+                    total = self.total_boards,
+                    "All {} boards connected {:.1}s after startup",
+                    self.total_boards,
+                    elapsed.as_secs_f64()
+                );
+            }
+        }
+        drop(ips);
         self.broadcast_connection_status();
     }
 

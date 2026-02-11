@@ -42,7 +42,12 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = fs::read_to_string("data/boards.toml")?;
+        let path = std::path::Path::new("data/boards.toml");
+        if !path.exists() {
+            warn!("data/boards.toml not found, using defults");
+            return Ok(Config::default());
+        }
+        let contents = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
@@ -93,7 +98,9 @@ impl Config {
         self.audio.preferred_device_id = device_id;
     }
 
-    pub async fn init_e131_transports(&self) -> HashMap<String, crate::transport::E131RawTransport> {
+    pub async fn init_e131_transports(
+        &self,
+    ) -> HashMap<String, crate::transport::E131RawTransport> {
         let mut group_e131_transports = HashMap::new();
 
         for (universe_index, group) in self.groups.iter().enumerate() {

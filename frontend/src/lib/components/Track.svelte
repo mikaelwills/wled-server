@@ -33,6 +33,26 @@
 	let isLoaded = $state(false);
 	let containerId = $derived(`${track.id}-waveform-${programId.replace(/[^a-zA-Z0-9-_]/g, '-')}`);
 
+	let currentVol = $derived(volume !== undefined ? volume : ($slotVolume[track.id] ?? 1.0));
+	let dbDisplay = $derived(currentVol <= 0 ? '-∞' : (20 * Math.log10(currentVol)).toFixed(1));
+	let dbEditing = $state(false);
+	let dbInputValue = $state('');
+
+	function commitDb(raw: string) {
+		dbEditing = false;
+		const trimmed = raw.trim();
+		if (trimmed === '' || trimmed === '-∞') return;
+		const db = parseFloat(trimmed);
+		if (isNaN(db)) return;
+		const clamped = Math.max(-60, Math.min(6, db));
+		const lin = Math.pow(10, clamped / 20);
+		if (onVolumeChange) {
+			onVolumeChange(lin);
+		} else {
+			setSlotVolume(track.id, lin);
+		}
+	}
+
 	function initWaveSurfer() {
 		if (wavesurfer) {
 			wavesurfer.destroy();
@@ -98,22 +118,26 @@
 <div class="track" style="--track-color: {track.color}">
 	<div class="track-label">
 		<button class="mute-btn" class:muted={$slotMuted[track.id]} onclick={() => toggleSlotMute(track.id)}>{track.label}</button>
-		<input
-			type="range"
-			class="volume-slider"
-			min="0"
-			max="200"
-			value={(volume !== undefined ? volume : ($slotVolume[track.id] ?? 1.0)) * 100}
-			oninput={(e) => {
-				const vol = parseInt(e.currentTarget.value) / 100;
-				if (onVolumeChange) {
-					onVolumeChange(vol);
-				} else {
-					setSlotVolume(track.id, vol);
-				}
-			}}
-			title={`Volume: ${Math.round((volume !== undefined ? volume : ($slotVolume[track.id] ?? 1.0)) * 100)}%`}
-		/>
+		{#if dbEditing}
+			<input
+				type="text"
+				class="db-input"
+				value={dbInputValue}
+				oninput={(e) => { dbInputValue = e.currentTarget.value; }}
+				onblur={(e) => commitDb(e.currentTarget.value)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') { commitDb(e.currentTarget.value); }
+					if (e.key === 'Escape') { dbEditing = false; }
+				}}
+				autofocus
+			/>
+		{:else}
+			<button
+				class="db-display"
+				onclick={() => { dbInputValue = currentVol <= 0 ? '' : (20 * Math.log10(currentVol)).toFixed(1); dbEditing = true; }}
+				title="Click to edit volume in dB"
+			>{dbDisplay} dB</button>
+		{/if}
 		{#if resamplingProgress}
 			<span class="resampling-inline">
 				{resamplingProgress.trackName} • {(resamplingProgress.fromRate / 1000).toFixed(1)}kHz → {(resamplingProgress.toRate / 1000).toFixed(1)}kHz • {resamplingProgress.total > 0 ? Math.round((resamplingProgress.current / resamplingProgress.total) * 100) : 0}%
@@ -166,33 +190,35 @@
 		color: #444;
 	}
 
-	.volume-slider {
-		width: 60px;
-		height: 3px;
-		-webkit-appearance: none;
-		appearance: none;
-		background: #333;
-		border-radius: 2px;
+	.db-display {
+		background: none;
+		border: 1px solid transparent;
+		color: var(--track-color, #888);
+		font-size: 0.7rem;
+		font-family: 'Courier New', monospace;
+		padding: 1px 4px;
+		border-radius: 3px;
+		cursor: pointer;
+		min-width: 52px;
+		text-align: center;
+		transition: border-color 0.15s;
+	}
+
+	.db-display:hover {
+		border-color: #333;
+	}
+
+	.db-input {
+		background: #111;
+		border: 1px solid var(--track-color, #888);
+		color: #e5e5e5;
+		font-size: 0.7rem;
+		font-family: 'Courier New', monospace;
+		padding: 1px 4px;
+		border-radius: 3px;
+		width: 52px;
+		text-align: center;
 		outline: none;
-		cursor: pointer;
-	}
-
-	.volume-slider::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		background: var(--track-color, #888);
-		cursor: pointer;
-	}
-
-	.volume-slider::-moz-range-thumb {
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		background: var(--track-color, #888);
-		border: none;
-		cursor: pointer;
 	}
 
 	.resampling-inline {

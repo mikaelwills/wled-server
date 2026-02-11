@@ -465,7 +465,10 @@ pub async fn replace_presets_on_board_internal(
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize presets: {}", e))
     })?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let part = reqwest::multipart::Part::bytes(json_string.into_bytes())
         .file_name("presets.json")
         .mime_str("application/json")

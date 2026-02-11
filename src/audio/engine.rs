@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
+use tracing;
 
 use super::resampler::{spawn_resampling, ResamplingJob};
 use super::{LoadedTrack, PlaybackHealth, ResamplingProgress};
@@ -239,13 +240,13 @@ impl AudioEngine {
 
     pub fn set_resampling_quality(&mut self, quality: ResamplingQuality) {
         self.resampling_quality = quality;
-        eprintln!("[AudioEngine] Resampling quality set to {:?}", quality);
+        tracing::info!("Resampling quality set to {:?}", quality);
     }
 
     pub fn cancel_device_change_resampling(&mut self) {
         if let Some(ref token) = self.device_change_cancellation {
             token.store(true, Ordering::Relaxed);
-            eprintln!("[AudioEngine] Cancelled previous device-change resampling");
+            tracing::info!("Cancelled previous device-change resampling");
         }
         self.device_change_cancellation = None;
     }
@@ -310,8 +311,8 @@ impl AudioEngine {
 
     pub fn set_device_sample_rate(&mut self, rate: u32) {
         if rate != self.device_sample_rate {
-            eprintln!(
-                "[AudioEngine] Device sample rate changed: {}Hz -> {}Hz",
+            tracing::info!(
+                "Device sample rate changed: {}Hz -> {}Hz",
                 self.device_sample_rate, rate
             );
             self.device_sample_rate = rate;
@@ -326,8 +327,8 @@ impl AudioEngine {
         let track = Arc::new(track);
         let slot_name = slot.name();
 
-        eprintln!(
-            "[AudioEngine] load_slot_track: slot={}, id={}, original_rate={}, device_rate={}",
+        tracing::debug!(
+            "load_slot_track: slot={}, id={}, original_rate={}, device_rate={}",
             slot_name, id, track.original_rate, self.device_sample_rate
         );
 
@@ -368,7 +369,7 @@ impl AudioEngine {
         click_rate: f64,
     ) {
         if self.device_sample_rate == 0 {
-            eprintln!("[AudioEngine] Cannot generate click: no device sample rate set");
+            tracing::error!("Cannot generate click: no device sample rate set");
             return;
         }
 
@@ -384,8 +385,8 @@ impl AudioEngine {
         if self.click_cache.get(&click_id) == Some(&new_key)
             && self.slot_tracks[SlotId::Click as usize].contains_key(&click_id)
         {
-            eprintln!(
-                "[AudioEngine] Click track cache hit for {} ({}bpm x{})",
+            tracing::debug!(
+                "Click track cache hit for {} ({}bpm x{})",
                 program_id, bpm, click_rate
             );
             return;
@@ -403,8 +404,8 @@ impl AudioEngine {
         let track = LoadedTrack::new(samples, self.device_sample_rate, 1);
         self.click_cache.insert(click_id.clone(), new_key);
         self.load_slot_track(SlotId::Click, click_id, track).await;
-        eprintln!(
-            "[AudioEngine] Generated click track for {} at {}bpm x{} ({}s)",
+        tracing::info!(
+            "Generated click track for {} at {}bpm x{} ({}s)",
             program_id, bpm, click_rate, duration
         );
     }
@@ -459,26 +460,26 @@ impl AudioEngine {
         let cancel_key = format!("{}:{}", slot_name, id);
         if let Some(cancelled) = self.resampling_cancellation.remove(&cancel_key) {
             cancelled.store(true, Ordering::Relaxed);
-            eprintln!("[AudioEngine] Cancelled resampling for '{}'", cancel_key);
+            tracing::info!("Cancelled resampling for '{}'", cancel_key);
         }
         if slot == SlotId::Click {
             self.click_cache.remove(id);
         }
         if let Some(track) = self.slot_tracks[slot as usize].remove(id) {
             let memory_mb = track.memory_usage() as f64 / 1024.0 / 1024.0;
-            eprintln!(
-                "[AudioEngine] Unloaded {} track '{}' - freed {:.2} MB",
+            tracing::info!(
+                "Unloaded {} track '{}' - freed {:.2} MB",
                 slot_name, id, memory_mb
             );
             let (count, total) = self.memory_usage();
-            eprintln!(
-                "[AudioEngine] Remaining: {} tracks, {:.2} MB total",
+            tracing::debug!(
+                "Remaining: {} tracks, {:.2} MB total",
                 count,
                 total as f64 / 1024.0 / 1024.0
             );
             true
         } else {
-            eprintln!("[AudioEngine] {} track '{}' not found", slot_name, id);
+            tracing::warn!("{} track '{}' not found", slot_name, id);
             false
         }
     }
@@ -534,9 +535,9 @@ impl AudioEngine {
                         })
                         .await;
                     self.current_slot_ids[SlotId::Guide as usize] = Some(gid.to_string());
-                    eprintln!("[AudioEngine] Loaded guide track '{}' for playback", gid);
+                    tracing::debug!("Loaded guide track '{}' for playback", gid);
                 } else {
-                    eprintln!("[AudioEngine] Guide track '{}' not found", gid);
+                    tracing::warn!("Guide track '{}' not found", gid);
                 }
             } else {
                 let _ = self
@@ -557,7 +558,7 @@ impl AudioEngine {
                     })
                     .await;
                 self.current_slot_ids[SlotId::Click as usize] = Some(click_id.clone());
-                eprintln!("[AudioEngine] Loaded click track for playback");
+                tracing::debug!("Loaded click track for playback");
             } else {
                 let _ = self
                     .command_tx

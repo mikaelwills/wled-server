@@ -7,6 +7,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, error, info, warn};
 
 use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingConfig, SlotId, SLOT_COUNT};
 use crate::sse::SseEvent;
@@ -129,8 +130,13 @@ impl InternalPlaybackState {
     pub fn load_slot(&self, slot: SlotId, track: Arc<LoadedTrack>) {
         let device_rate = self.device_sample_rate.load(Ordering::Acquire);
         let samples = track.get_samples_for_rate(device_rate);
-        eprintln!("[AudioThread] load_slot: slot={:?}, device_rate={}, samples_len={}, channels={}",
-            slot, device_rate, samples.len(), track.channels);
+        debug!(
+            "load_slot: slot={:?}, device_rate={}, samples_len={}, channels={}",
+            slot,
+            device_rate,
+            samples.len(),
+            track.channels
+        );
         self.slots[slot as usize].load(samples, track.channels as usize);
     }
 
@@ -162,16 +168,13 @@ impl Drop for AudioThread {
             loop {
                 if handle.is_finished() {
                     if let Err(e) = handle.join() {
-                        eprintln!("[AudioThread] Thread panicked during shutdown: {:?}", e);
+                        error!("Thread panicked during shutdown: {:?}", e);
                     }
-                    eprintln!("[AudioThread] Thread joined successfully");
+                    debug!("Thread joined successfully");
                     break;
                 }
                 if start.elapsed() > Duration::from_millis(THREAD_JOIN_TIMEOUT_MS) {
-                    eprintln!(
-                        "[AudioThread] Warning: Thread join timed out after {}ms",
-                        THREAD_JOIN_TIMEOUT_MS
-                    );
+                    warn!("Thread join timed out after {}ms", THREAD_JOIN_TIMEOUT_MS);
                     break;
                 }
                 thread::sleep(Duration::from_millis(10));
@@ -208,12 +211,12 @@ fn resolve_device(
         if let Some(d) = find_device_by_name(name) {
             return Some(d);
         }
-        eprintln!("[AudioThread] Device '{}' not found, falling back to default", name);
+        warn!("Device '{}' not found, falling back to default", name);
     } else if let Some(ref name) = device_manager.get_selected_device() {
         if let Some(d) = find_device_by_name(name) {
             return Some(d);
         }
-        eprintln!("[AudioThread] Selected device '{}' not found, using default", name);
+        warn!("Selected device '{}' not found, using default", name);
     }
     cpal::default_host().default_output_device()
 }
@@ -232,10 +235,10 @@ fn build_stream(
 
     let sample_rate = config.sample_rate().0;
     state.set_device_sample_rate(sample_rate);
-    eprintln!("[AudioThread] Device sample rate: {}Hz", sample_rate);
+    info!("Device sample rate: {}Hz", sample_rate);
 
     let output_channels = config.channels() as usize;
-    eprintln!("[AudioThread] Device output channels: {}", output_channels);
+    info!("Device output channels: {}", output_channels);
 
     device_manager.set_active_device_info(output_channels as u16, sample_rate);
 
@@ -246,177 +249,184 @@ fn build_stream(
     }
 
     let sample_format = config.sample_format();
-    eprintln!("[AudioThread] Device sample format: {:?}", sample_format);
+    debug!("Device sample format: {:?}", sample_format);
     let config: cpal::StreamConfig = config.into();
 
     macro_rules! build_output_stream {
         ($sample_type:ty, $zero:expr, $convert:expr) => {{
-            device.build_output_stream(
-                &config,
-                move |data: &mut [$sample_type], _: &cpal::OutputCallbackInfo| {
-                    let now_us = health.now_us();
-                    let last_us = health.last_callback_us.swap(now_us, Ordering::Relaxed);
+            device
+                .build_output_stream(
+                    &config,
+                    move |data: &mut [$sample_type], _: &cpal::OutputCallbackInfo| {
+                        let now_us = health.now_us();
+                        let last_us = health.last_callback_us.swap(now_us, Ordering::Relaxed);
 
-                    if last_us > 0 {
-                        let interval = now_us.saturating_sub(last_us);
-                        let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
-                        while interval > max {
-                            match health.max_callback_interval_us.compare_exchange_weak(
-                                max,
-                                interval,
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            ) {
-                                Ok(_) => break,
-                                Err(current) => max = current,
+                        if last_us > 0 {
+                            let interval = now_us.saturating_sub(last_us);
+                            let mut max = health.max_callback_interval_us.load(Ordering::Relaxed);
+                            while interval > max {
+                                match health.max_callback_interval_us.compare_exchange_weak(
+                                    max,
+                                    interval,
+                                    Ordering::Relaxed,
+                                    Ordering::Relaxed,
+                                ) {
+                                    Ok(_) => break,
+                                    Err(current) => max = current,
+                                }
+                            }
+                            let expected_interval_us = (data.len() as u64 * 1_000_000)
+                                / (sample_rate as u64 * output_channels as u64);
+                            if interval > expected_interval_us * 2 {
+                                health.late_callbacks.fetch_add(1, Ordering::Relaxed);
                             }
                         }
-                        let expected_interval_us = (data.len() as u64 * 1_000_000)
-                            / (sample_rate as u64 * output_channels as u64);
-                        if interval > expected_interval_us * 2 {
-                            health.late_callbacks.fetch_add(1, Ordering::Relaxed);
+
+                        health.callback_count.fetch_add(1, Ordering::Relaxed);
+                        health
+                            .last_buffer_size
+                            .store(data.len() as u32, Ordering::Relaxed);
+
+                        if !state.playing.load(Ordering::Relaxed) {
+                            data.fill($zero);
+                            return;
                         }
-                    }
 
-                    health.callback_count.fetch_add(1, Ordering::Relaxed);
-                    health
-                        .last_buffer_size
-                        .store(data.len() as u32, Ordering::Relaxed);
+                        let backing_slot = &state.slots[SlotId::Backing as usize];
+                        let backing_guard = backing_slot.samples.load();
+                        if backing_guard.is_none() {
+                            health.underrun_count.fetch_add(1, Ordering::Relaxed);
+                            data.fill($zero);
+                            return;
+                        }
 
-                    if !state.playing.load(Ordering::Relaxed) {
-                        data.fill($zero);
-                        return;
-                    }
+                        let backing_sample_count =
+                            backing_slot.sample_count.load(Ordering::Acquire);
+                        let backing_channels = backing_slot.channels.load(Ordering::Relaxed);
 
-                    let backing_slot = &state.slots[SlotId::Backing as usize];
-                    let backing_guard = backing_slot.samples.load();
-                    if backing_guard.is_none() {
-                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
-                        data.fill($zero);
-                        return;
-                    }
+                        if backing_channels == 0 || backing_sample_count == 0 {
+                            health.underrun_count.fetch_add(1, Ordering::Relaxed);
+                            data.fill($zero);
+                            return;
+                        }
 
-                    let backing_sample_count = backing_slot.sample_count.load(Ordering::Acquire);
-                    let backing_channels = backing_slot.channels.load(Ordering::Relaxed);
+                        let mut idx = state.sample_index.load(Ordering::Relaxed);
+                        let mut samples_written = 0u64;
+                        let mut silence_written = 0u64;
 
-                    if backing_channels == 0 || backing_sample_count == 0 {
-                        health.underrun_count.fetch_add(1, Ordering::Relaxed);
-                        data.fill($zero);
-                        return;
-                    }
+                        let routing = state.routing.load();
 
-                    let mut idx = state.sample_index.load(Ordering::Relaxed);
-                    let mut samples_written = 0u64;
-                    let mut silence_written = 0u64;
+                        let slot_guards: [_; SLOT_COUNT] =
+                            std::array::from_fn(|i| state.slots[i].samples.load());
+                        let slot_sample_counts: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                            state.slots[i].sample_count.load(Ordering::Acquire)
+                        });
+                        let slot_channels: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
+                            state.slots[i].channels.load(Ordering::Relaxed)
+                        });
 
-                    let routing = state.routing.load();
+                        let convert = $convert;
 
-                    let slot_guards: [_; SLOT_COUNT] = std::array::from_fn(|i| {
-                        state.slots[i].samples.load()
-                    });
-                    let slot_sample_counts: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
-                        state.slots[i].sample_count.load(Ordering::Acquire)
-                    });
-                    let slot_channels: [usize; SLOT_COUNT] = std::array::from_fn(|i| {
-                        state.slots[i].channels.load(Ordering::Relaxed)
-                    });
+                        for frame in data.chunks_mut(output_channels) {
+                            if idx >= backing_sample_count {
+                                frame.fill($zero);
+                                silence_written += 1;
+                                continue;
+                            }
 
-                    let convert = $convert;
-
-                    for frame in data.chunks_mut(output_channels) {
-                        if idx >= backing_sample_count {
                             frame.fill($zero);
-                            silence_written += 1;
-                            continue;
-                        }
 
-                        frame.fill($zero);
+                            let mut mix_buf = [0.0f32; 128];
+                            let ch = output_channels.min(128);
 
-                        let mut mix_buf = [0.0f32; 128];
-                        let ch = output_channels.min(128);
+                            for (slot_idx, slot_routing) in routing.slots.iter().enumerate() {
+                                if slot_routing.muted {
+                                    continue;
+                                }
 
-                        for (slot_idx, slot_routing) in routing.slots.iter().enumerate() {
-                            if slot_routing.muted {
-                                continue;
-                            }
+                                let sample_count = slot_sample_counts[slot_idx];
+                                let channels = slot_channels[slot_idx];
+                                if channels == 0 {
+                                    continue;
+                                }
 
-                            let sample_count = slot_sample_counts[slot_idx];
-                            let channels = slot_channels[slot_idx];
-                            if channels == 0 {
-                                continue;
-                            }
+                                let frame_number = idx / backing_channels;
+                                let slot_sample_idx = frame_number * channels;
+                                if slot_sample_idx >= sample_count {
+                                    continue;
+                                }
 
-                            let frame_number = idx / backing_channels;
-                            let slot_sample_idx = frame_number * channels;
-                            if slot_sample_idx >= sample_count {
-                                continue;
-                            }
+                                if let Some(samples) = slot_guards[slot_idx].as_ref() {
+                                    let vol = slot_routing.volume;
+                                    let left =
+                                        samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
+                                    let right = if channels > 1 {
+                                        samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0)
+                                            * vol
+                                    } else {
+                                        left
+                                    };
 
-                            if let Some(samples) = slot_guards[slot_idx].as_ref() {
-                                let vol = slot_routing.volume;
-                                let left = samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
-                                let right = if channels > 1 {
-                                    samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0) * vol
-                                } else {
-                                    left
-                                };
-
-                                if routing.is_stereo_mode() {
-                                    mix_buf[0] += left;
-                                    mix_buf[1] += right;
-                                } else if slot_routing.is_stereo {
-                                    if slot_routing.left_channel < ch {
-                                        mix_buf[slot_routing.left_channel] += left;
-                                    }
-                                    if slot_routing.right_channel < ch {
-                                        mix_buf[slot_routing.right_channel] += right;
-                                    }
-                                } else {
-                                    let mono = (left + right) * 0.5;
-                                    if slot_routing.left_channel < ch {
-                                        mix_buf[slot_routing.left_channel] += mono;
+                                    if routing.is_stereo_mode() {
+                                        mix_buf[0] += left;
+                                        mix_buf[1] += right;
+                                    } else if slot_routing.is_stereo {
+                                        if slot_routing.left_channel < ch {
+                                            mix_buf[slot_routing.left_channel] += left;
+                                        }
+                                        if slot_routing.right_channel < ch {
+                                            mix_buf[slot_routing.right_channel] += right;
+                                        }
+                                    } else {
+                                        let mono = (left + right) * 0.5;
+                                        if slot_routing.left_channel < ch {
+                                            mix_buf[slot_routing.left_channel] += mono;
+                                        }
                                     }
                                 }
                             }
+
+                            for (i, sample) in frame.iter_mut().enumerate() {
+                                *sample = convert(mix_buf[i]);
+                            }
+
+                            samples_written += output_channels as u64;
+                            idx += backing_channels;
                         }
 
-                        for (i, sample) in frame.iter_mut().enumerate() {
-                            *sample = convert(mix_buf[i]);
-                        }
-
-                        samples_written += output_channels as u64;
-                        idx += backing_channels;
-                    }
-
-                    state.sample_index.store(idx, Ordering::Relaxed);
-                    position.store(idx as u64, Ordering::Relaxed);
-                    health
-                        .samples_delivered
-                        .fetch_add(samples_written, Ordering::Relaxed);
-                    if silence_written > 0 {
+                        state.sample_index.store(idx, Ordering::Relaxed);
+                        position.store(idx as u64, Ordering::Relaxed);
                         health
-                            .silence_frames
-                            .fetch_add(silence_written, Ordering::Relaxed);
-                    }
-                },
-                {
-                    let stream_error = Arc::clone(&stream_error);
-                    move |err| {
-                        if !stream_error.swap(true, Ordering::SeqCst) {
-                            eprintln!("[AudioThread] Stream error (device lost): {}", err);
+                            .samples_delivered
+                            .fetch_add(samples_written, Ordering::Relaxed);
+                        if silence_written > 0 {
+                            health
+                                .silence_frames
+                                .fetch_add(silence_written, Ordering::Relaxed);
                         }
-                    }
-                },
-                None,
-            )
-            .map_err(|e| format!("Failed to build stream: {}", e))
+                    },
+                    {
+                        let stream_error = Arc::clone(&stream_error);
+                        move |err| {
+                            if !stream_error.swap(true, Ordering::SeqCst) {
+                                error!("Stream error (device lost): {}", err);
+                            }
+                        }
+                    },
+                    None,
+                )
+                .map_err(|e| format!("Failed to build stream: {}", e))
         }};
     }
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => build_output_stream!(f32, 0.0f32, |s: f32| s),
-        cpal::SampleFormat::I32 => build_output_stream!(i32, 0i32, |s: f32| (s * i32::MAX as f32) as i32),
-        cpal::SampleFormat::I16 => build_output_stream!(i16, 0i16, |s: f32| (s * i16::MAX as f32) as i16),
+        cpal::SampleFormat::I32 => {
+            build_output_stream!(i32, 0i32, |s: f32| (s * i32::MAX as f32) as i32)
+        }
+        cpal::SampleFormat::I16 => {
+            build_output_stream!(i16, 0i16, |s: f32| (s * i16::MAX as f32) as i16)
+        }
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     }?;
 
@@ -428,6 +438,14 @@ fn build_stream(
 }
 
 impl AudioThread {
+
+    pub fn is_alive(&self) -> bool {
+        self.thread_handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
+    }
+
     pub fn new(
         command_rx: mpsc::Receiver<PlaybackCommand>,
         position: Arc<AtomicU64>,
@@ -472,7 +490,7 @@ impl AudioThread {
             let device = match resolve_device(&device_manager, &current_device_name) {
                 Some(d) => d,
                 None => {
-                    eprintln!("[AudioThread] No audio output device available");
+                    error!("No audio output device available");
                     return;
                 }
             };
@@ -483,7 +501,7 @@ impl AudioThread {
                     current_device_name = Some(selected.clone());
                 }
             }
-            eprintln!("[AudioThread] Audio output device: {}", device_name);
+            info!("Audio output device: {}", device_name);
 
             let stream_error = Arc::new(AtomicBool::new(false));
 
@@ -497,20 +515,17 @@ impl AudioThread {
             ) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Failed to build audio stream: {}", e);
+                    error!("Failed to build audio stream: {}", e);
                     return;
                 }
             };
 
             match Self::process_commands(&mut command_rx, &state, &stream_error).await {
                 CommandResult::RebuildStream(new_device) => {
-                    eprintln!("[AudioThread] Switching device to: {}", new_device);
+                    info!("Switching device to: {}", new_device);
 
                     if let Err(e) = stream.pause() {
-                        eprintln!(
-                            "[AudioThread] Warning: Failed to pause stream during switch: {}",
-                            e
-                        );
+                        warn!("Failed to pause stream during switch: {}", e);
                     }
 
                     state.clear_all_slots();
@@ -518,14 +533,16 @@ impl AudioThread {
 
                     thread::sleep(Duration::from_millis(STREAM_SWITCH_DELAY_MS));
                     drop(stream);
-                    eprintln!("[AudioThread] Old stream dropped, rebuilding...");
+                    debug!("Old stream dropped, rebuilding...");
 
                     current_device_name = Some(new_device);
                     continue;
                 }
                 CommandResult::StreamError => {
-                    let lost_name = current_device_name.clone().unwrap_or_else(|| device_name.clone());
-                    eprintln!("[AudioThread] Device lost: {}", lost_name);
+                    let lost_name = current_device_name
+                        .clone()
+                        .unwrap_or_else(|| device_name.clone());
+                    error!("Device lost: {}", lost_name);
 
                     let _ = broadcast_tx.send(SseEvent::AudioDeviceLost {
                         device_name: lost_name.clone(),
@@ -541,18 +558,16 @@ impl AudioThread {
                         &state,
                         &current_device_name,
                         &broadcast_tx,
-                    ).await;
+                    )
+                    .await;
 
                     continue;
                 }
                 CommandResult::Shutdown => {
-                    eprintln!("[AudioThread] Shutting down...");
+                    info!("Shutting down...");
 
                     if let Err(e) = stream.pause() {
-                        eprintln!(
-                            "[AudioThread] Warning: Failed to pause stream during shutdown: {}",
-                            e
-                        );
+                        warn!("Failed to pause stream during shutdown: {}", e);
                     }
 
                     state.clear_all_slots();
@@ -561,7 +576,7 @@ impl AudioThread {
                     thread::sleep(Duration::from_millis(STREAM_SWITCH_DELAY_MS));
                     drop(stream);
 
-                    eprintln!("[AudioThread] Shutdown complete");
+                    info!("Shutdown complete");
                     break;
                 }
             }
@@ -586,24 +601,22 @@ impl AudioThread {
 
             if found {
                 let name = device_name.clone().unwrap_or_else(|| "default".to_string());
-                eprintln!("[AudioThread] Device restored: {} (after {} retries)", name, attempts);
-                let _ = broadcast_tx.send(SseEvent::AudioDeviceRestored {
-                    device_name: name,
-                });
+                info!("Device restored: {} (after {} retries)", name, attempts);
+                let _ = broadcast_tx.send(SseEvent::AudioDeviceRestored { device_name: name });
                 return;
             }
 
             attempts += 1;
             if attempts % 15 == 1 {
                 let name = device_name.clone().unwrap_or_else(|| "default".to_string());
-                eprintln!("[AudioThread] Waiting for device '{}' (attempt {})...", name, attempts);
+                debug!("Waiting for device '{}' (attempt {})...", name, attempts);
             }
 
             tokio::select! {
                 cmd = command_rx.recv() => {
                     match cmd {
                         Some(PlaybackCommand::SetDevice(new_device)) => {
-                            eprintln!("[AudioThread] Device switch requested during recovery: {}", new_device);
+                            info!("Device switch requested during recovery: {}", new_device);
                             state.playing.store(false, Ordering::Release);
                             return;
                         }
@@ -638,12 +651,12 @@ impl AudioThread {
                             state.playing.store(true, Ordering::Release);
 
                             let routing = state.routing.load();
-                            eprintln!("[AudioThread] PLAY started - output_channels={}, stereo_mode={}",
+                            debug!("PLAY started - output_channels={}, stereo_mode={}",
                                 routing.output_channels, routing.is_stereo_mode());
                             for (i, slot_routing) in routing.slots.iter().enumerate() {
                                 let slot_samples = state.slots[i].sample_count.load(Ordering::Acquire);
                                 let slot_channels = state.slots[i].channels.load(Ordering::Relaxed);
-                                eprintln!("[AudioThread]   Slot {}: samples={}, ch={}, route_to={}/{}, muted={}",
+                                debug!("  Slot {}: samples={}, ch={}, route_to={}/{}, muted={}",
                                     i, slot_samples, slot_channels,
                                     slot_routing.left_channel, slot_routing.right_channel, slot_routing.muted);
                             }
@@ -676,7 +689,7 @@ impl AudioThread {
                             state.set_volume(slot, volume);
                         }
                         PlaybackCommand::LoadSlot { slot, track } => {
-                            eprintln!("[AudioThread] LoadSlot command: slot={:?}, track_channels={}, track_samples={}",
+                            debug!("LoadSlot command: slot={:?}, track_channels={}, track_samples={}",
                                 slot, track.channels, track.original_samples.len());
                             state.load_slot(slot, track);
                         }

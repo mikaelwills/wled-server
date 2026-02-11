@@ -2,6 +2,8 @@
 Description=WLED Lighting Server
 After=network-online.target sound.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -9,6 +11,7 @@ WorkingDirectory=/opt/wled-server
 ExecStart=/opt/wled-server/rust-wled-server
 Restart=always
 RestartSec=3
+TimeoutStopSec=10
 
 Environment=RUST_LOG=info
 Environment=WLED_FRONTEND_PATH=/opt/wled-server/frontend/build

@@ -156,10 +156,15 @@ pub async fn update_board(
         state.broadcast_tx.clone(),
         state.connected_ips.clone(),
         state.performance_mode.clone(),
+        None,
+        0,
     );
 
+    let spawn_id = board_config.id.clone();
     tokio::spawn(async move {
-        let _ = actor.run(rx).await;
+        if let Err(e) = actor.run(rx).await {
+            error!(board_id = %spawn_id, "Actor error: {}", e);
+        }
     });
 
     {
@@ -550,7 +555,10 @@ pub async fn get_board_presets(
             .ok_or((StatusCode::NOT_FOUND, "Board not found".to_string()))?
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let url = format!("http://{}/presets.json", board_ip);
 
     match client.get(&url).send().await {
@@ -623,7 +631,10 @@ pub async fn delete_board_preset(
         }]
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let url = format!("http://{}/json/state", board_ip);
 
     match client.post(&url).json(&empty_preset).send().await {
@@ -687,7 +698,10 @@ pub async fn replace_presets_on_board(
         "Uploading presets.json to board via /upload"
     );
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let part = reqwest::multipart::Part::bytes(json_string.into_bytes())
         .file_name("presets.json")
         .mime_str("application/json")

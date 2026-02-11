@@ -1,6 +1,7 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
-import { resamplingProgress, resamplingComplete, playbackPosition, currentlyPlayingProgram, type SlotResamplingProgress } from '$lib/stores/store';
+import { resamplingProgress, resamplingComplete, playbackPosition, currentlyPlayingProgram, programs, type SlotResamplingProgress } from '$lib/stores/store';
+import { get } from 'svelte/store';
 
 export type SseEvent =
   | { type: 'state_update'; board_id: string; state: BoardState }
@@ -62,6 +63,10 @@ export function createSseConnection(
           timestamp: Date.now(),
         });
       } else if (data.type === 'playback_started') {
+        const program = get(programs).find(p => p.id === data.program_id);
+        if (program) {
+          currentlyPlayingProgram.set(program);
+        }
       } else if (data.type === 'playback_position') {
         playbackPosition.set({
           programId: data.program_id,

@@ -49,8 +49,6 @@ async fn main() {
 
     let storage_paths = config::StoragePaths::default();
 
-    storage_paths.wait_for_usb().await;
-
     if let Err(e) = storage_paths.init() {
         error!("Failed to initialize storage paths: {}", e);
         error!("Program storage will be unavailable");
@@ -59,7 +57,14 @@ async fn main() {
     let (broadcast_tx, _) = broadcast::channel::<SseEvent>(100);
     let broadcast_tx = Arc::new(broadcast_tx);
 
-    let loaded_config = Config::load().unwrap_or_default();
+    let loaded_config = match Config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to load config {}", e);
+            error!("Fix data/boards.toml or delete it to start with defaults");
+            return;
+        }
+    };
     let group_e131_transports = loaded_config.init_e131_transports().await;
 
     let timing_metrics = Arc::new(timing_metrics::TimingMetrics::new());
@@ -81,13 +86,22 @@ async fn main() {
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
         let position = audio_engine.get_position_arc();
         let health = audio_engine.get_health_arc();
-        match audio::AudioThread::new(command_rx, position, health, device_manager.clone(), broadcast_tx.clone()) {
+        match audio::AudioThread::new(
+            command_rx,
+            position,
+            health,
+            device_manager.clone(),
+            broadcast_tx.clone(),
+        ) {
             Ok(thread) => {
                 info!("Audio playback thread started");
                 Some(Arc::new(thread))
             }
             Err(e) => {
-                warn!("Failed to start audio thread: {} - audio playback disabled", e);
+                warn!(
+                    "Failed to start audio thread: {} - audio playback disabled",
+                    e
+                );
                 None
             }
         }
@@ -166,44 +180,42 @@ async fn main() {
         performance_mode: performance_mode.clone(),
         timing_metrics,
         playback_history,
+        startup_time,
     });
 
-    match Config::load() {
-        Ok(config) => {
-            info!("Loaded {} board(s) from boards.toml", config.boards.len());
-            for board_config in config.boards {
-                let (tx, rx) = mpsc::channel(100);
-                {
-                    let mut senders = state.boards.write().await;
-                    senders.insert(
-                        board_config.id.clone(),
-                        BoardEntry {
-                            ip: board_config.ip.clone(),
-                            sender: tx,
-                        },
-                    );
-                }
-                let actor = BoardActor::new_with_config(
-                    board_config.id.clone(),
-                    board_config.ip.clone(),
-                    board_config.transition,
-                    board_config.led_count,
-                    board_config.universe,
-                    state.broadcast_tx.clone(),
-                    state.connected_ips.clone(),
-                    state.performance_mode.clone(),
-                );
-                tokio::spawn(async move {
-                    if let Err(e) = actor.run(rx).await {
-                        error!("Actor error: {}", e);
-                    }
-                });
+    info!(
+        "Loaded {} board(s) from boards.toml",
+        loaded_config.boards.len()
+    );
+    for board_config in &loaded_config.boards {
+        let (tx, rx) = mpsc::channel(100);
+        {
+            let mut senders = state.boards.write().await;
+            senders.insert(
+                board_config.id.clone(),
+                BoardEntry {
+                    ip: board_config.ip.clone(),
+                    sender: tx,
+                },
+            );
+        }
+        let actor = BoardActor::new_with_config(
+            board_config.id.clone(),
+            board_config.ip.clone(),
+            board_config.transition,
+            board_config.led_count,
+            board_config.universe,
+            state.broadcast_tx.clone(),
+            state.connected_ips.clone(),
+            state.performance_mode.clone(),
+            Some(startup_time),
+            loaded_config.boards.len(),
+        );
+        tokio::spawn(async move {
+            if let Err(e) = actor.run(rx).await {
+                error!("Actor error: {}", e);
             }
-        }
-        Err(e) => {
-            warn!("Could not load boards.toml: {}", e);
-            info!("Server starting with no boards configured");
-        }
+        });
     }
 
     let cors = CorsLayer::new()
@@ -213,8 +225,8 @@ async fn main() {
 
     let api_router = routes::build_api_router(state.clone());
 
-    let frontend_path = std::env::var("WLED_FRONTEND_PATH")
-        .unwrap_or_else(|_| "frontend/build".to_string());
+    let frontend_path =
+        std::env::var("WLED_FRONTEND_PATH").unwrap_or_else(|_| "frontend/build".to_string());
 
     let app = axum::Router::new()
         .nest("/api", api_router)
@@ -229,7 +241,11 @@ async fn main() {
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => {
-            info!("API Server running on http://{} (startup: {:?})", addr, startup_time.elapsed());
+            info!(
+                "API Server running on http://{} (startup: {:?})",
+                addr,
+                startup_time.elapsed()
+            );
             l
         }
         Err(e) => {
@@ -239,10 +255,46 @@ async fn main() {
         }
     };
 
-    audio::spawn_preload_task(state.audio_engine.clone(), state.storage_paths.audio.clone());
+    async fn shutdown_signal() {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install ctrl+c handler");
+        };
 
-    match axum::serve(listener, app).await {
-        Ok(_) => info!("Server stopped properly"),
-        Err(e) => error!("Server error: {}", e),
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
     }
+
+    audio::spawn_preload_task(
+        state.audio_engine.clone(),
+        state.storage_paths.audio.clone(),
+    );
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap_or_else(|e| error!("Server error: {}", e));
+
+    info!("Server stopped, cleaning up...");
+
+    state.program_engine.stop().await.ok();
+
+
+    {
+        let mut engine = state.audio_engine.lock().await;
+        engine.stop().await;
+
+    }
+
+    info!("Shutdown complete");
 }

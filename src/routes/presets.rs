@@ -96,7 +96,10 @@ pub async fn save_preset(
             let senders_lock = state.boards.read().await;
             senders_lock.get(&board_id).map(|entry| entry.ip.clone())
         } {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
             let payload = preset.to_wled_json();
             let url = format!("http://{}/json/state", board_ip);
 

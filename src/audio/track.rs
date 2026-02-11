@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tracing;
 
 use super::resampler;
 use crate::config::ResamplingQuality;
@@ -94,7 +95,7 @@ impl LoadedTrack {
         file.read_exact(&mut header).ok()?;
 
         if &header[0..4] != CACHE_MAGIC {
-            eprintln!("[Track] Cache invalid magic: {:?}", path);
+            tracing::warn!("Cache invalid magic: {:?}", path);
             return None;
         }
 
@@ -103,12 +104,12 @@ impl LoadedTrack {
         let cached_mtime = u64::from_le_bytes(header[16..24].try_into().ok()?);
 
         if cached_rate != target_rate || cached_channels != self.channels {
-            eprintln!("[Track] Cache rate/channel mismatch: {:?}", path);
+            tracing::warn!("Cache rate/channel mismatch: {:?}", path);
             return None;
         }
 
         if cached_mtime != self.source_mtime && self.source_mtime > 0 {
-            eprintln!("[Track] Cache stale (mtime {} vs {}): {:?}", cached_mtime, self.source_mtime, path);
+            tracing::warn!("Cache stale (mtime {} vs {}): {:?}", cached_mtime, self.source_mtime, path);
             let _ = fs::remove_file(path);
             return None;
         }
@@ -117,7 +118,7 @@ impl LoadedTrack {
         file.read_to_end(&mut sample_bytes).ok()?;
 
         if sample_bytes.len() % 4 != 0 {
-            eprintln!("[Track] Cache corrupted (bad size): {:?}", path);
+            tracing::error!("Cache corrupted (bad size): {:?}", path);
             return None;
         }
 
@@ -126,7 +127,7 @@ impl LoadedTrack {
             .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
             .collect();
 
-        eprintln!("[Track] Loaded {} samples from disk cache: {:?}", samples.len(), path);
+        tracing::debug!("Loaded {} samples from disk cache: {:?}", samples.len(), path);
         Some(samples)
     }
 
@@ -135,7 +136,7 @@ impl LoadedTrack {
 
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
-                eprintln!("[Track] Failed to create cache dir: {}", e);
+                tracing::error!("Failed to create cache dir: {}", e);
                 return;
             }
         }
@@ -165,9 +166,9 @@ impl LoadedTrack {
         })();
 
         match result {
-            Ok(()) => eprintln!("[Track] Saved {} samples to disk cache ({:?}): {:?}", samples.len(), quality, path),
+            Ok(()) => tracing::debug!("Saved {} samples to disk cache ({:?}): {:?}", samples.len(), quality, path),
             Err(e) => {
-                eprintln!("[Track] Failed to save cache: {}", e);
+                tracing::error!("Failed to save cache: {}", e);
                 let _ = fs::remove_file(&tmp_path);
             }
         }
@@ -187,7 +188,7 @@ impl LoadedTrack {
             if (name_str.starts_with(&prefix) && name_str.ends_with(".pcm") && !name_str.ends_with(".tmp"))
                 || name_str == legacy_name
             {
-                eprintln!("[Track] Removing old cache: {:?}", entry.path());
+                tracing::debug!("Removing old cache: {:?}", entry.path());
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -202,7 +203,7 @@ impl LoadedTrack {
             let name = entry.file_name();
             let Some(name_str) = name.to_str() else { continue };
             if name_str.starts_with(&prefix) && name_str.ends_with(".pcm") && !name_str.ends_with(".tmp") {
-                eprintln!("[Track] Deleting cache file: {:?}", entry.path());
+                tracing::debug!("Deleting cache file: {:?}", entry.path());
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -267,15 +268,15 @@ impl LoadedTrack {
 
         let quality = ResamplingQuality::default();
         if let Some(cached_samples) = self.load_from_cache(target_rate, quality) {
-            eprintln!("[Track] Loaded {}Hz from disk cache ({} samples)", target_rate, cached_samples.len());
+            tracing::debug!("Loaded {}Hz from disk cache ({} samples)", target_rate, cached_samples.len());
             let resampled = Arc::new(cached_samples);
             let mut cache = self.resampled_cache.write();
             cache.insert(target_rate, Arc::clone(&resampled));
             return resampled;
         }
 
-        eprintln!(
-            "[Track] Cache miss for {}Hz, resampling from {}Hz ({} samples)",
+        tracing::debug!(
+            "Cache miss for {}Hz, resampling from {}Hz ({} samples)",
             target_rate,
             self.original_rate,
             self.original_samples.len()
@@ -290,8 +291,8 @@ impl LoadedTrack {
         ) {
             Ok(resampled) => {
                 let elapsed = start.elapsed();
-                eprintln!(
-                    "[Track] On-demand resample completed in {:?} ({} -> {} samples)",
+                tracing::info!(
+                    "On-demand resample completed in {:?} ({} -> {} samples)",
                     elapsed,
                     self.original_samples.len(),
                     resampled.len()
@@ -303,8 +304,8 @@ impl LoadedTrack {
                 resampled
             }
             Err(e) => {
-                eprintln!(
-                    "[Track] On-demand resample failed ({}Hz -> {}Hz): {}, using original samples",
+                tracing::error!(
+                    "On-demand resample failed ({}Hz -> {}Hz): {}, using original samples",
                     self.original_rate,
                     target_rate,
                     e
@@ -372,27 +373,27 @@ impl LoadedTrack {
         F: Fn(u32, u32) -> bool,
     {
         if target_rate == self.original_rate {
-            eprintln!("[Resampler] Using original {}Hz samples", target_rate);
+            tracing::debug!("Using original {}Hz samples", target_rate);
             return Ok(());
         }
 
         {
             let cache = self.resampled_cache.read();
             if cache.contains_key(&target_rate) {
-                eprintln!("[Resampler] MEMORY CACHE HIT for {}Hz", target_rate);
+                tracing::debug!("Memory cache hit for {}Hz", target_rate);
                 return Ok(());
             }
         }
 
         if let Some(cached_samples) = self.load_from_cache(target_rate, quality) {
-            eprintln!("[Resampler] DISK CACHE HIT for {}Hz ({} samples)", target_rate, cached_samples.len());
+            tracing::debug!("Disk cache hit for {}Hz ({} samples)", target_rate, cached_samples.len());
             let mut cache = self.resampled_cache.write();
             cache.insert(target_rate, Arc::new(cached_samples));
             return Ok(());
         }
 
-        eprintln!(
-            "[Resampler] CACHE MISS {}Hz -> {}Hz ({} samples, {:?})",
+        tracing::debug!(
+            "Cache miss {}Hz -> {}Hz ({} samples, {:?})",
             self.original_rate,
             target_rate,
             self.original_samples.len(),
@@ -410,8 +411,8 @@ impl LoadedTrack {
         )?;
         let elapsed = start.elapsed();
 
-        eprintln!(
-            "[Resampler] Completed in {:?} ({} -> {} samples)",
+        tracing::info!(
+            "Resampling completed in {:?} ({} -> {} samples)",
             elapsed,
             self.original_samples.len(),
             resampled.len()
