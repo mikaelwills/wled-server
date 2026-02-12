@@ -13,6 +13,7 @@ use super::{DeviceManager, LoadedTrack, PlaybackCommand, RoutingConfig, SlotId, 
 use crate::sse::SseEvent;
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
+const CLICK_LEAD_MS: usize = 20;
 
 pub struct PlaybackHealth {
     pub callback_count: AtomicU64,
@@ -351,7 +352,14 @@ fn build_stream(
                                 }
 
                                 let frame_number = idx / backing_channels;
-                                let slot_sample_idx = frame_number * channels;
+                                let slot_frame = if slot_idx == SlotId::Backing as usize || slot_idx == SlotId::Guide as usize {
+                                    let delay_frames = (sample_rate as usize * CLICK_LEAD_MS) / 1000;
+                                    if frame_number < delay_frames { continue; }
+                                    frame_number - delay_frames
+                                } else {
+                                    frame_number
+                                };
+                                let slot_sample_idx = slot_frame * channels;
                                 if slot_sample_idx >= sample_count {
                                     continue;
                                 }

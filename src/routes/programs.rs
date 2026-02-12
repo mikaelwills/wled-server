@@ -1,4 +1,5 @@
 use axum::{extract::{Path, State}, http::StatusCode, Json};
+use serde::Deserialize;
 use tracing::{info, warn, error};
 
 use crate::audio;
@@ -444,4 +445,111 @@ pub async fn duplicate_program(
     }
 
     Ok((StatusCode::CREATED, Json(result)))
+}
+
+#[derive(Deserialize)]
+pub struct ReplaceAudioRequest {
+    pub data_url: String,
+}
+
+pub async fn replace_audio(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(payload): Json<ReplaceAudioRequest>,
+) -> Result<Json<program::Program>, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
+    }
+
+    let program = {
+        let programs = state.programs.read().await;
+        programs
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?
+    };
+
+    if let Some(ref old_audio_file) = program.audio_file {
+        let track_id = std::path::Path::new(old_audio_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(old_audio_file);
+        let mut engine = state.audio_engine.lock().await;
+        if engine.unload_track(track_id) {
+            info!("Unloaded old backing track from engine: {}", track_id);
+        }
+    }
+
+    let audio_dir = &state.storage_paths.audio;
+    if let Some(ref old_audio_file) = program.audio_file {
+        let old_path = audio_dir.join(old_audio_file);
+        if old_path.exists() {
+            let _ = std::fs::remove_file(&old_path);
+            info!("Deleted old audio file: {}", old_audio_file);
+        }
+        let old_peaks = audio_dir.join(format!("{}.peaks.json", old_audio_file));
+        if old_peaks.exists() {
+            let _ = std::fs::remove_file(&old_peaks);
+            info!("Deleted old peaks: {}.peaks.json", old_audio_file);
+        }
+        let old_cache_dir = audio_dir.join("resampled").join(old_audio_file);
+        if old_cache_dir.exists() {
+            let _ = std::fs::remove_dir_all(&old_cache_dir);
+            info!("Deleted old resampled cache: resampled/{}", old_audio_file);
+        }
+    }
+
+    let new_filename = audio::AudioFile::save(&program.id, &payload.data_url, audio_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save new audio: {}", e)))?;
+
+    info!("Saved new audio file: {}", new_filename);
+
+    let mut updated = program.clone();
+    updated.audio_file = Some(new_filename.clone());
+    updated.audio_duration = None;
+
+    updated
+        .save_to_file(&state.storage_paths.programs)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to save program: {}", e),
+            )
+        })?;
+
+    let audio_path = audio_dir.join(&new_filename);
+    let cache_dir = audio_dir.join("resampled");
+    let audio_engine = state.audio_engine.clone();
+    let track_id = std::path::Path::new(&new_filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&new_filename)
+        .to_string();
+    tokio::spawn(async move {
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let cache_dir_clone = cache_dir.clone();
+        let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&audio_path)).await;
+        match decode_result {
+            Ok(Ok(decoded)) => {
+                let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                let mut engine = audio_engine.lock().await;
+                engine.load_track(track_id.clone(), track).await;
+                info!("Loaded replacement backing track into engine: {}", track_id);
+            }
+            Ok(Err(e)) => error!("Failed to decode replacement audio: {}", e),
+            Err(e) => error!("Decode task failed for replacement: {}", e),
+        }
+    });
+
+    let result = updated.clone();
+    {
+        let mut programs = state.programs.write().await;
+        programs.insert(updated.id.clone(), updated);
+    }
+
+    info!("Replaced audio for program '{}' with '{}'", id, new_filename);
+    Ok(Json(result))
 }

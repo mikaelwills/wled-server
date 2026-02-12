@@ -23,7 +23,7 @@ function getAudioContext(): AudioContext {
  * Compute waveform peaks from an AudioBuffer
  * Returns normalized min/max pairs suitable for WaveSurfer
  */
-function computePeaksFromBuffer(audioBuffer: AudioBuffer, targetLength: number = 8000): Array<number[]> {
+export function computePeaksFromBuffer(audioBuffer: AudioBuffer, targetLength: number = 8000): Array<number[]> {
 	const channelData = audioBuffer.getChannelData(0);
 	const samples = channelData.length;
 	const samplesPerPeak = Math.floor(samples / targetLength);
@@ -224,6 +224,34 @@ export function removeAudioForProgram(programId: string): void {
 
 	cachedPeaks.update(p => {
 		const { [programId]: _, ...rest } = p;
+		return rest;
+	});
+}
+
+export function clearAudioCacheForProgram(programId: string): void {
+	const urls = get(audioBlobUrls);
+
+	if (urls[programId]) {
+		URL.revokeObjectURL(urls[programId]);
+	}
+
+	audioBlobUrls.update(u => {
+		const { [programId]: _, ...rest } = u;
+		return rest;
+	});
+
+	cachedPeaks.update(p => {
+		const { [programId]: _, ...rest } = p;
+		return rest;
+	});
+
+	audioElements.update(el => {
+		const elem = el[programId];
+		if (elem) {
+			elem.pause();
+			elem.src = '';
+		}
+		const { [programId]: _, ...rest } = el;
 		return rest;
 	});
 }

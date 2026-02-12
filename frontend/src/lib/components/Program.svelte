@@ -7,7 +7,7 @@
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore, duplicateProgram as duplicateProgramService } from '$lib/db/programs-db';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService, resumePlayback as resumePlaybackService } from '$lib/db/playback-db';
-	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram, setSlotVolume } from '$lib/db/audio-db';
+	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram, setSlotVolume, clearAudioCacheForProgram, computePeaksFromBuffer } from '$lib/db/audio-db';
 	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { programs as programsStore, boards, performancePresets, patternPresets, currentlyPlayingProgram, lastActiveProgramId, gridMultiplier, playbackPosition } from '$lib/stores/store';
@@ -152,6 +152,7 @@
 	// Edit mode (lighting vs midi markers)
 	let editMode: MarkerType = $state('lighting');
 	let visibleMarkers = $derived(markers.filter(m => m.type === editMode));
+	let shiftAmount: number = $state(1);
 
 	function openPresetPicker(markerId: string) {
 		presetPickerMarkerId = markerId;
@@ -284,7 +285,6 @@
 	// Seeking state for debouncing
 	let seekDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 	let lastSeekTime = 0;
-
 	// Track the current playhead time ourselves (wavesurfer.getCurrentTime unreliable with peaks-only mode)
 	let playheadTimeSecs = $state(0);
 
@@ -519,11 +519,11 @@
 				});
 				pendingCues = [];
 			}
-		});
+
+			});
 
 		// Handle seeking during playback - reschedule cues from new position (debounced)
 		wavesurfer.on('seeking', (currentTime) => {
-			// Check if this program is currently playing
 			let currentProgram: ProgramModel | null = null;
 			const unsub = currentlyPlayingProgram.subscribe(p => {
 				currentProgram = p;
@@ -1131,6 +1131,20 @@ async function playFullProgram() {
 		syncMarkersToStore();
 	}
 
+	function shiftCues(direction: 1 | -1) {
+		if (!bpm || bpm <= 0 || visibleMarkers.length === 0) return;
+		const shiftSeconds = (60 / bpm) * shiftAmount * direction;
+		for (const marker of visibleMarkers) {
+			marker.time = Math.max(0, marker.time + shiftSeconds);
+			const region = regions?.getRegions().find(r => r.id === marker.id);
+			if (region) {
+				region.setOptions({ start: marker.time, end: marker.time });
+			}
+		}
+		markers = [...markers];
+		syncMarkersToStore();
+	}
+
 	async function handleDuplicate() {
 		if (!programId) return;
 		try {
@@ -1138,6 +1152,109 @@ async function playFullProgram() {
 		} catch (err) {
 			console.error('Failed to duplicate program:', err);
 		}
+	}
+
+	async function handleReplaceAudio() {
+		if (!programId) return;
+
+		const input = document.createElement('input');
+		input.type = 'file';
+		input.accept = 'audio/*,.wav,.mp3,.ogg,.flac';
+		input.onchange = async () => {
+			const file = input.files?.[0];
+			if (!file) return;
+
+			const savedMarkers = [...markers];
+
+			markers = [];
+			if (regions) {
+				regions.getRegions().forEach(r => {
+					if (!gridRegionIds.includes(r.id)) r.remove();
+				});
+			}
+			if (wavesurfer) {
+				wavesurfer.destroy();
+				wavesurfer = null;
+			}
+			isLoaded = false;
+			wavesurferInitialized = true;
+
+			const container = document.querySelector(`#waveform-${sanitizedProgramId}`);
+			if (container) container.innerHTML = '';
+
+			clearAudioCacheForProgram(programId!);
+
+			try {
+				const arrayBuffer = await file.arrayBuffer();
+
+				const dataUrl = await new Promise<string>((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = (e) => resolve(e.target!.result as string);
+					reader.onerror = reject;
+					reader.readAsDataURL(file);
+				});
+
+				const response = await fetch(`${API_URL}/programs/${encodeURIComponent(programId!)}/replace-audio`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ data_url: dataUrl })
+				});
+
+				if (!response.ok) {
+					const errText = await response.text();
+					console.error('Failed to replace audio:', response.status, errText);
+					alert('Failed to replace audio: ' + errText);
+					return;
+				}
+
+				const updated = await response.json();
+
+				if (program) {
+					program.audioId = updated.audio_file;
+					program.audioFile = updated.audio_file;
+					program.audioDuration = null;
+				}
+
+				programsStore.update(programs => {
+					const idx = programs.findIndex(p => p.id === programId);
+					if (idx !== -1) {
+						programs[idx].audioId = updated.audio_file;
+						programs[idx].audioFile = updated.audio_file;
+						programs[idx].audioDuration = undefined;
+					}
+					return [...programs];
+				});
+
+				const audioCtx = new AudioContext();
+				const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+				audioCtx.close();
+
+				const peaks = computePeaksFromBuffer(audioBuffer);
+				const dur = audioBuffer.duration;
+
+				cachedPeaksStore.update(cache => ({
+					...cache,
+					[programId!]: { peaks, duration: dur }
+				}));
+
+				await fetch(`${API_URL}/audio/${encodeURIComponent(updated.audio_file)}/peaks`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ peaks, duration: dur })
+				});
+
+				pendingCues = savedMarkers;
+				fileName = file.name;
+
+				setTimeout(() => {
+					initializeWaveSurfer();
+				}, 100);
+			} catch (err) {
+				console.error('Failed to replace audio:', err);
+				alert('Failed to replace audio');
+			}
+		};
+		input.click();
 	}
 
 	function deleteProgram() {
@@ -1366,6 +1483,7 @@ async function playFullProgram() {
 					<div class="action-menu-dropdown">
 						<button class="action-menu-item" onclick={() => { handleDuplicate(); actionMenuOpen = false; }}>Duplicate</button>
 						<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
+						<button class="action-menu-item" onclick={() => { handleReplaceAudio(); actionMenuOpen = false; }}>Replace audio</button>
 						<button class="action-menu-item" onclick={() => { resampledDialogOpen = true; fetchResampledInfo(); actionMenuOpen = false; }}>Resampled</button>
 						<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
 					</div>
@@ -1380,6 +1498,21 @@ async function playFullProgram() {
 				</span>
 			{/if}
 			<div class="track-label-actions">
+				{#if editMode === 'lighting' && bpm && bpm > 0 && visibleMarkers.length > 0}
+					<div class="mode-btn-group">
+						{#each [{ label: '¼', value: 0.25 }, { label: '½', value: 0.5 }, { label: '1', value: 1 }, { label: '2', value: 2 }, { label: '4', value: 4 }] as opt}
+							<button
+								class="mode-btn"
+								class:active={shiftAmount === opt.value}
+								onclick={() => shiftAmount = opt.value}
+							>{opt.label}</button>
+						{/each}
+					</div>
+					<div class="zoom-btn-group">
+						<button class="zoom-btn" onclick={() => shiftCues(-1)} title="Shift cues earlier">−</button>
+						<button class="zoom-btn" onclick={() => shiftCues(1)} title="Shift cues later">+</button>
+					</div>
+				{/if}
 				<div class="mode-btn-group">
 					<button
 						class="mode-btn"
