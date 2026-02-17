@@ -1,12 +1,16 @@
-// frontend/src/lib/store.ts
 import { writable, type Writable } from 'svelte/store';
 import type { Program } from '$lib/models/Program';
 import type { BoardState } from '$lib/types';
+import type { Setlist } from '$lib/models/Setlist';
 
 // Programs store - state triplet pattern
 export const programs: Writable<Program[]> = writable([]);
 export const programsLoading: Writable<boolean> = writable(true);
 export const programsError: Writable<string | null> = writable(null);
+
+// Setlists store
+export const setlists: Writable<Setlist[]> = writable([]);
+export const activeSetlistId: Writable<string> = writable('default');
 
 // Boards store - state triplet pattern
 // Note: Groups are boards with isGroup: true, stored in same array

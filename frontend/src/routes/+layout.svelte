@@ -7,12 +7,14 @@
 	import { initPrograms, cleanupPrograms } from '$lib/db/programs-db';
 	import { initLoopyProSettings } from '$lib/db/loopy-db';
 	import { initAudio, cleanupAudio, initResamplingQuality } from '$lib/db/audio-db';
+	import { initSetlists } from '$lib/db/setlists-db';
 	import TimingMonitor from '$lib/components/TimingMonitor.svelte';
 	import { toggleTimingMonitor } from '$lib/stores/timing-store';
 	import AudioHealthMonitor from '$lib/components/AudioHealthMonitor.svelte';
 	import { toggleAudioHealthMonitor } from '$lib/stores/audio-health-store';
 	import ReadinessDialog from '$lib/components/ReadinessDialog.svelte';
 	import { API_URL } from '$lib/api';
+	import { resamplingBatch } from '$lib/stores/store';
 
 	let { children } = $props();
 
@@ -72,7 +74,8 @@
 			await fetchPerformancePresets();
 			await fetchPatternPresets();
 
-			// Initialize programs from API
+			// Initialize setlists and programs from API
+			await initSetlists();
 			await initPrograms();
 
 			// Initialize Loopy Pro settings
@@ -132,7 +135,27 @@
 		</div>
 
 		<div class="nav-status">
-			{#if memoryStats}
+			{#if $resamplingBatch}
+				<div class="nav-batch-progress">
+					<div class="nav-batch-text">
+						{#if $resamplingBatch.completedTracks === 0}
+							Loading tracks...
+						{:else}
+							Loading tracks {$resamplingBatch.completedTracks}/{$resamplingBatch.totalTracks}
+						{/if}
+					</div>
+					<div class="nav-batch-bar">
+						{#if $resamplingBatch.completedTracks === 0}
+							<div class="nav-batch-fill indeterminate"></div>
+						{:else}
+							<div
+								class="nav-batch-fill"
+								style="width: {($resamplingBatch.completedTracks / $resamplingBatch.totalTracks) * 100}%"
+							></div>
+						{/if}
+					</div>
+				</div>
+			{:else if memoryStats}
 				<div class="memory-stats">
 					<span class="memory-value">{memoryStats.memory_mb.toFixed(1)} MB</span>
 					<span class="memory-label">{memoryStats.track_count} tracks</span>
@@ -252,6 +275,49 @@
 	.memory-label {
 		font-size: 0.65rem;
 		color: #555;
+	}
+
+	.nav-batch-progress {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		justify-content: center;
+		padding: 0.5rem 1rem;
+		gap: 0.25rem;
+		min-width: 120px;
+	}
+
+	.nav-batch-text {
+		font-size: 0.7rem;
+		color: #a855f7;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	.nav-batch-bar {
+		width: 100%;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.05);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.nav-batch-fill {
+		height: 100%;
+		background: #a855f7;
+		border-radius: 2px;
+		transition: width 0.3s ease;
+	}
+
+	.nav-batch-fill.indeterminate {
+		width: 30%;
+		animation: nav-indeterminate 1.5s ease-in-out infinite;
+	}
+
+	@keyframes nav-indeterminate {
+		0% { margin-left: 0; }
+		50% { margin-left: 70%; }
+		100% { margin-left: 0; }
 	}
 
 	/* Mobile styles */

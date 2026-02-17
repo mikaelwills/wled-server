@@ -181,6 +181,8 @@ pub struct AppState {
     pub audio_engine: Arc<Mutex<AudioEngine>>,
     pub audio_thread: Option<Arc<AudioThread>>,
     pub startup_time: Instant,
+    pub setlists: Arc<RwLock<Vec<crate::setlist::Setlist>>>,
+    pub active_setlist_id: Arc<RwLock<String>>,
 }
 
 pub type SharedState = Arc<AppState>;

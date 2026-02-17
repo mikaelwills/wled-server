@@ -63,6 +63,7 @@ pub struct PlaybackState {
 pub struct ProgramEngine {
     command_tx: mpsc::Sender<PlaybackCommand>,
     state: Arc<RwLock<PlaybackState>>,
+    effects_engine: Arc<EffectsEngine>,
 }
 
 fn send_blackout(effects_engine: &EffectsEngine, boards: Vec<BoardTarget>) {
@@ -112,6 +113,7 @@ impl ProgramEngine {
 
         let state_clone = state.clone();
         let performance_mode_clone = performance_mode.clone();
+        let effects_engine_clone = effects_engine.clone();
         tokio::spawn(Self::run_loop(
             command_rx,
             config,
@@ -131,6 +133,7 @@ impl ProgramEngine {
         Self {
             command_tx,
             state: state.clone(),
+            effects_engine: effects_engine_clone,
         }
     }
 
@@ -142,6 +145,13 @@ impl ProgramEngine {
             })
             .await
             .map_err(|e| e.to_string())
+    }
+
+    pub async fn blackout_active_targets(&self) {
+        let targets = self.state.read().await.active_targets.clone();
+        for target in &targets {
+            send_blackout(&self.effects_engine, target.boards.clone());
+        }
     }
 
     pub async fn get_playback_state(&self) -> Option<(String, f64)> {

@@ -86,7 +86,9 @@ pub async fn pause_playback(
 ) -> StatusCode {
     let mut engine = state.audio_engine.lock().await;
     engine.pause().await;
-    info!("Paused playback");
+    drop(engine);
+    state.program_engine.blackout_active_targets().await;
+    info!("Paused playback (with blackout)");
     StatusCode::OK
 }
 

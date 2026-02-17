@@ -6,6 +6,7 @@ mod history;
 mod patterns;
 mod presets;
 mod programs;
+mod setlists;
 mod settings;
 mod timing;
 
@@ -71,16 +72,22 @@ pub fn build_api_router(state: SharedState) -> Router {
             post(boards::replace_presets_on_board),
         )
         .route("/events", get(sse_handler))
+        .route("/setlists", get(setlists::list_setlists).post(setlists::create_setlist))
+        .route("/setlists/reorder", put(setlists::reorder_setlists))
+        .route("/setlists/:id", put(setlists::update_setlist).delete(setlists::delete_setlist))
+        .route("/setlists/:id/activate", post(setlists::activate_setlist))
         .route("/programs", post(programs::save_program))
         .route("/programs", get(programs::list_programs))
+        .route("/programs/stop", post(programs::stop_program))
+        .route("/programs/reload", post(programs::reload_programs))
         .route("/programs/:id", get(programs::get_program))
         .route("/programs/:id", delete(programs::delete_program))
         .route("/programs/:id", put(programs::update_program))
         .route("/programs/:id/duplicate", post(programs::duplicate_program))
         .route("/programs/:id/replace-audio", post(programs::replace_audio))
         .route("/programs/:id/play", post(programs::play_program))
-        .route("/programs/stop", post(programs::stop_program))
-        .route("/programs/reload", post(programs::reload_programs))
+        .route("/programs/:id/move", post(programs::move_program))
+        .route("/programs/:id/clone-to-setlist", post(programs::clone_to_setlist))
         .route(
             "/presets",
             post(presets::save_preset).get(presets::list_presets),
@@ -217,7 +224,10 @@ async fn readiness_check(State(state): State<SharedState>) -> Json<ReadinessResp
     let audio_device_name = state.device_manager.get_selected_device();
     let audio_device_found = audio_device_name.is_some();
 
-    let programs_loaded = state.programs.read().await.len();
+    let active_setlist = state.active_setlist_id.read().await.clone();
+    let programs_loaded = state.programs.read().await.values()
+        .filter(|p| p.setlist_id == active_setlist)
+        .count();
 
     let e131_transports = state.group_e131_transports.read().await.len();
 

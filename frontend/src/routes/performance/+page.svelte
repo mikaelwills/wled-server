@@ -1,12 +1,17 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram, playbackPosition } from '$lib/stores/store';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, playbackPosition, activeSetlistId } from '$lib/stores/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/db/playback-db';
 	import { updateProgram, reorderPrograms } from '$lib/db/programs-db';
 	import { setBoardBrightness } from '$lib/db/boards-db';
 	import { Program, type TransitionType } from '$lib/models/Program';
 
-	// Track playback progress for each program (0-100)
+	let filteredPrograms = $derived(
+		$programs
+			.filter(p => p.setlistId === $activeSetlistId)
+			.sort((a, b) => a.displayOrder - b.displayOrder)
+	);
+
 	let playbackProgress = $state<Record<string, number>>({});
 
 	// Flag to indicate manual stop (breaks chain)
@@ -210,8 +215,7 @@
 			return;
 		}
 
-		// Reorder the programs array
-		const reordered = [...$programs];
+		const reordered = [...filteredPrograms];
 		const [movedItem] = reordered.splice(dragState.draggedIndex, 1);
 		reordered.splice(dropIndex, 0, movedItem);
 
@@ -333,14 +337,14 @@
 		<div class="empty-state">
 			<p class="empty-text error">{$programsError}</p>
 		</div>
-	{:else if $programs.length === 0}
+	{:else if filteredPrograms.length === 0}
 		<div class="empty-state">
-			<p class="empty-text">No programs available</p>
-			<p class="empty-hint">Create programs in the Sequencer page first</p>
+			<p class="empty-text">No programs in this set</p>
+			<p class="empty-hint">Create programs in the Programming page first</p>
 		</div>
 	{:else}
-		<div class="programs-grid" data-count={$programs.length}>
-			{#each $programs as program, index (program.id)}
+		<div class="programs-grid" data-count={filteredPrograms.length}>
+			{#each filteredPrograms as program, index (program.id)}
 				<button
 					class="program-button"
 					class:playing={currentPlayingId === program.id}

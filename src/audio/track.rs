@@ -116,7 +116,7 @@ impl LoadedTrack {
         }
 
         if cached_mtime != self.source_mtime && self.source_mtime > 0 {
-            tracing::warn!("Cache stale (mtime {} vs {}): {:?}", cached_mtime, self.source_mtime, path);
+            tracing::info!("[Resample] Cache STALE (cached_mtime={} file_mtime={}): {:?}", cached_mtime, self.source_mtime, path);
             let _ = fs::remove_file(path);
             return None;
         }
@@ -349,11 +349,13 @@ impl LoadedTrack {
         }
 
         if let Some(cached_samples) = self.load_from_cache(target_rate, quality) {
+            tracing::info!("[Resample] Disk cache HIT for {}Hz ({} samples)", target_rate, cached_samples.len());
             let mut cache = self.resampled_cache.write();
             cache.insert(target_rate, Arc::new(cached_samples));
             return Ok(());
         }
 
+        tracing::info!("[Resample] Disk cache MISS for {}Hz, resampling from {}Hz", target_rate, self.original_rate);
         let resampled = resampler::resample_with_options(
             &self.original_samples,
             self.channels,

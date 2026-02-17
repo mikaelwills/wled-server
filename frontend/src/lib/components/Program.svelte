@@ -17,7 +17,8 @@
 	import Track from '$lib/components/Track.svelte';
 	import { getSlot } from '$lib/slots';
 	import { toggleSlotMute } from '$lib/db/audio-db';
-	import { slotMuted, resamplingProgress as resamplingProgressStore, resamplingComplete as resamplingCompleteStore, type SlotResamplingProgress } from '$lib/stores/store';
+	import { slotMuted, resamplingProgress as resamplingProgressStore, resamplingComplete as resamplingCompleteStore, type SlotResamplingProgress, setlists, activeSetlistId } from '$lib/stores/store';
+	import { moveProgram, cloneToSetlist } from '$lib/db/setlists-db';
 	import type { MarkerType } from '$lib/models/Cue';
 
 	interface Marker {
@@ -95,6 +96,12 @@
 	let metadataModalOpen = $state(false);
 
 	// Resampled versions dialog state
+	let expanded = $state(false);
+	let moveSubmenuOpen = $state(false);
+	let cloneSubmenuOpen = $state(false);
+
+	let otherSetlists = $derived($setlists.filter(s => s.id !== $activeSetlistId));
+
 	let resampledDialogOpen = $state(false);
 	let resampledInfoRaw: { backing: any; guide: any } | null = $state(null);
 	let resampledLoading = $state(false);
@@ -1436,6 +1443,14 @@ async function playFullProgram() {
 			saveTimeout = null;
 		}
 	});
+
+	$effect(() => {
+		if (expanded && wavesurfer) {
+			requestAnimationFrame(() => {
+				wavesurfer?.setOptions({});
+			});
+		}
+	});
 </script>
 
 <div class="program-editor" onclick={() => { actionMenuOpen = false; defaultBoardDropdownOpen = false; }}>
@@ -1496,11 +1511,54 @@ async function playFullProgram() {
 						<button class="action-menu-item" onclick={() => { downloadProgram(); actionMenuOpen = false; }}>Download</button>
 						<button class="action-menu-item" onclick={() => { handleReplaceAudio(); actionMenuOpen = false; }}>Replace audio</button>
 						<button class="action-menu-item" onclick={() => { resampledDialogOpen = true; fetchResampledInfo(); actionMenuOpen = false; }}>Resampled</button>
+						{#if otherSetlists.length > 0}
+							<div class="action-menu-divider"></div>
+							<div
+								class="action-menu-item action-menu-parent"
+								onmouseenter={() => moveSubmenuOpen = true}
+								onmouseleave={() => moveSubmenuOpen = false}
+							>
+								Move to...
+								{#if moveSubmenuOpen}
+									<div class="action-submenu">
+										{#each otherSetlists as setlist}
+											<button class="action-menu-item" onclick={() => { moveProgram(programId!, setlist.id); actionMenuOpen = false; moveSubmenuOpen = false; }}>{setlist.name}</button>
+										{/each}
+									</div>
+								{/if}
+							</div>
+							<div
+								class="action-menu-item action-menu-parent"
+								onmouseenter={() => cloneSubmenuOpen = true}
+								onmouseleave={() => cloneSubmenuOpen = false}
+							>
+								Clone to...
+								{#if cloneSubmenuOpen}
+									<div class="action-submenu">
+										{#each otherSetlists as setlist}
+											<button class="action-menu-item" onclick={() => { cloneToSetlist(programId!, setlist.id); actionMenuOpen = false; cloneSubmenuOpen = false; }}>{setlist.name}</button>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/if}
+						<div class="action-menu-divider"></div>
 						<button class="action-menu-item action-menu-item-danger" onclick={() => { deleteProgram(); actionMenuOpen = false; }}>Delete</button>
 					</div>
 				{/if}
 			</div>
+			<button
+				class="btn-expand-toggle"
+				class:expanded={expanded}
+				onclick={() => expanded = !expanded}
+				title={expanded ? 'Collapse' : 'Expand'}
+			>
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<polyline points="4,5 7,8 10,5"/>
+				</svg>
+			</button>
 		</div>
+		<div class="program-body" class:collapsed={!expanded}>
 		<div class="track-label" style="--track-color: {backingSlot.color}">
 			<button class="mute-btn" class:muted={$slotMuted.backing} onclick={() => toggleSlotMute('backing')}>{backingSlot.label}</button>
 			{#if backingProgress}
@@ -1703,6 +1761,7 @@ async function playFullProgram() {
 				<p class="audio-missing-hint">This program was saved without audio. Please re-upload the file.</p>
 			</div>
 		{/if}
+		</div>
 	</div>
 </div>
 
@@ -1880,7 +1939,6 @@ async function playFullProgram() {
 		border-radius: 0;
 		border: none;
 		overflow: visible;
-		min-height: 252px;
 	}
 
 	.program-transport-controls {
@@ -1889,6 +1947,41 @@ async function playFullProgram() {
 		gap: 0.5rem;
 		padding: 1rem;
 		background: transparent;
+	}
+
+	.btn-expand-toggle {
+		background-color: transparent;
+		color: #555;
+		border: 1px solid #1a1a1a;
+		padding: 0.5rem;
+		border-radius: 8px;
+		cursor: pointer;
+		transition: all 0.2s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		box-sizing: border-box;
+		flex-shrink: 0;
+	}
+
+	.btn-expand-toggle:hover {
+		color: #888;
+		border-color: #333;
+	}
+
+	.btn-expand-toggle svg {
+		transition: transform 0.2s;
+		transform: rotate(-90deg);
+	}
+
+	.btn-expand-toggle.expanded svg {
+		transform: rotate(0deg);
+	}
+
+	.program-body.collapsed {
+		display: none;
 	}
 
 	.spacer {
@@ -2256,6 +2349,29 @@ async function playFullProgram() {
 	.action-menu-item-danger:hover {
 		background: rgba(239, 68, 68, 0.1);
 		color: #ef4444;
+	}
+
+	.action-menu-divider {
+		height: 1px;
+		background: rgba(255, 255, 255, 0.06);
+		margin: 0.25rem 0;
+	}
+
+	.action-menu-parent {
+		position: relative;
+	}
+
+	.action-submenu {
+		position: absolute;
+		left: calc(100% + 4px);
+		top: -4px;
+		background: #0c0c0c;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 8px;
+		min-width: 160px;
+		z-index: 101;
+		padding: 0.25rem;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 	}
 
 	.backing-waveform {

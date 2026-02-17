@@ -9,25 +9,21 @@ export interface ProgramData {
   loopyProTrack: string;
   fileName: string;
   audioId: string;
-  audioData?: string; // Legacy field - for old programs with embedded audio
-  guideAudioId?: string; // Guide track filename
+  audioData?: string;
+  guideAudioId?: string;
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
-  // Auto-play chain fields
   nextProgramId?: string;
   transitionType: TransitionType;
-  transitionDuration: number; // milliseconds
-  audioDuration?: number; // Audio duration in seconds (for muted playback chains)
-  // Display order for performance page
+  transitionDuration: number;
+  audioDuration?: number;
   displayOrder: number;
-  // BPM for speed-synced effects
   bpm?: number;
-  // Grid offset (downbeat position) for beat grid alignment
   gridOffset?: number;
-  // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
   clickRate?: number;
   guideVolume?: number;
+  setlistId: string;
 }
 
 export class Program implements ProgramData {
@@ -36,25 +32,21 @@ export class Program implements ProgramData {
   loopyProTrack: string;
   fileName: string;
   audioId: string;
-  audioData?: string; // Legacy field - kept for backward compatibility
-  guideAudioId?: string; // Guide track filename
+  audioData?: string;
+  guideAudioId?: string;
   cues: Cue[];
   createdAt: string;
   defaultTargetBoard?: string;
-  // Auto-play chain fields
   nextProgramId?: string;
   transitionType: TransitionType;
   transitionDuration: number;
-  audioDuration?: number; // Audio duration in seconds (for muted playback chains)
-  // Display order for performance page
+  audioDuration?: number;
   displayOrder: number;
-  // BPM for speed-synced effects
   bpm?: number;
-  // Grid offset (downbeat position) for beat grid alignment
   gridOffset?: number;
-  // Click track rate multiplier (0.5 = half time, 1.0 = normal, 2.0 = double time)
   clickRate?: number;
   guideVolume?: number;
+  setlistId: string;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -76,6 +68,7 @@ export class Program implements ProgramData {
     this.gridOffset = data.gridOffset;
     this.clickRate = data.clickRate;
     this.guideVolume = data.guideVolume;
+    this.setlistId = data.setlistId || 'default';
   }
 
   /**
@@ -129,6 +122,7 @@ export class Program implements ProgramData {
       gridOffset: data.gridOffset ?? data.grid_offset ?? 0,
       clickRate: data.clickRate ?? data.click_rate ?? 1.0,
       guideVolume: data.guideVolume ?? data.guide_volume,
+      setlistId: data.setlistId || data.setlist_id || 'default',
     });
   }
 
@@ -156,6 +150,7 @@ export class Program implements ProgramData {
       grid_offset: this.gridOffset,
       click_rate: this.clickRate,
       guide_volume: this.guideVolume,
+      setlist_id: this.setlistId,
     };
   }
 }

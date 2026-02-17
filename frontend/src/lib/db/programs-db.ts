@@ -281,6 +281,7 @@ export async function reorderPrograms(reorderedPrograms: Program[]): Promise<voi
               display_order: program.displayOrder,
               bpm: program.bpm,
               grid_offset: program.gridOffset,
+              setlist_id: program.setlistId,
             };
 
         return fetch(`${API_URL}/programs/${program.id}`, {

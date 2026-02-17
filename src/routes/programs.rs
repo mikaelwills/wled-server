@@ -138,11 +138,28 @@ pub async fn save_program(
     Ok(StatusCode::CREATED)
 }
 
+#[derive(Deserialize)]
+pub struct ListProgramsQuery {
+    #[serde(default)]
+    pub setlist_id: Option<String>,
+}
+
 pub async fn list_programs(
     State(state): State<SharedState>,
+    axum::extract::Query(query): axum::extract::Query<ListProgramsQuery>,
 ) -> Json<Vec<program::Program>> {
     let programs = state.programs.read().await;
-    let mut list: Vec<program::Program> = programs.values().cloned().collect();
+    let mut list: Vec<program::Program> = programs
+        .values()
+        .filter(|p| {
+            if let Some(ref sid) = query.setlist_id {
+                &p.setlist_id == sid
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
     list.sort_by_key(|p| p.display_order);
     Json(list)
 }
@@ -552,4 +569,242 @@ pub async fn replace_audio(
 
     info!("Replaced audio for program '{}' with '{}'", id, new_filename);
     Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+pub struct MoveProgramRequest {
+    pub setlist_id: String,
+}
+
+pub async fn move_program(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(payload): Json<MoveProgramRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let active_id = state.active_setlist_id.read().await.clone();
+
+    let old_setlist_id = {
+        let mut programs = state.programs.write().await;
+        let program = programs
+            .get_mut(&id)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+        let old = program.setlist_id.clone();
+        program.setlist_id = payload.setlist_id.clone();
+        program
+            .save_to_file(&state.storage_paths.programs)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save: {}", e)))?;
+        old
+    };
+
+    let program = {
+        let programs = state.programs.read().await;
+        programs.get(&id).cloned()
+    };
+
+    if let Some(ref prog) = program {
+        if old_setlist_id == active_id && payload.setlist_id != active_id {
+            let mut engine = state.audio_engine.lock().await;
+            unload_program_tracks(&mut engine, prog);
+        } else if old_setlist_id != active_id && payload.setlist_id == active_id {
+            load_program_tracks(&state, prog).await;
+        }
+    }
+
+    info!("Moved program {} from setlist {} to {}", id, old_setlist_id, payload.setlist_id);
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+pub struct CloneToSetlistRequest {
+    pub setlist_id: String,
+}
+
+pub async fn clone_to_setlist(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(payload): Json<CloneToSetlistRequest>,
+) -> Result<(StatusCode, Json<program::Program>), (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Storage not available".to_string()));
+    }
+
+    let (source, max_order) = {
+        let programs = state.programs.read().await;
+        let source = programs
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+        let max_order = programs.values().map(|p| p.display_order).max().unwrap_or(0);
+        (source, max_order)
+    };
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let new_song_name = format!("{} (Copy)", source.song_name);
+    let sanitized: String = new_song_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let collapsed = sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let new_id = format!("{}-{}", collapsed, timestamp);
+
+    let mut clone = source.clone();
+    clone.id = new_id.clone();
+    clone.song_name = new_song_name;
+    clone.created_at = chrono::Utc::now().to_rfc3339();
+    clone.next_program_id = None;
+    clone.display_order = max_order + 1;
+    clone.setlist_id = payload.setlist_id.clone();
+
+    let audio_dir = &state.storage_paths.audio;
+    let resampled_dir = audio_dir.join("resampled");
+
+    if let Some(ref old_audio_file) = source.audio_file {
+        let ext = std::path::Path::new(old_audio_file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3");
+        let new_audio_file = format!("{}.{}", new_id, ext);
+        copy_file_if_exists(&audio_dir.join(old_audio_file), &audio_dir.join(&new_audio_file), "backing audio");
+        copy_file_if_exists(
+            &audio_dir.join(format!("{}.peaks.json", old_audio_file)),
+            &audio_dir.join(format!("{}.peaks.json", new_audio_file)),
+            "backing peaks",
+        );
+        let old_cache_dir = resampled_dir.join(old_audio_file);
+        if old_cache_dir.exists() {
+            let new_cache_dir = resampled_dir.join(&new_audio_file);
+            match copy_dir_recursive(&old_cache_dir, &new_cache_dir) {
+                Ok(_) => info!("Copied resampled cache for clone"),
+                Err(e) => warn!("Failed to copy resampled cache: {}", e),
+            }
+        }
+        clone.audio_file = Some(new_audio_file);
+    }
+
+    if let Some(ref old_guide_file) = source.guide_audio_file {
+        let ext = std::path::Path::new(old_guide_file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3");
+        let new_guide_file = format!("{}_guide.{}", new_id, ext);
+        copy_file_if_exists(&audio_dir.join(old_guide_file), &audio_dir.join(&new_guide_file), "guide audio");
+        copy_file_if_exists(
+            &audio_dir.join(format!("{}.peaks.json", old_guide_file)),
+            &audio_dir.join(format!("{}.peaks.json", new_guide_file)),
+            "guide peaks",
+        );
+        let old_cache_dir = resampled_dir.join(old_guide_file);
+        if old_cache_dir.exists() {
+            let new_cache_dir = resampled_dir.join(&new_guide_file);
+            match copy_dir_recursive(&old_cache_dir, &new_cache_dir) {
+                Ok(_) => info!("Copied guide resampled cache for clone"),
+                Err(e) => warn!("Failed to copy guide resampled cache: {}", e),
+            }
+        }
+        clone.guide_audio_file = Some(new_guide_file);
+    }
+
+    clone
+        .save_to_file(&state.storage_paths.programs)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save cloned program: {}", e)))?;
+
+    let active_id = state.active_setlist_id.read().await.clone();
+    if payload.setlist_id == active_id {
+        load_program_tracks(&state, &clone).await;
+    }
+
+    info!("Cloned program '{}' -> '{}' into setlist '{}'", source.id, clone.id, payload.setlist_id);
+
+    let result = clone.clone();
+    {
+        let mut programs = state.programs.write().await;
+        programs.insert(clone.id.clone(), clone);
+    }
+
+    Ok((StatusCode::CREATED, Json(result)))
+}
+
+fn unload_program_tracks(engine: &mut crate::audio::AudioEngine, program: &program::Program) {
+    if let Some(ref audio_file) = program.audio_file {
+        let track_id = std::path::Path::new(audio_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(audio_file);
+        if engine.unload_track(track_id) {
+            info!("Unloaded backing track: {}", track_id);
+        }
+    }
+    if let Some(ref guide_file) = program.guide_audio_file {
+        let track_id = std::path::Path::new(guide_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(guide_file);
+        if engine.unload_guide_track(track_id) {
+            info!("Unloaded guide track: {}", track_id);
+        }
+    }
+}
+
+async fn load_program_tracks(state: &SharedState, program: &program::Program) {
+    let audio_dir = &state.storage_paths.audio;
+    let cache_dir = audio_dir.join("resampled");
+
+    if let Some(ref audio_file) = program.audio_file {
+        let audio_path = audio_dir.join(audio_file);
+        let audio_engine = state.audio_engine.clone();
+        let track_id = std::path::Path::new(audio_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(audio_file)
+            .to_string();
+        let cache_dir_clone = cache_dir.clone();
+        tokio::spawn(async move {
+            let path = audio_path;
+            let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&path)).await;
+            match decode_result {
+                Ok(Ok(decoded)) => {
+                    let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                    let mut engine = audio_engine.lock().await;
+                    engine.load_track(track_id.clone(), track).await;
+                    info!("Loaded backing track into engine: {}", track_id);
+                }
+                Ok(Err(e)) => error!("Failed to decode backing audio: {}", e),
+                Err(e) => error!("Decode task failed for backing: {}", e),
+            }
+        });
+    }
+
+    if let Some(ref guide_file) = program.guide_audio_file {
+        let guide_path = audio_dir.join(guide_file);
+        let audio_engine = state.audio_engine.clone();
+        let track_id = std::path::Path::new(guide_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(guide_file)
+            .to_string();
+        let cache_dir_clone = cache_dir.clone();
+        tokio::spawn(async move {
+            let path = guide_path;
+            let decode_result = tokio::task::spawn_blocking(move || audio::decode_file_with_path(&path)).await;
+            match decode_result {
+                Ok(Ok(decoded)) => {
+                    let track = decoded.track.with_source_info(decoded.source_path, cache_dir_clone);
+                    let mut engine = audio_engine.lock().await;
+                    engine.load_guide_track(track_id.clone(), track).await;
+                    info!("Loaded guide track into engine: {}", track_id);
+                }
+                Ok(Err(e)) => error!("Failed to decode guide audio: {}", e),
+                Err(e) => error!("Decode task failed for guide: {}", e),
+            }
+        });
+    }
 }

@@ -492,6 +492,17 @@ impl AudioEngine {
         self.unload_slot_track(SlotId::Guide, id)
     }
 
+    pub fn unload_all(&mut self) {
+        for slot_tracks in &mut self.slot_tracks {
+            slot_tracks.clear();
+        }
+        self.click_cache.clear();
+        for (_, cancelled) in self.resampling_cancellation.drain() {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        tracing::info!("Unloaded all tracks from audio engine");
+    }
+
     pub async fn clear_slot(&self, slot: SlotId) {
         let _ = self.command_tx.send(PlaybackCommand::ClearSlot(slot)).await;
     }

@@ -23,6 +23,7 @@ mod playback_history;
 mod preset;
 mod program;
 mod program_engine;
+mod setlist;
 mod routes;
 mod sse;
 mod timecode;
@@ -130,6 +131,13 @@ async fn main() {
         };
     let programs = Arc::new(RwLock::new(programs_map));
 
+    let setlist_store = setlist::SetlistStore::load(&storage_paths.programs);
+    if let Err(e) = setlist_store.save(&storage_paths.programs) {
+        warn!("Failed to save setlists.json: {}", e);
+    }
+    let active_setlist_id = Arc::new(RwLock::new(setlist_store.active_setlist_id.clone()));
+    let setlists = Arc::new(RwLock::new(setlist_store.setlists));
+
     let config_arc = Arc::new(Mutex::new(loaded_config.clone()));
     let performance_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -181,6 +189,8 @@ async fn main() {
         timing_metrics,
         playback_history,
         startup_time,
+        setlists,
+        active_setlist_id,
     });
 
     info!(
@@ -275,10 +285,23 @@ async fn main() {
         }
     }
 
-    audio::spawn_preload_task(
-        state.audio_engine.clone(),
-        state.storage_paths.audio.clone(),
-    );
+    {
+        let active_id = state.active_setlist_id.read().await.clone();
+        let programs_map = state.programs.read().await;
+        let file_set = audio::collect_audio_files(&programs_map, &active_id);
+        drop(programs_map);
+        let device_sample_rate = {
+            let engine = state.audio_engine.lock().await;
+            engine.get_device_sample_rate()
+        };
+        audio::spawn_preload_filtered(
+            state.audio_engine.clone(),
+            state.storage_paths.audio.clone(),
+            Some(file_set),
+            Some(state.broadcast_tx.clone()),
+            device_sample_rate,
+        );
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
