@@ -189,19 +189,36 @@ impl DeviceManager {
         let mut devices = Vec::new();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+        let active_info = self.active_device_info.read().unwrap().clone();
+
         if let Ok(output_devices) = host.output_devices() {
             for device in output_devices {
                 let Ok(raw_name) = device.name() else { continue };
-                let config = device.default_output_config().ok();
-                let channels = config.as_ref().map(|c| c.channels()).unwrap_or(2);
-                let sample_rate = config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
                 let is_default = default_name.as_ref() == Some(&raw_name);
+                let is_selected = selected_id.as_deref() == Some(&raw_name);
+
+                let (channels, sample_rate) = if is_selected {
+                    if let Some((ch, sr)) = active_info {
+                        (ch, sr)
+                    } else {
+                        let config = device.default_output_config().ok();
+                        (
+                            config.as_ref().map(|c| c.channels()).unwrap_or(2),
+                            config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000),
+                        )
+                    }
+                } else {
+                    let config = device.default_output_config().ok();
+                    (
+                        config.as_ref().map(|c| c.channels()).unwrap_or(2),
+                        config.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000),
+                    )
+                };
 
                 let display_name = friendly_names.get(&raw_name)
                     .cloned()
                     .unwrap_or_else(|| raw_name.clone());
 
-                let is_selected = selected_id.as_deref() == Some(&raw_name);
                 seen_ids.insert(raw_name.clone());
                 devices.push(AudioDevice {
                     id: raw_name,
@@ -228,10 +245,9 @@ impl DeviceManager {
                     format!("{} - {}", card.friendly, pcm.name)
                 };
 
-                let active_info = self.active_device_info.read().unwrap();
                 let is_selected = selected_id.as_deref() == Some(hw_id.as_str());
                 let (channels, sample_rate) = if is_selected {
-                    if let Some((ch, sr)) = *active_info {
+                    if let Some((ch, sr)) = active_info {
                         (ch, sr)
                     } else {
                         Self::probe_hw_device(&host, &hw_id)
@@ -239,7 +255,6 @@ impl DeviceManager {
                 } else {
                     Self::probe_hw_device(&host, &hw_id)
                 };
-                drop(active_info);
 
                 seen_ids.insert(hw_id.clone());
                 devices.push(AudioDevice {
@@ -274,9 +289,7 @@ impl DeviceManager {
 
     pub fn select_device(&self, device_id: Option<String>) {
         let mut selected = self.selected_device_id.write().unwrap();
-        if device_id.is_none() {
-            *self.active_device_info.write().unwrap() = None;
-        }
+        *self.active_device_info.write().unwrap() = None;
         *selected = device_id;
     }
 

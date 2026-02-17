@@ -1414,6 +1414,17 @@ async function playFullProgram() {
 		}
 	});
 
+	$effect(() => {
+		const complete = $resamplingCompleteStore;
+		if (resamplingModalOpen && !backingProgress && !guideProgress) {
+			checkTrackReadiness().then(({ ready }) => {
+				if (ready) {
+					resamplingModalOpen = false;
+				}
+			});
+		}
+	});
+
 	onDestroy(() => {
 		stopPlayhead();
 		if (seekDebounceTimeout) {
@@ -1760,7 +1771,15 @@ async function playFullProgram() {
 			<div class="resampling-modal-content">
 				<div class="resampling-spinner"></div>
 				<p>{resamplingModalMessage}</p>
-				<p class="resampling-hint">Please wait for resampling to complete.</p>
+				{#if backingProgress}
+					<p class="resampling-track-progress">Backing: {(backingProgress.fromRate / 1000).toFixed(1)}kHz → {(backingProgress.toRate / 1000).toFixed(1)}kHz — {Math.round((backingProgress.current / backingProgress.total) * 100)}%</p>
+				{/if}
+				{#if guideProgress}
+					<p class="resampling-track-progress">Guide: {(guideProgress.fromRate / 1000).toFixed(1)}kHz → {(guideProgress.toRate / 1000).toFixed(1)}kHz — {Math.round((guideProgress.current / guideProgress.total) * 100)}%</p>
+				{/if}
+				{#if !backingProgress && !guideProgress}
+					<p class="resampling-hint">Please wait for resampling to complete.</p>
+				{/if}
 			</div>
 			<button class="resampling-modal-close" onclick={() => resamplingModalOpen = false}>OK</button>
 		</div>
@@ -2646,6 +2665,12 @@ async function playFullProgram() {
 	.resampling-hint {
 		color: #666 !important;
 		font-size: 0.85rem;
+	}
+
+	.resampling-track-progress {
+		color: #a78bfa !important;
+		font-size: 0.85rem;
+		margin: 0.25rem 0;
 	}
 
 	.resampling-spinner {

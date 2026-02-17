@@ -189,6 +189,7 @@ struct ReadinessResponse {
     boards_connected: usize,
     audio_thread_active: bool,
     audio_device_found: bool,
+    audio_device_name: Option<String>,
     programs_loaded: usize,
     e131_transports: usize,
     errors: Vec<String>,
@@ -213,7 +214,8 @@ async fn readiness_check(State(state): State<SharedState>) -> Json<ReadinessResp
         errors.push("Audio thread not running".into());
     }
 
-    let audio_device_found = state.device_manager.get_selected_device().is_some();
+    let audio_device_name = state.device_manager.get_selected_device();
+    let audio_device_found = audio_device_name.is_some();
 
     let programs_loaded = state.programs.read().await.len();
 
@@ -227,6 +229,7 @@ async fn readiness_check(State(state): State<SharedState>) -> Json<ReadinessResp
         boards_connected,
         audio_thread_active,
         audio_device_found,
+        audio_device_name,
         programs_loaded,
         e131_transports,
         errors,

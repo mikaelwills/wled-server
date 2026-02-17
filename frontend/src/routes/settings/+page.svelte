@@ -114,18 +114,6 @@
 		}
 	}
 
-	async function fetchAudioSettings() {
-		try {
-			const res = await fetch(`${API_URL}/audio/settings`);
-			if (res.ok) {
-				const settings = await res.json();
-				selectedDeviceId = settings.preferred_device_id;
-			}
-		} catch (e) {
-			console.error('Failed to fetch audio settings:', e);
-		}
-	}
-
 	async function selectDevice(deviceId: string | null) {
 		if (switchingToDeviceId) return;
 		switchingToDeviceId = deviceId;
@@ -151,6 +139,10 @@
 			const res = await fetch(`${API_URL}/audio/devices`);
 			if (res.ok) {
 				audioDevices = await res.json();
+				const active = audioDevices.find(d => d.is_selected);
+				if (active) {
+					selectedDeviceId = active.id;
+				}
 			}
 		} catch (e) {
 			console.error('Failed to fetch audio devices:', e);
@@ -160,7 +152,6 @@
 
 	onMount(() => {
 		fetchStorageStatus();
-		fetchAudioSettings();
 		fetchAudioDevices();
 	});
 	$effect(() => {

@@ -8,6 +8,7 @@
 		boards_connected: number;
 		audio_thread_active: boolean;
 		audio_device_found: boolean;
+		audio_device_name: string | null;
 		programs_loaded: number;
 		e131_transports: number;
 		errors: string[];
@@ -62,7 +63,7 @@
 				</div>
 				<div class="status-row" class:ok={data.audio_device_found} class:warn={!data.audio_device_found}>
 					<span class="indicator" class:ok={data.audio_device_found} class:warn={!data.audio_device_found}></span>
-					<span>Audio device: {data.audio_device_found ? 'found' : 'none'}</span>
+					<span>Audio device: {data.audio_device_found ? (data.audio_device_name ?? 'found') : 'none'}</span>
 				</div>
 				<div class="status-row" class:ok={data.programs_loaded > 0} class:warn={data.programs_loaded === 0}>
 					<span class="indicator" class:ok={data.programs_loaded > 0} class:warn={data.programs_loaded === 0}></span>
