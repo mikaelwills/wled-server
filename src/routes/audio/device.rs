@@ -8,6 +8,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::audio::{self, spawn_resampling, ResamplingJob};
+use crate::sse::SseEvent;
 use crate::types::SharedState;
 
 #[derive(Deserialize)]
@@ -82,7 +83,17 @@ pub async fn select_device(
     };
 
     if !tracks_to_resample.is_empty() {
-        eprintln!("[Device] Starting resampling for {} tracks to {}Hz", tracks_to_resample.len(), sample_rate);
+        let total_tracks = tracks_to_resample.len();
+        eprintln!("[Device] Clearing resampled caches and starting resampling for {} tracks to {}Hz", total_tracks, sample_rate);
+
+        for (_slot, _id, track) in &tracks_to_resample {
+            track.clear_all_resampled();
+        }
+
+        let _ = state.broadcast_tx.send(SseEvent::ResamplingBatchStarted {
+            total_tracks,
+            target_rate: sample_rate,
+        });
 
         let jobs: Vec<ResamplingJob> = tracks_to_resample
             .into_iter()

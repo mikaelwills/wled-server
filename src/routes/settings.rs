@@ -118,25 +118,28 @@ pub async fn get_storage_status(
 }
 
 pub async fn restart_server() -> Result<StatusCode, (StatusCode, String)> {
-    info!("🔄 Server restart requested via API");
+    info!("Server restart requested via API");
 
     tokio::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        info!("🔄 Executing server restart...");
+        info!("Executing server restart...");
 
-        let result = std::process::Command::new("/etc/init.d/wled-server")
-            .arg("restart")
+        let systemctl = std::process::Command::new("sudo")
+            .args(["systemctl", "restart", "wled-server"])
             .spawn();
 
-        match result {
-            Ok(_) => info!("🔄 Server restart command executed"),
-            Err(e) => {
-                warn!("Failed to restart via init.d, trying alternative: {}", e);
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg("sleep 1 && /etc/init.d/wled-server restart &")
+        match systemctl {
+            Ok(_) => info!("Server restart via systemctl"),
+            Err(_) => {
+                let initd = std::process::Command::new("/etc/init.d/wled-server")
+                    .arg("restart")
                     .spawn();
+
+                match initd {
+                    Ok(_) => info!("Server restart via init.d"),
+                    Err(e) => warn!("Failed to restart server: {}", e),
+                }
             }
         }
     });

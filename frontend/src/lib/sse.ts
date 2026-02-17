@@ -1,6 +1,6 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
-import { resamplingProgress, resamplingComplete, playbackPosition, currentlyPlayingProgram, programs, type SlotResamplingProgress } from '$lib/stores/store';
+import { resamplingProgress, resamplingComplete, resamplingBatch, playbackPosition, currentlyPlayingProgram, programs, type SlotResamplingProgress } from '$lib/stores/store';
 import { get } from 'svelte/store';
 
 export type SseEvent =
@@ -8,6 +8,7 @@ export type SseEvent =
   | { type: 'connection_status'; board_id: string; connected: boolean }
   | { type: 'resampling_progress'; slot: string; program_id: string; track_name: string; current: number; total: number; active: boolean; from_rate: number; to_rate: number }
   | { type: 'resampling_complete'; slot: string; program_id: string; target_rate: number; quality: string }
+  | { type: 'resampling_batch_started'; total_tracks: number; target_rate: number }
   | { type: 'playback_started'; program_id: string; duration_secs: number }
   | { type: 'playback_position'; program_id: string; position_secs: number; duration_secs: number }
   | { type: 'playback_stopped'; program_id: string; reason: string }
@@ -54,6 +55,12 @@ export function createSseConnection(
         } else {
           resamplingProgress.update(state => ({ ...state, [progress.slot]: null }));
         }
+      } else if (data.type === 'resampling_batch_started') {
+        resamplingBatch.set({
+          totalTracks: data.total_tracks,
+          completedTracks: 0,
+          targetRate: data.target_rate,
+        });
       } else if (data.type === 'resampling_complete') {
         resamplingComplete.set({
           slot: data.slot,
@@ -61,6 +68,14 @@ export function createSseConnection(
           targetRate: data.target_rate,
           quality: data.quality,
           timestamp: Date.now(),
+        });
+        resamplingBatch.update(batch => {
+          if (!batch) return null;
+          const updated = { ...batch, completedTracks: batch.completedTracks + 1 };
+          if (updated.completedTracks >= updated.totalTracks) {
+            return null;
+          }
+          return updated;
         });
       } else if (data.type === 'playback_started') {
         const program = get(programs).find(p => p.id === data.program_id);

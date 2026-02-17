@@ -90,6 +90,13 @@ impl LoadedTrack {
     }
 
     fn load_cache_file(&self, path: &PathBuf, target_rate: u32) -> Option<Vec<f32>> {
+        let metadata = fs::metadata(path).ok()?;
+        let file_size = metadata.len() as usize;
+        if file_size < CACHE_HEADER_SIZE {
+            tracing::warn!("Cache file too small: {:?}", path);
+            return None;
+        }
+
         let mut file = File::open(path).ok()?;
         let mut header = [0u8; CACHE_HEADER_SIZE];
         file.read_exact(&mut header).ok()?;
@@ -114,18 +121,24 @@ impl LoadedTrack {
             return None;
         }
 
-        let mut sample_bytes = Vec::new();
-        file.read_to_end(&mut sample_bytes).ok()?;
-
-        if sample_bytes.len() % 4 != 0 {
+        let data_size = file_size - CACHE_HEADER_SIZE;
+        if data_size % 4 != 0 {
             tracing::error!("Cache corrupted (bad size): {:?}", path);
             return None;
         }
 
-        let samples: Vec<f32> = sample_bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();
+        let num_samples = data_size / 4;
+        let mut samples: Vec<f32> = Vec::with_capacity(num_samples);
+        unsafe { samples.set_len(num_samples); }
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts_mut(samples.as_mut_ptr() as *mut u8, data_size)
+        };
+        file.read_exact(byte_slice).ok()?;
+
+        #[cfg(target_endian = "big")]
+        for s in &mut samples {
+            *s = f32::from_le_bytes(s.to_ne_bytes());
+        }
 
         tracing::debug!("Loaded {} samples from disk cache: {:?}", samples.len(), path);
         Some(samples)
@@ -212,6 +225,11 @@ impl LoadedTrack {
     pub fn clear_resampled_for_rate(&self, rate: u32) {
         let mut cache = self.resampled_cache.write();
         cache.remove(&rate);
+    }
+
+    pub fn clear_all_resampled(&self) {
+        let mut cache = self.resampled_cache.write();
+        cache.clear();
     }
 
     pub fn find_cached_versions(&self) -> Vec<CachedVersion> {

@@ -33,14 +33,20 @@ pub fn spawn_resampling(
         if from_rate == target_rate {
             if let Some(ref tx) = broadcast_tx {
                 let _ = tx.send(SseEvent::ResamplingProgress {
-                    slot: slot_name,
+                    slot: slot_name.clone(),
                     program_id: program_id.clone(),
-                    track_name: program_id,
+                    track_name: program_id.clone(),
                     current: 0,
                     total: 0,
                     active: false,
                     from_rate: 0,
                     to_rate: 0,
+                });
+                let _ = tx.send(SseEvent::ResamplingComplete {
+                    slot: slot_name,
+                    program_id: program_id.clone(),
+                    target_rate,
+                    quality: quality.cache_key().to_string(),
                 });
             }
             continue;

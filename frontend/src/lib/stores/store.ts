@@ -145,3 +145,11 @@ export interface ResamplingCompleteEvent {
 }
 
 export const resamplingComplete: Writable<ResamplingCompleteEvent | null> = writable(null);
+
+export interface ResamplingBatchState {
+	totalTracks: number;
+	completedTracks: number;
+	targetRate: number;
+}
+
+export const resamplingBatch: Writable<ResamplingBatchState | null> = writable(null);

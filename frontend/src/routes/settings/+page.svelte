@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { loopyProSettings, loopyProSettingsLoading, resamplingQuality, resamplingQualityLoading } from '$lib/stores/store';
+	import { loopyProSettings, loopyProSettingsLoading, resamplingQuality, resamplingQualityLoading, resamplingBatch } from '$lib/stores/store';
 	import { updateLoopyProSettings } from '$lib/db/loopy-db';
 	import { updateResamplingQuality } from '$lib/db/audio-db';
 	import { initPrograms } from '$lib/db/programs-db';
@@ -125,13 +125,24 @@
 			});
 			if (res.ok) {
 				selectedDeviceId = deviceId;
+				if (!$resamplingBatch) {
+					switchingToDeviceId = null;
+				}
+			} else {
+				switchingToDeviceId = null;
 			}
 		} catch (e) {
 			console.error('Failed to select device:', e);
-		} finally {
 			switchingToDeviceId = null;
 		}
 	}
+
+	$effect(() => {
+		const batch = $resamplingBatch;
+		if (!batch && switchingToDeviceId) {
+			switchingToDeviceId = null;
+		}
+	});
 
 	async function fetchAudioDevices() {
 		audioDevicesLoading = true;
@@ -252,6 +263,31 @@
 							</div>
 						{/if}
 					</div>
+
+					{#if $resamplingBatch}
+						<div class="batch-progress">
+							<div class="batch-progress-text">
+								{#if $resamplingBatch.completedTracks === 0}
+									Loading audio tracks...
+								{:else}
+									Loading audio tracks: {$resamplingBatch.completedTracks}/{$resamplingBatch.totalTracks}
+								{/if}
+							</div>
+							<div class="batch-progress-bar">
+								{#if $resamplingBatch.completedTracks === 0}
+									<div class="batch-progress-fill indeterminate"></div>
+								{:else}
+									<div
+										class="batch-progress-fill"
+										style="width: {($resamplingBatch.completedTracks / $resamplingBatch.totalTracks) * 100}%"
+									></div>
+								{/if}
+							</div>
+							<div class="batch-progress-rate">
+								Resampling to {$resamplingBatch.targetRate / 1000}kHz
+							</div>
+						</div>
+					{/if}
 
 					{#if selectedDeviceId && selectedDeviceChannels > 2}
 						<button onclick={() => routingModalOpen = true} class="save-button">
@@ -947,5 +983,51 @@
 	.modal-body {
 		padding: 1.25rem;
 		overflow-y: auto;
+	}
+
+	.batch-progress {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		padding: 0.75rem 1rem;
+		background: rgba(168, 85, 247, 0.05);
+		border: 1px solid rgba(168, 85, 247, 0.2);
+		border-radius: 8px;
+	}
+
+	.batch-progress-text {
+		font-size: 0.8rem;
+		color: #a855f7;
+		font-weight: 500;
+	}
+
+	.batch-progress-bar {
+		height: 4px;
+		background: rgba(255, 255, 255, 0.05);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.batch-progress-fill {
+		height: 100%;
+		background: #a855f7;
+		border-radius: 2px;
+		transition: width 0.3s ease;
+	}
+
+	.batch-progress-fill.indeterminate {
+		width: 30%;
+		animation: indeterminate 1.5s ease-in-out infinite;
+	}
+
+	@keyframes indeterminate {
+		0% { margin-left: 0; }
+		50% { margin-left: 70%; }
+		100% { margin-left: 0; }
+	}
+
+	.batch-progress-rate {
+		font-size: 0.65rem;
+		color: #6b7280;
 	}
 </style>

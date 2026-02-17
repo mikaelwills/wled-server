@@ -42,6 +42,11 @@ pub enum SseEvent {
         program_id: String,
         reason: String,
     },
+    #[serde(rename = "resampling_batch_started")]
+    ResamplingBatchStarted {
+        total_tracks: usize,
+        target_rate: u32,
+    },
     #[serde(rename = "audio_device_lost")]
     AudioDeviceLost {
         device_name: String,
