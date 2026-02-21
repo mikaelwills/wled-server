@@ -372,7 +372,7 @@
 
 					<!-- Program info (foreground) -->
 					<div class="program-content">
-						<div class="song-name">{program.songName || 'Untitled'}</div>
+						<div class="song-name">{program.displayName || program.songName || 'Untitled'}</div>
 					</div>
 				</button>
 			{/each}
@@ -445,7 +445,7 @@
 				</div>
 				{#each $programs.filter(p => p.id !== contextMenu.programId) as prog}
 					<div class="menu-item" onclick={() => setNextProgram(prog.id)}>
-						<span>{currentProgram?.nextProgramId === prog.id ? '●' : '○'} {prog.songName}</span>
+						<span>{currentProgram?.nextProgramId === prog.id ? '●' : '○'} {prog.displayName || prog.songName}</span>
 					</div>
 				{/each}
 			</div>

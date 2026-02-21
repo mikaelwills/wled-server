@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
@@ -64,6 +64,93 @@ pub struct ProgramEngine {
     command_tx: mpsc::Sender<PlaybackCommand>,
     state: Arc<RwLock<PlaybackState>>,
     effects_engine: Arc<EffectsEngine>,
+}
+
+fn build_scheduled_cues(
+    program_cues: &[crate::program::Cue],
+    preset_map: &HashMap<String, PresetInfo>,
+    pattern_preset_map: &HashMap<String, PatternPresetInfo>,
+    target_map: &HashMap<String, TargetInfo>,
+    bpm: f64,
+    sample_rate: u32,
+    channels: u32,
+    light_delay_samples: u64,
+    time_offset: f64,
+) -> Vec<ScheduledCue> {
+    let samples_per_second = sample_rate as f64 * channels as f64;
+    let mut scheduled_cues: Vec<ScheduledCue> = Vec::new();
+
+    for cue in program_cues.iter() {
+        let cue_time = cue.time - time_offset;
+        if cue_time < 0.0 {
+            continue;
+        }
+        let fire_at_samples = (cue_time * samples_per_second) as u64 + light_delay_samples;
+        let preset_name = &cue.preset_name;
+
+        if cue.targets.is_empty() {
+            tracing::warn!("Skipping cue '{}': no targets", cue.label);
+            continue;
+        }
+
+        for target in &cue.targets {
+            if let Some(pattern_preset) = pattern_preset_map.get(preset_name) {
+                let target_info = match target_map.get(target) {
+                    Some(t) => t,
+                    None => {
+                        tracing::warn!(
+                            "Skipping pattern cue '{}': target '{}' not found or offline",
+                            cue.label, target
+                        );
+                        continue;
+                    }
+                };
+
+                scheduled_cues.push(ScheduledCue {
+                    fire_at_samples,
+                    label: cue.label.clone(),
+                    cue_type: CueType::Pattern(PatternCueConfig {
+                        pattern_type: pattern_preset.pattern_type.clone(),
+                        color: pattern_preset.color,
+                        member_ids: target_info.member_ids.clone(),
+                        board_info: target_info.board_info_by_id.clone(),
+                        bpm,
+                        sync_rate: cue.sync_rate,
+                    }),
+                });
+            } else if let Some(preset) = preset_map.get(preset_name) {
+                let target_info = match target_map.get(target) {
+                    Some(t) => t,
+                    None => {
+                        tracing::warn!(
+                            "Skipping cue '{}': target '{}' not found",
+                            cue.label, target
+                        );
+                        continue;
+                    }
+                };
+
+                let effective_bpm = bpm * cue.sync_rate;
+
+                scheduled_cues.push(ScheduledCue {
+                    fire_at_samples,
+                    label: cue.label.clone(),
+                    cue_type: CueType::Effect {
+                        config: EffectConfig {
+                            effect_type: preset.effect_type,
+                            bpm: effective_bpm,
+                            color: preset.color,
+                        },
+                        boards: target_info.boards.clone(),
+                    },
+                });
+            } else {
+                tracing::warn!("Skipping cue '{}': preset '{}' not found in effects or patterns", cue.label, preset_name);
+            }
+        }
+    }
+
+    scheduled_cues
 }
 
 fn send_blackout(effects_engine: &EffectsEngine, boards: Vec<BoardTarget>) {
@@ -214,7 +301,7 @@ impl ProgramEngine {
 
                     let bpm = program.bpm.unwrap_or(120) as f64;
 
-                    let (target_map, scheduled_cues, audio_sync_delay_ms) = {
+                    let (target_map, preset_map, pattern_preset_map, audio_sync_delay_ms) = {
                         let cfg = config.lock().await;
                         let audio_sync_delay_ms = cfg.loopy_pro.audio_sync_delay_ms;
                         let online_ips = connected_ips.read().await;
@@ -305,74 +392,7 @@ impl ProgramEngine {
                             );
                         }
 
-                        let mut scheduled_cues: Vec<ScheduledCue> = Vec::new();
-                        for cue in program.cues.iter().filter(|c| c.time >= start_time) {
-                            let preset_name = &cue.preset_name;
-                            let fire_at = Duration::from_secs_f64((cue.time - start_time).max(0.0));
-
-                            if cue.targets.is_empty() {
-                                warn!("Skipping cue '{}': no targets", cue.label);
-                                continue;
-                            }
-
-                            for target in &cue.targets {
-                                if let Some(pattern_preset) = pattern_preset_map.get(preset_name) {
-                                    let target_info = match target_map.get(target) {
-                                        Some(t) => t,
-                                        None => {
-                                            warn!(
-                                                "Skipping pattern cue '{}': target '{}' not found or offline",
-                                                cue.label, target
-                                            );
-                                            continue;
-                                        }
-                                    };
-
-                                    scheduled_cues.push(ScheduledCue {
-                                        fire_at,
-                                        label: cue.label.clone(),
-                                        cue_type: CueType::Pattern(PatternCueConfig {
-                                            pattern_type: pattern_preset.pattern_type.clone(),
-                                            color: pattern_preset.color,
-                                            member_ids: target_info.member_ids.clone(),
-                                            board_info: target_info.board_info_by_id.clone(),
-                                            bpm,
-                                            sync_rate: cue.sync_rate,
-                                        }),
-                                    });
-                                } else if let Some(preset) = preset_map.get(preset_name) {
-                                    let target_info = match target_map.get(target) {
-                                        Some(t) => t,
-                                        None => {
-                                            warn!(
-                                                "Skipping cue '{}': target '{}' not found",
-                                                cue.label, target
-                                            );
-                                            continue;
-                                        }
-                                    };
-
-                                    let effective_bpm = bpm * cue.sync_rate;
-
-                                    scheduled_cues.push(ScheduledCue {
-                                        fire_at,
-                                        label: cue.label.clone(),
-                                        cue_type: CueType::Effect {
-                                            config: EffectConfig {
-                                                effect_type: preset.effect_type,
-                                                bpm: effective_bpm,
-                                                color: preset.color,
-                                            },
-                                            boards: target_info.boards.clone(),
-                                        },
-                                    });
-                                } else {
-                                    warn!("Skipping cue '{}': preset '{}' not found in effects or patterns", cue.label, preset_name);
-                                }
-                            }
-                        }
-
-                        (target_map, scheduled_cues, audio_sync_delay_ms)
+                        (target_map, preset_map, pattern_preset_map, audio_sync_delay_ms)
                     };
 
                     info!(
@@ -382,12 +402,6 @@ impl ProgramEngine {
                     for (_, target_info) in &target_map {
                         send_blackout(&effects_engine, target_info.boards.clone());
                     }
-
-                    info!(
-                        "Scheduling {} cues from {}s",
-                        scheduled_cues.len(),
-                        start_time
-                    );
 
                     {
                         let mut s = state.write().await;
@@ -437,6 +451,13 @@ impl ProgramEngine {
                                 .await;
                             }
 
+                            let scheduled_cues = build_scheduled_cues(
+                                &program.cues, &preset_map, &pattern_preset_map, &target_map,
+                                bpm, simulated_sample_rate, simulated_channels,
+                                light_delay_samples, start_time,
+                            );
+                            info!("Scheduling {} cues (LoopyPro)", scheduled_cues.len());
+
                             let perf_mode_clone = performance_mode.clone();
                             let position_clone = simulated_position.clone();
                             std::thread::spawn(move || {
@@ -455,9 +476,9 @@ impl ProgramEngine {
 
                             let audio_timing = AudioTimingConfig {
                                 position: simulated_position.clone(),
+                                playback_state: Arc::new(AtomicU8::new(crate::audio::PlaybackState::PLAYING)),
                                 sample_rate: simulated_sample_rate,
                                 channels: simulated_channels,
-                                start_sample: light_delay_samples,
                             };
 
                             let _ = cue_scheduler.start(scheduled_cues, audio_timing);
@@ -531,14 +552,21 @@ impl ProgramEngine {
                                     0
                                 };
 
+                                let scheduled_cues = build_scheduled_cues(
+                                    &program.cues, &preset_map, &pattern_preset_map, &target_map,
+                                    bpm, playback_rate, channels,
+                                    light_delay_samples, 0.0,
+                                );
+                                info!("Scheduling {} cues (AudioEngine, absolute)", scheduled_cues.len());
+
                                 let position_arc = eng.get_position_arc();
-                                position_arc.store(0, Ordering::SeqCst);
+                                position_arc.store(start_sample, Ordering::SeqCst);
 
                                 let audio_timing = AudioTimingConfig {
                                     position: position_arc,
+                                    playback_state: eng.get_state_arc(),
                                     sample_rate: playback_rate,
                                     channels,
-                                    start_sample: start_sample + light_delay_samples,
                                 };
 
                                 let _ = cue_scheduler.start(scheduled_cues, audio_timing);

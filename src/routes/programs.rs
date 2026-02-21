@@ -328,6 +328,7 @@ pub async fn duplicate_program(
     clone.song_name = new_song_name;
     clone.created_at = chrono::Utc::now().to_rfc3339();
     clone.next_program_id = None;
+    clone.display_name = None;
     clone.display_order = max_order + 1;
 
     let audio_dir = &state.storage_paths.audio;

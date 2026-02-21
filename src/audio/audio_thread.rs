@@ -552,7 +552,7 @@ impl AudioThread {
                 }
             };
 
-            match Self::process_commands(&mut command_rx, &state, &stream_error).await {
+            match Self::process_commands(&mut command_rx, &state, &position, &stream_error).await {
                 CommandResult::RebuildStream(new_device) => {
                     info!("Switching device to: {}", new_device);
 
@@ -664,6 +664,7 @@ impl AudioThread {
     async fn process_commands(
         command_rx: &mut mpsc::Receiver<PlaybackCommand>,
         state: &Arc<InternalPlaybackState>,
+        position: &Arc<AtomicU64>,
         stream_error: &Arc<AtomicBool>,
     ) -> CommandResult {
         let mut error_check = tokio::time::interval(Duration::from_millis(500));
@@ -706,6 +707,7 @@ impl AudioThread {
                         }
                         PlaybackCommand::Seek(pos) => {
                             state.sample_index.store(pos as usize, Ordering::Release);
+                            position.store(pos, Ordering::Release);
                         }
                         PlaybackCommand::SetDevice(device_id) => {
                             state.playing.store(false, Ordering::Release);

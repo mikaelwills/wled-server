@@ -24,6 +24,7 @@ export interface ProgramData {
   clickRate?: number;
   guideVolume?: number;
   setlistId: string;
+  displayName?: string;
 }
 
 export class Program implements ProgramData {
@@ -47,6 +48,7 @@ export class Program implements ProgramData {
   clickRate?: number;
   guideVolume?: number;
   setlistId: string;
+  displayName?: string;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -69,6 +71,7 @@ export class Program implements ProgramData {
     this.clickRate = data.clickRate;
     this.guideVolume = data.guideVolume;
     this.setlistId = data.setlistId || 'default';
+    this.displayName = data.displayName;
   }
 
   /**
@@ -123,6 +126,7 @@ export class Program implements ProgramData {
       clickRate: data.clickRate ?? data.click_rate ?? 1.0,
       guideVolume: data.guideVolume ?? data.guide_volume,
       setlistId: data.setlistId || data.setlist_id || 'default',
+      displayName: data.displayName || data.display_name || undefined,
     });
   }
 
@@ -151,6 +155,7 @@ export class Program implements ProgramData {
       click_rate: this.clickRate,
       guide_volume: this.guideVolume,
       setlist_id: this.setlistId,
+      display_name: this.displayName || undefined,
     };
   }
 }

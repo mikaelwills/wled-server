@@ -57,10 +57,24 @@ impl AudioFile {
         let id = extensions.iter()
             .fold(id, |s, ext| s.strip_suffix(&format!(".{}", ext)).unwrap_or(s));
 
+        let resampled_dir = audio_path.join("resampled");
         for ext in &extensions {
-            let file_path = audio_path.join(format!("{}.{}", id, ext));
+            let filename = format!("{}.{}", id, ext);
+            let file_path = audio_path.join(&filename);
             if file_path.exists() {
                 fs::remove_file(&file_path)?;
+            }
+
+            let peaks_path = audio_path.join(format!("{}.peaks.json", filename));
+            if peaks_path.exists() {
+                fs::remove_file(&peaks_path)?;
+                tracing::info!("Deleted peaks: {}.peaks.json", filename);
+            }
+
+            let cache_dir = resampled_dir.join(&filename);
+            if cache_dir.exists() {
+                fs::remove_dir_all(&cache_dir)?;
+                tracing::info!("Deleted resampled cache: resampled/{}", filename);
             }
         }
 

@@ -69,6 +69,23 @@ export async function resumePlayback(): Promise<void> {
   }
 }
 
+export async function seekPlayback(positionSecs: number): Promise<void> {
+  if (!browser) return;
+
+  try {
+    const response = await fetch(`${API_URL}/audio/engine/seek`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position_secs: positionSecs })
+    });
+    if (!response.ok) {
+      console.error('Failed to seek:', response.statusText);
+    }
+  } catch (err) {
+    console.error('Failed to call seek API:', err);
+  }
+}
+
 export function clearPlayback(): void {
   if (!browser) return;
   currentlyPlayingProgram.set(null);

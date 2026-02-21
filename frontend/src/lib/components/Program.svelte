@@ -6,7 +6,7 @@
 	import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 	import { API_URL } from '$lib/api';
 	import { saveProgram as saveProgramToStore, deleteProgram as deleteProgramFromStore, duplicateProgram as duplicateProgramService } from '$lib/db/programs-db';
-	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService, resumePlayback as resumePlaybackService } from '$lib/db/playback-db';
+	import { playProgram as playProgramService, stopPlayback as stopPlaybackService, pausePlayback as pausePlaybackService, resumePlayback as resumePlaybackService, seekPlayback as seekPlaybackService } from '$lib/db/playback-db';
 	import { loadAudioForProgram, getCachedPeaks, loadGuideAudioForProgram, removeGuideAudioForProgram, setSlotVolume, clearAudioCacheForProgram, computePeaksFromBuffer } from '$lib/db/audio-db';
 	import { audioLoading, loopyProSettings, guideBlobUrls, guideCachedPeaks, cachedPeaks as cachedPeaksStore } from '$lib/stores/store';
 	import { Program as ProgramModel } from '$lib/models/Program';
@@ -66,7 +66,8 @@
 	});
 	let guideProgress = $derived.by(() => {
 		const p = $resamplingProgressStore.guide;
-		if (!p || p.programId !== programId) return null;
+		if (!p) return null;
+		if (p.programId !== programId && p.programId !== `${programId}_guide`) return null;
 		if (p.total > 0 && p.current >= p.total) return null;
 		return p;
 	});
@@ -75,12 +76,14 @@
 
 	// Guide track state - uses Track component
 	// Show guide section when: guideAudioId exists, OR resampling in progress (during upload)
-	let hasGuide = $derived(!!program?.guideAudioId || !!guideProgress);
+	let guideUploading = $state(false);
+	let hasGuide = $derived(!!program?.guideAudioId || !!guideProgress || guideUploading);
 	let guideBlobUrl = $derived(program?.id ? $guideBlobUrls[program.id] : null);
 	let guidePeaks = $derived(program?.id ? $guideCachedPeaks[program.id] : null);
 
 	// Program metadata
 	let songName = $state('');
+	let displayName = $state('');
 	let loopyProTrack = $state('');
 	let audioDuration: number | null = $state(null); // Duration in seconds (extracted from audio)
 	let bpm: number | null = $state(null); // BPM for speed-synced effects
@@ -298,12 +301,13 @@
 	// SSE-driven playhead (backend broadcasts position at 10Hz)
 	$effect(() => {
 		const pos = $playbackPosition;
-		if (!wavesurfer || !isLoaded) return;
 		if (pos && pos.programId === programId) {
 			playheadTimeSecs = pos.positionSecs;
-			const duration = wavesurfer.getDuration();
-			if (duration > 0) {
-				wavesurfer.seekTo(Math.min(pos.positionSecs / duration, 1));
+			if (wavesurfer && isLoaded) {
+				const duration = wavesurfer.getDuration();
+				if (duration > 0) {
+					wavesurfer.seekTo(Math.min(pos.positionSecs / duration, 1));
+				}
 			}
 			if (!isPaused) {
 				isPlaying = true;
@@ -393,6 +397,8 @@
 			const currentPath = get(page).url.pathname;
 			if (currentPath !== '/programming') return;
 
+			if (metadataModalOpen || resamplingModalOpen || presetPickerOpen) return;
+
 			const lastActiveId = get(lastActiveProgramId);
 			if (lastActiveId !== programId) return;
 
@@ -426,8 +432,9 @@
 		};
 	});
 
-	function loadProgramData(data: { songName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Marker[] }) {
+	function loadProgramData(data: { songName?: string; displayName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Marker[] }) {
 		songName = data.songName || '';
+		displayName = data.displayName || '';
 		loopyProTrack = data.loopyProTrack || '';
 		fileName = data.fileName || '';
 		defaultTargetBoard = data.defaultTargetBoard || null;
@@ -537,28 +544,29 @@
 			});
 			unsub();
 
-			if (currentProgram && (currentProgram as ProgramModel).id === programId && isPlaying) {
-				// Clear any pending reschedule
+			if (currentProgram && (currentProgram as ProgramModel).id === programId && (isPlaying || isPaused)) {
 				if (seekDebounceTimeout) {
 					clearTimeout(seekDebounceTimeout);
 				}
 
-				// Only reschedule if seek distance is significant (> 0.5s from last processed seek)
 				const seekDistance = Math.abs(currentTime - lastSeekTime);
 
-				// Debounce: wait 150ms after user stops seeking before rescheduling
 				seekDebounceTimeout = setTimeout(() => {
-					console.log(`⏩ Seeking to ${currentTime.toFixed(2)}s during playback - rescheduling cues`);
 					lastSeekTime = currentTime;
 
-					let seekProgram: ProgramModel | undefined;
-					const unsubPrograms = programsStore.subscribe(programs => {
-						seekProgram = programs.find(p => p.id === programId);
-					});
-					unsubPrograms();
+					if (isPaused) {
+						seekPlaybackService(currentTime);
+					} else {
+						console.log(`⏩ Seeking to ${currentTime.toFixed(2)}s during playback - rescheduling cues`);
+						let seekProgram: ProgramModel | undefined;
+						const unsubPrograms = programsStore.subscribe(programs => {
+							seekProgram = programs.find(p => p.id === programId);
+						});
+						unsubPrograms();
 
-					if (seekProgram) {
-						playProgramService(seekProgram, currentTime);
+						if (seekProgram) {
+							playProgramService(seekProgram, currentTime);
+						}
 					}
 				}, 150);
 			}
@@ -582,6 +590,9 @@
 			if (event.button === 0) {
 				playheadTimeSecs = clickTime;
 				wavesurfer!.seekTo(relativeX);
+				if (isPaused) {
+					seekPlaybackService(clickTime);
+				}
 			} else if (event.button === 2 && event.shiftKey) {
 				gridOffset = clickTime;
 				console.log('🎵 Downbeat set at:', clickTime.toFixed(3) + 's');
@@ -658,7 +669,9 @@
 			return;
 		}
 
+		guideUploading = true;
 		const blobUrl = URL.createObjectURL(file);
+		const arrayBuffer = await file.arrayBuffer();
 
 		const reader = new FileReader();
 		reader.onload = async (e) => {
@@ -676,6 +689,25 @@
 					const result = await response.json();
 					program.guideAudioId = result.audio_file;
 					guideBlobUrls.update(urls => ({ ...urls, [programId]: blobUrl }));
+
+					const audioCtx = new AudioContext();
+					const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+					audioCtx.close();
+
+					const peaks = computePeaksFromBuffer(audioBuffer);
+					const dur = audioBuffer.duration;
+
+					guideCachedPeaks.update(cache => ({
+						...cache,
+						[programId]: { peaks, duration: dur }
+					}));
+
+					await fetch(`${API_URL}/audio/${encodeURIComponent(result.audio_file)}/peaks`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ peaks, duration: dur })
+					});
+
 					await saveProgram();
 				} else {
 					console.error('Failed to upload guide track:', response.status, response.statusText);
@@ -684,11 +716,14 @@
 			} catch (err) {
 				console.error('Failed to upload guide track:', err);
 				URL.revokeObjectURL(blobUrl);
+			} finally {
+				guideUploading = false;
 			}
 		};
 		reader.onerror = () => {
 			console.error('Failed to read guide audio file:', reader.error);
 			URL.revokeObjectURL(blobUrl);
+			guideUploading = false;
 		};
 		reader.readAsDataURL(file);
 	}
@@ -1087,16 +1122,16 @@ async function playFullProgram() {
 			fileName: fileName,
 			audioId: existingProgram?.audioId || program?.audioId || programId || newProgramId,
 			guideAudioId: program?.guideAudioId || existingProgram?.guideAudioId,
-			cues: markers.map(m => ({
-				time: m.time,
-				type: m.type,
-				label: m.label,
-				boards: m.boards,
-				presetName: m.presetName,
-				color: m.color,
-				effect: m.effect,
-				brightness: m.brightness,
-				syncRate: m.syncRate ?? 1
+			cues: (existingProgram?.cues ?? program?.cues ?? []).map(c => ({
+				time: c.time,
+				type: c.type,
+				label: c.label,
+				boards: c.boards,
+				presetName: c.presetName,
+				color: c.color,
+				effect: c.effect,
+				brightness: c.brightness,
+				syncRate: c.syncRate ?? 1
 			})),
 			createdAt: existingProgram?.createdAt || new Date().toISOString(),
 			defaultTargetBoard: defaultTargetBoard,
@@ -1105,7 +1140,9 @@ async function playFullProgram() {
 			gridOffset: gridOffset || 0,
 			clickRate: clickRate,
 			guideVolume: guideVolume,
-			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0
+			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0,
+		setlistId: existingProgram?.setlistId ?? program?.setlistId ?? 'default',
+		displayName: displayName.trim() || undefined,
 		};
 
 		// Create Program model using factory
@@ -1378,6 +1415,7 @@ async function playFullProgram() {
 
 	$effect(() => {
 		if (!program?.audioId || wavesurferInitialized) return;
+		if (!expanded) return;
 
 		const peaks = programId ? $cachedPeaksStore[programId] : null;
 		if (peaks) {
@@ -1786,6 +1824,16 @@ async function playFullProgram() {
 						type="text"
 						bind:value={songName}
 						placeholder="Song name"
+						oninput={debouncedSave}
+					/>
+				</div>
+				<div class="metadata-field">
+					<label for="meta-display-name">Display Name</label>
+					<input
+						id="meta-display-name"
+						type="text"
+						bind:value={displayName}
+						placeholder="Performance page name (optional)"
 						oninput={debouncedSave}
 					/>
 				</div>

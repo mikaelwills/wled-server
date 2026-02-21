@@ -69,7 +69,7 @@ pub async fn stop_playback(
 
 #[derive(Deserialize)]
 pub struct SeekRequest {
-    pub position: u64,
+    pub position_secs: f64,
 }
 
 pub async fn seek_playback(
@@ -77,7 +77,10 @@ pub async fn seek_playback(
     Json(payload): Json<SeekRequest>,
 ) -> StatusCode {
     let engine = state.audio_engine.lock().await;
-    engine.seek(payload.position).await;
+    let sample_rate = engine.get_device_sample_rate();
+    let channels = engine.get_current_track().map(|t| t.channels as u32).unwrap_or(2);
+    let sample_position = (payload.position_secs * sample_rate as f64 * channels as f64) as u64;
+    engine.seek(sample_position).await;
     StatusCode::OK
 }
 

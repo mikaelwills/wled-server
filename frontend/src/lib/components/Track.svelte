@@ -94,9 +94,21 @@
 		}
 	}
 
+	let lastPeaksRef: typeof cachedPeaks = null;
+
 	$effect(() => {
 		if (cachedPeaks && !wavesurfer) {
+			lastPeaksRef = cachedPeaks;
 			setTimeout(() => initWaveSurfer(), 0);
+		} else if (cachedPeaks && wavesurfer && cachedPeaks !== lastPeaksRef) {
+			lastPeaksRef = cachedPeaks;
+			isLoaded = false;
+			setTimeout(() => initWaveSurfer(), 0);
+		} else if (!cachedPeaks && wavesurfer) {
+			lastPeaksRef = null;
+			wavesurfer.destroy();
+			wavesurfer = null;
+			isLoaded = false;
 		}
 	});
 
@@ -146,7 +158,7 @@
 		<button class="btn-remove" onclick={onRemove} title="Remove track">×</button>
 	</div>
 	<div class="waveform-inner">
-		{#if cachedPeaks && !isLoaded}
+		{#if !isLoaded}
 			<div class="waveform-skeleton"></div>
 		{/if}
 		<div id={containerId} class:hidden={!isLoaded}></div>

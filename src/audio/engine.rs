@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing;
@@ -16,6 +16,20 @@ pub enum PlaybackState {
     Stopped,
     Playing,
     Paused,
+}
+
+impl PlaybackState {
+    pub const STOPPED: u8 = 0;
+    pub const PLAYING: u8 = 1;
+    pub const PAUSED: u8 = 2;
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            PlaybackState::Stopped => Self::STOPPED,
+            PlaybackState::Playing => Self::PLAYING,
+            PlaybackState::Paused => Self::PAUSED,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -194,6 +208,7 @@ struct ClickCacheKey {
 
 pub struct AudioEngine {
     state: PlaybackState,
+    state_atomic: Arc<AtomicU8>,
     slot_tracks: [HashMap<String, Arc<LoadedTrack>>; SLOT_COUNT],
     current_slot_ids: [Option<String>; SLOT_COUNT],
     position: Arc<AtomicU64>,
@@ -214,6 +229,7 @@ impl AudioEngine {
         let (tx, rx) = mpsc::channel(32);
         Self {
             state: PlaybackState::Stopped,
+            state_atomic: Arc::new(AtomicU8::new(PlaybackState::STOPPED)),
             slot_tracks: Default::default(),
             current_slot_ids: Default::default(),
             position: Arc::new(AtomicU64::new(0)),
@@ -268,6 +284,15 @@ impl AudioEngine {
 
     pub fn get_position_arc(&self) -> Arc<AtomicU64> {
         self.position.clone()
+    }
+
+    pub fn get_state_arc(&self) -> Arc<AtomicU8> {
+        self.state_atomic.clone()
+    }
+
+    fn set_state(&mut self, new_state: PlaybackState) {
+        self.state = new_state;
+        self.state_atomic.store(new_state.as_u8(), Ordering::Release);
     }
 
     pub fn get_health_arc(&self) -> Arc<PlaybackHealth> {
@@ -587,7 +612,7 @@ impl AudioEngine {
                 if start > 0 {
                     let _ = self.command_tx.send(PlaybackCommand::Seek(start)).await;
                 }
-                self.state = PlaybackState::Playing;
+                self.set_state(PlaybackState::Playing);
                 self.current_slot_ids[SlotId::Backing as usize] = Some(track_id.to_string());
                 return true;
             }
@@ -597,7 +622,7 @@ impl AudioEngine {
 
     pub async fn stop(&mut self) {
         let _ = self.command_tx.send(PlaybackCommand::Stop).await;
-        self.state = PlaybackState::Stopped;
+        self.set_state(PlaybackState::Stopped);
         self.current_slot_ids = Default::default();
         self.position.store(0, Ordering::SeqCst);
     }
@@ -605,14 +630,14 @@ impl AudioEngine {
     pub async fn pause(&mut self) {
         if self.state == PlaybackState::Playing {
             let _ = self.command_tx.send(PlaybackCommand::Pause).await;
-            self.state = PlaybackState::Paused;
+            self.set_state(PlaybackState::Paused);
         }
     }
 
     pub async fn resume(&mut self) {
         if self.state == PlaybackState::Paused {
             let _ = self.command_tx.send(PlaybackCommand::Resume).await;
-            self.state = PlaybackState::Playing;
+            self.set_state(PlaybackState::Playing);
         }
     }
 

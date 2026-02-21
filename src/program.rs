@@ -39,6 +39,8 @@ pub struct Program {
     pub guide_volume: Option<f64>,
     #[serde(default = "default_setlist_id")]
     pub setlist_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 fn default_setlist_id() -> String {
