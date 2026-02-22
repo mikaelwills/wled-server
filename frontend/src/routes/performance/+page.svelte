@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
-	import { programs, programsLoading, programsError, currentlyPlayingProgram, playbackPosition, activeSetlistId } from '$lib/stores/store';
+	import { programs, programsLoading, programsError, currentlyPlayingProgram, playbackPosition, playbackError, activeSetlistId } from '$lib/stores/store';
 	import { playProgram as playProgramService, stopPlayback as stopPlaybackService } from '$lib/db/playback-db';
 	import { updateProgram, reorderPrograms } from '$lib/db/programs-db';
 	import { setBoardBrightness } from '$lib/db/boards-db';
@@ -117,9 +117,17 @@
 		}
 	}
 
+	$effect(() => {
+		if ($playbackError) {
+			const timer = setTimeout(() => playbackError.set(null), 5000);
+			return () => clearTimeout(timer);
+		}
+	});
+
 	async function playProgram(program: Program) {
 		console.log('▶️ Playing program:', program.songName);
 
+		playbackError.set(null);
 		lastPlayedProgramId = program.id;
 		playbackProgress[program.id] = 0;
 
@@ -329,6 +337,12 @@
 </script>
 
 <div class="performance-page" onclick={handleClickOutside}>
+	{#if $playbackError}
+		<div class="playback-error" onclick={() => playbackError.set(null)}>
+			Playback failed: {$playbackError.reason}
+		</div>
+	{/if}
+
 	{#if $programsLoading}
 		<div class="empty-state">
 			<p class="empty-text">Loading programs...</p>
@@ -504,6 +518,15 @@
 		display: flex;
 		flex-direction: column;
 		outline: none;
+	}
+
+	.playback-error {
+		background: #991b1b;
+		color: #fecaca;
+		padding: 0.75rem 1rem;
+		font-size: 0.95rem;
+		text-align: center;
+		cursor: pointer;
 	}
 
 	.empty-state {

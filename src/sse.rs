@@ -47,6 +47,11 @@ pub enum SseEvent {
         total_tracks: usize,
         target_rate: u32,
     },
+    #[serde(rename = "playback_failed")]
+    PlaybackFailed {
+        program_id: String,
+        reason: String,
+    },
     #[serde(rename = "audio_device_lost")]
     AudioDeviceLost {
         device_name: String,

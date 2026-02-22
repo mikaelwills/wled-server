@@ -599,11 +599,21 @@ impl ProgramEngine {
                                 } else {
                                     warn!("Track not loaded in audio engine: {}", track_id);
                                     cue_scheduler.stop();
+                                    let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
+                                        program_id: program.id.clone(),
+                                        reason: format!("Backing track '{}' not loaded or audio thread unavailable", track_id),
+                                    });
                                 }
 
                                 broadcast_position = Some(eng.get_position_arc());
                                 broadcast_rate = playback_rate;
                                 broadcast_channels = channels;
+                            } else {
+                                error!("Audio engine not initialized, cannot play");
+                                let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
+                                    program_id: program.id.clone(),
+                                    reason: "Audio engine not initialized".to_string(),
+                                });
                             }
                         }
                     }

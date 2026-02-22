@@ -180,13 +180,19 @@ pub async fn play_program(
         programs.get(&id).cloned()
     };
 
-    let program = program.ok_or_else(|| (StatusCode::NOT_FOUND, format!("Program {} not found", id)))?;
+    let program = program.ok_or_else(|| {
+        tracing::warn!("Play failed: program '{}' not found", id);
+        (StatusCode::NOT_FOUND, format!("Program {} not found", id))
+    })?;
 
     state
         .program_engine
         .play(program, params.start)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| {
+            tracing::error!("Play failed: program engine error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e)
+        })?;
 
     Ok(StatusCode::OK)
 }

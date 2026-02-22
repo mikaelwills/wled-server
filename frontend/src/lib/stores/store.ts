@@ -56,6 +56,12 @@ export interface PlaybackPositionEvent {
 }
 export const playbackPosition: Writable<PlaybackPositionEvent | null> = writable(null);
 
+export interface PlaybackErrorEvent {
+	programId: string;
+	reason: string;
+}
+export const playbackError: Writable<PlaybackErrorEvent | null> = writable(null);
+
 // Loopy Pro settings store
 export type AudioSource = 'audio_engine' | 'loopy_pro';
 

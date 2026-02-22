@@ -557,6 +557,7 @@ impl AudioEngine {
     ) -> bool {
         let backing_tracks = &self.slot_tracks[SlotId::Backing as usize];
         if let Some(track) = backing_tracks.get(track_id).cloned() {
+            tracing::info!("AudioEngine: starting playback for '{}'", track_id);
             let start = start_sample.unwrap_or(0);
             self.position.store(start, Ordering::SeqCst);
 
@@ -616,6 +617,9 @@ impl AudioEngine {
                 self.current_slot_ids[SlotId::Backing as usize] = Some(track_id.to_string());
                 return true;
             }
+            tracing::error!("AudioEngine: play command send failed for '{}' - audio thread may have crashed", track_id);
+        } else {
+            tracing::warn!("AudioEngine: backing track '{}' not found in slot_tracks (loaded: {:?})", track_id, backing_tracks.keys().collect::<Vec<_>>());
         }
         false
     }

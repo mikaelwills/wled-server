@@ -1,6 +1,6 @@
 import { API_URL } from './api';
 import type { BoardState } from './types';
-import { resamplingProgress, resamplingComplete, resamplingBatch, playbackPosition, currentlyPlayingProgram, programs, type SlotResamplingProgress } from '$lib/stores/store';
+import { resamplingProgress, resamplingComplete, resamplingBatch, playbackPosition, currentlyPlayingProgram, playbackError, programs, type SlotResamplingProgress } from '$lib/stores/store';
 import { get } from 'svelte/store';
 
 export type SseEvent =
@@ -12,6 +12,7 @@ export type SseEvent =
   | { type: 'playback_started'; program_id: string; duration_secs: number }
   | { type: 'playback_position'; program_id: string; position_secs: number; duration_secs: number }
   | { type: 'playback_stopped'; program_id: string; reason: string }
+  | { type: 'playback_failed'; program_id: string; reason: string }
   | { type: 'connected'; message: string };
 
 export function createSseConnection(
@@ -91,6 +92,11 @@ export function createSseConnection(
       } else if (data.type === 'playback_stopped') {
         playbackPosition.set(null);
         currentlyPlayingProgram.set(null);
+      } else if (data.type === 'playback_failed') {
+        console.error(`Playback failed for ${data.program_id}: ${data.reason}`);
+        playbackPosition.set(null);
+        currentlyPlayingProgram.set(null);
+        playbackError.set({ programId: data.program_id, reason: data.reason });
       }
     } catch (err) {
       console.error('Failed to parse SSE event:', err);
