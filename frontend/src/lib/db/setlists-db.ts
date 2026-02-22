@@ -169,6 +169,8 @@ export async function cloneToSetlist(programId: string, targetSetlistId: string)
     const data = await response.json();
     const newProgram = Program.fromJson(data);
 
+    console.log(`[CUE-DEBUG] cloneToSetlist: cloned "${newProgram?.songName}" with ${newProgram?.cues?.length ?? 0} cues`);
+
     if (newProgram) {
       programs.update(current => [...current, newProgram]);
     }

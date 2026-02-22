@@ -60,3 +60,6 @@ history/
 
 # Audio data
 data/audio/
+
+# Cue backups
+cue-backups/

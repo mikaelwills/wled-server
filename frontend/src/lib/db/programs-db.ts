@@ -97,6 +97,11 @@ export async function saveProgram(program: Program, audioDataUrl: string | null 
     const url = isUpdate ? `${API_URL}/programs/${program.id}` : `${API_URL}/programs`;
     const method = isUpdate ? 'PUT' : 'POST';
 
+    console.log(`[CUE-DEBUG] programs-db.saveProgram ${method} "${program.songName}" (${program.id}) with ${program.cues.length} cues`);
+    if (program.cues.length === 0) {
+      console.warn(`[CUE-DEBUG] programs-db.saveProgram WARNING: saving "${program.songName}" with 0 cues!`);
+    }
+
     const response = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
@@ -130,6 +135,11 @@ export async function saveProgram(program: Program, audioDataUrl: string | null 
  */
 export async function updateProgram(program: Program): Promise<void> {
   if (!browser) return;
+
+  console.log(`[CUE-DEBUG] programs-db.updateProgram PUT "${program.songName}" (${program.id}) with ${program.cues.length} cues`);
+  if (program.cues.length === 0) {
+    console.warn(`[CUE-DEBUG] programs-db.updateProgram WARNING: updating "${program.songName}" with 0 cues!`);
+  }
 
   try {
     const response = await fetch(`${API_URL}/programs/${program.id}`, {

@@ -36,10 +36,7 @@
 
 	let wavesurfer: WaveSurfer | null = $state(null);
 	let regions: ReturnType<typeof RegionsPlugin.create> | null = $state(null);
-	let regionCues: Map<string, Cue> = $state(new Map());
-	let cuesClearedByUser = $state(false);
-	let hadCuesOnLoad = false;
-	let destroying = false;
+	let cueMap: Map<string, Cue> = $state(new Map());
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
@@ -150,7 +147,7 @@
 
 	// Edit mode (lighting vs midi markers)
 	let editMode: MarkerType = $state('lighting');
-	let allCueEntries = $derived([...regionCues.entries()]);
+	let allCueEntries = $derived([...cueMap.entries()]);
 	let visibleMarkers = $derived(allCueEntries.filter(([_, c]) => c.type === editMode));
 	let shiftAmount: number = $state(1);
 
@@ -320,9 +317,11 @@
 	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	function debouncedSave() {
+		const stack = new Error().stack?.split('\n').slice(1, 4).join(' <- ') || 'unknown';
+		console.log(`[CUE-DEBUG] debouncedSave triggered for "${songName}" (${programId}), isLoaded=${isLoaded}, cueMap=${cueMap.size}`, stack);
 		if (saveTimeout) clearTimeout(saveTimeout);
 		saveTimeout = setTimeout(() => {
-			if (isLoaded && program) {
+			if (program) {
 				saveProgram();
 			}
 		}, 500);
@@ -429,7 +428,7 @@
 		clickRate = data.clickRate ?? 1;
 		guideVolume = data.guideVolume ?? 1.0;
 		pendingCues = data.cues || [];
-		hadCuesOnLoad = pendingCues.length > 0;
+		console.log(`[CUE-DEBUG] loadProgramData "${data.songName}" cues: ${pendingCues.length}`);
 	}
 
 	function initializeWaveSurfer(audioUrl?: string) {
@@ -469,7 +468,7 @@
 			}
 
 			if (pendingCues && pendingCues.length > 0) {
-				const newMap = new Map(regionCues);
+				const newMap = new Map(cueMap);
 				pendingCues.forEach(cue => {
 					let presetName = cue.presetName;
 					if (!presetName && cue.preset && cue.preset > 0) {
@@ -513,7 +512,7 @@
 					});
 					newMap.set(markerRegion.id, restoredCue);
 				});
-				regionCues = newMap;
+				cueMap = newMap;
 				pendingCues = [];
 			}
 
@@ -594,9 +593,8 @@
 			event.preventDefault();
 		});
 
-		// Update marker list when regions change
 		regions.on('region-updated', (region) => {
-			const cue = regionCues.get(region.id);
+			const cue = cueMap.get(region.id);
 			if (cue) {
 				const snappedTime = snapToGrid(region.start);
 
@@ -606,17 +604,13 @@
 
 				cue.time = snappedTime;
 				regenerateMarkerLabel(region.id, cue.label);
-				regionCues = new Map(regionCues);
+				cueMap = new Map(cueMap);
 				syncMarkersToStore();
 			}
 		});
 
 		regions.on('region-removed', (region) => {
-			const newMap = new Map(regionCues);
-			newMap.delete(region.id);
-			regionCues = newMap;
-			if (regionCues.size === 0) cuesClearedByUser = true;
-			syncMarkersToStore();
+			console.log(`[CUE-DEBUG] region-removed "${songName}" region=${region.id} — IGNORED (cueMap untouched, size=${cueMap.size})`);
 		});
 
 		// Track selected marker when clicked on waveform
@@ -637,7 +631,7 @@
 		}
 
 		if (!program) {
-			regionCues = new Map();
+			cueMap = new Map();
 		}
 	}
 
@@ -825,11 +819,11 @@
 	function syncMarkersToStore() {
 		if (!programId) return;
 
-		const cues = [...regionCues.values()];
+		console.log(`[CUE-DEBUG] syncMarkersToStore "${songName}" writing ${cueMap.size} cues to store`);
 		programsStore.update(programs => {
 			const programIndex = programs.findIndex(p => p.id === programId);
 			if (programIndex !== -1) {
-				programs[programIndex].cues = cues;
+				programs[programIndex].cues = [...cueMap.values()];
 			}
 			return [...programs];
 		});
@@ -872,18 +866,18 @@
 			syncRate: 1
 		});
 
-		const newMap = new Map(regionCues);
+		const newMap = new Map(cueMap);
 		newMap.set(markerRegion.id, cue);
-		regionCues = newMap;
+		cueMap = newMap;
 		syncMarkersToStore();
 		return markerRegion.id;
 	}
 
 	function updateMarkerProperty(markerId: string, property: keyof Cue, value: unknown) {
-		const cue = regionCues.get(markerId);
+		const cue = cueMap.get(markerId);
 		if (cue) {
 			(cue as any)[property] = value;
-			regionCues = new Map(regionCues);
+			cueMap = new Map(cueMap);
 			syncMarkersToStore();
 		}
 	}
@@ -919,36 +913,50 @@
 	}
 
 	function updateMarkerPreset(markerId: string, presetName: string) {
-		const cue = regionCues.get(markerId);
+		const cue = cueMap.get(markerId);
 		if (cue) {
 			cue.presetName = presetName;
 			cue.preset = undefined;
 			cue.label = presetName;
 			regenerateMarkerLabel(markerId, presetName);
-			regionCues = new Map(regionCues);
+			cueMap = new Map(cueMap);
 			syncMarkersToStore();
 		}
 	}
 
 	function toggleBoardSelection(markerId: string, boardId: string) {
-		const cue = regionCues.get(markerId);
+		const cue = cueMap.get(markerId);
 		if (cue) {
 			if (cue.boards.includes(boardId)) {
 				cue.boards = cue.boards.filter((id: string) => id !== boardId);
 			} else {
 				cue.boards = [...cue.boards, boardId];
 			}
-			regionCues = new Map(regionCues);
+			cueMap = new Map(cueMap);
 			syncMarkersToStore();
 		}
 	}
 
 	function deleteMarker(markerId: string) {
-		const allRegions = regions!.getRegions();
-		const region = allRegions.find(r => r.id === markerId);
-		if (region) {
-			region.remove();
+		console.log(`[CUE-DEBUG] deleteMarker "${songName}" region=${markerId}, cueMap before=${cueMap.size}`);
+		const newMap = new Map(cueMap);
+		newMap.delete(markerId);
+		cueMap = newMap;
+		console.log(`[CUE-DEBUG] deleteMarker "${songName}" cueMap after=${cueMap.size}`);
+
+		if (regions) {
+			const allRegions = regions.getRegions();
+			const region = allRegions.find(r => r.id === markerId);
+			if (region) {
+				region.remove();
+			}
 		}
+
+		if (currentlySelectedMarker === markerId) {
+			currentlySelectedMarker = null;
+		}
+
+		syncMarkersToStore();
 	}
 
 	function zoomIn() {
@@ -1061,6 +1069,9 @@ async function playFullProgram() {
 	function saveProgram() {
 		if (!songName.trim()) return;
 
+		const stack = new Error().stack?.split('\n').slice(1, 4).join(' <- ') || 'unknown';
+		console.log(`[CUE-DEBUG] saveProgram() called for "${songName}" (${programId}), isLoaded=${isLoaded}, cueMap=${cueMap.size}`, stack);
+
 		const timestamp = Date.now();
 		const sanitizedSongName = songName.trim().replace(/\s+/g, '-').toLowerCase();
 		const trackSuffix = loopyProTrack.trim() ? `-${loopyProTrack.trim()}` : '';
@@ -1073,18 +1084,19 @@ async function playFullProgram() {
 			})();
 		}
 
-		const cues = regionCues.size > 0
-			? [...regionCues.values()]
-			: existingProgram?.cues?.length ? existingProgram.cues
-			: program?.cues?.length ? program.cues
-			: null;
+		let saveCues: Cue[];
+		let cueSource: string;
+		if (isLoaded) {
+			saveCues = [...cueMap.values()];
+			cueSource = `cueMap (${saveCues.length})`;
+		} else {
+			saveCues = existingProgram?.cues ?? program?.cues ?? [];
+			cueSource = existingProgram?.cues ? `existingProgram (${saveCues.length})` : program?.cues ? `program prop (${saveCues.length})` : 'empty fallback';
+		}
 
-		if (!cues && programId && hadCuesOnLoad && !cuesClearedByUser) {
-			console.error('saveProgram: all cue sources empty for program that had cues on load:', programId);
-			if (!destroying) {
-				alert(`Warning: "${songName}" was about to be saved with 0 cues but had cues when loaded. Save was blocked to prevent data loss. Please reload the page and check your cues.`);
-			}
-			return;
+		console.log(`[CUE-DEBUG] "${songName}" SAVING with ${saveCues.length} cues (source: ${cueSource})`);
+		if (saveCues.length === 0) {
+			console.warn(`[CUE-DEBUG] WARNING: "${songName}" saving with 0 cues!`);
 		}
 
 		const programData = {
@@ -1094,7 +1106,7 @@ async function playFullProgram() {
 			fileName: fileName,
 			audioId: existingProgram?.audioId || program?.audioId || programId || newProgramId,
 			guideAudioId: program?.guideAudioId || existingProgram?.guideAudioId,
-			cues: cues ?? [],
+			cues: saveCues,
 			createdAt: existingProgram?.createdAt || new Date().toISOString(),
 			defaultTargetBoard: defaultTargetBoard,
 			audioDuration: audioDuration,
@@ -1103,17 +1115,15 @@ async function playFullProgram() {
 			clickRate: clickRate,
 			guideVolume: guideVolume,
 			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0,
-		setlistId: existingProgram?.setlistId ?? program?.setlistId ?? 'default',
-		displayName: displayName.trim() || undefined,
+			setlistId: existingProgram?.setlistId ?? program?.setlistId ?? 'default',
+			displayName: displayName.trim() || undefined,
 		};
 
-		// Create Program model using factory
 		const programInstance = ProgramModel.fromJson(programData);
 
 		if (programInstance) {
 			saveProgramToStore(programInstance, audioToUpload as string | null);
-			console.log('💾 Auto-saved program:', newProgramId);
-
+			console.log(`[CUE-DEBUG] "${songName}" saved to store with ${programInstance.cues.length} cues`);
 			audioToUpload = null;
 
 			if (!programId) {
@@ -1125,17 +1135,19 @@ async function playFullProgram() {
 	function clearCues() {
 		if (visibleMarkers.length === 0) return;
 
+		const newMap = new Map<string, Cue>();
+		for (const [id, cue] of cueMap) {
+			if (cue.type !== editMode) {
+				newMap.set(id, cue);
+			}
+		}
+
 		visibleMarkers.forEach(([regionId]) => {
 			const region = regions!.getRegions().find(r => r.id === regionId);
 			if (region) region.remove();
 		});
 
-		const newMap = new Map<string, Cue>();
-		for (const [id, cue] of regionCues) {
-			if (cue.type !== editMode) newMap.set(id, cue);
-		}
-		regionCues = newMap;
-		if (regionCues.size === 0) cuesClearedByUser = true;
+		cueMap = newMap;
 		syncMarkersToStore();
 	}
 
@@ -1149,7 +1161,7 @@ async function playFullProgram() {
 				region.setOptions({ start: cue.time, end: cue.time });
 			}
 		}
-		regionCues = new Map(regionCues);
+		cueMap = new Map(cueMap);
 		syncMarkersToStore();
 	}
 
@@ -1172,9 +1184,9 @@ async function playFullProgram() {
 			const file = input.files?.[0];
 			if (!file) return;
 
-			const savedCues = [...regionCues.values()];
+			const savedCues = [...cueMap.values()];
 
-			regionCues = new Map();
+			cueMap = new Map();
 			if (regions) {
 				regions.getRegions().forEach(r => {
 					if (!gridRegionIds.includes(r.id)) r.remove();
@@ -1355,12 +1367,12 @@ async function playFullProgram() {
 			return;
 		}
 
-		for (const [_, cue] of regionCues) {
+		for (const [_, cue] of cueMap) {
 			if (cue.type === editMode) {
 				cue.boards = [defaultTargetBoard!];
 			}
 		}
-		regionCues = new Map(regionCues);
+		cueMap = new Map(cueMap);
 		syncMarkersToStore();
 	}
 
@@ -1405,14 +1417,14 @@ async function playFullProgram() {
 
 	$effect(() => {
 		const mode = editMode;
-		const cueMap = regionCues;
+		const map = cueMap;
 		if (!regions) return;
 
 		for (const region of regions.getRegions()) {
 			if (gridRegionIds.includes(region.id)) continue;
 			if (!region.element) continue;
 
-			const cue = cueMap.get(region.id);
+			const cue = map.get(region.id);
 			if (!cue) continue;
 
 			const visible = cue.type === mode;
@@ -1432,7 +1444,7 @@ async function playFullProgram() {
 	});
 
 	onDestroy(() => {
-		destroying = true;
+		console.log(`[CUE-DEBUG] onDestroy "${songName}" (${programId}), isLoaded=${isLoaded}, saveTimeout=${!!saveTimeout}, cueMap=${cueMap.size}`);
 		stopPlayhead();
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1441,7 +1453,8 @@ async function playFullProgram() {
 		if (saveTimeout) {
 			clearTimeout(saveTimeout);
 			saveTimeout = null;
-			if (isLoaded && program) {
+			if (program) {
+				console.log(`[CUE-DEBUG] onDestroy FLUSHING save for "${songName}"`);
 				saveProgram();
 			}
 		}
