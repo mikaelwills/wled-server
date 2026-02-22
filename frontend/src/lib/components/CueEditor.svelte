@@ -1,25 +1,21 @@
 <script lang="ts">
 	import { boards, performancePresets } from '$lib/stores/store';
+	import type { Cue } from '$lib/models/Cue';
 
 	let {
-		marker,
+		regionId,
+		cue,
 		onToggleBoardSelection,
 		onOpenPresetPicker,
 		onUpdateSyncRate,
 		onDelete
 	}: {
-		marker: {
-			id: string;
-			time: number;
-			label: string;
-			boards: string[];
-			presetName?: string;
-			syncRate?: number;
-		};
-		onToggleBoardSelection: (markerId: string, boardId: string) => void;
-		onOpenPresetPicker: (markerId: string) => void;
-		onUpdateSyncRate: (markerId: string, rate: number) => void;
-		onDelete: (markerId: string) => void;
+		regionId: string;
+		cue: Cue;
+		onToggleBoardSelection: (regionId: string, boardId: string) => void;
+		onOpenPresetPicker: (regionId: string) => void;
+		onUpdateSyncRate: (regionId: string, rate: number) => void;
+		onDelete: (regionId: string) => void;
 	} = $props();
 
 	let dropdownOpen = $state(false);
@@ -58,8 +54,8 @@
 
 <div class="cue-editor">
 	<div class="cue-info">
-		<span class="cue-time">{formatTime(marker.time)}</span>
-		<span class="cue-label">{marker.label}</span>
+		<span class="cue-time">{formatTime(cue.time)}</span>
+		<span class="cue-label">{cue.label}</span>
 	</div>
 	<div class="cue-controls">
 		<div class="boards-dropdown-wrapper">
@@ -67,7 +63,7 @@
 				class="boards-select-button"
 				onclick={toggleDropdown}
 			>
-				{getBoardsLabel(marker.boards)}
+				{getBoardsLabel(cue.boards)}
 				<span class="dropdown-arrow">▼</span>
 			</button>
 			{#if dropdownOpen}
@@ -82,8 +78,8 @@
 								<label class="dropdown-option">
 									<input
 										type="checkbox"
-										checked={marker.boards.includes(group.id)}
-										onchange={() => onToggleBoardSelection(marker.id, group.id)}
+										checked={cue.boards.includes(group.id)}
+										onchange={() => onToggleBoardSelection(regionId, group.id)}
 									/>
 									<span>{group.id}</span>
 								</label>
@@ -98,8 +94,8 @@
 								<label class="dropdown-option">
 									<input
 										type="checkbox"
-										checked={marker.boards.includes(board.id)}
-										onchange={() => onToggleBoardSelection(marker.id, board.id)}
+										checked={cue.boards.includes(board.id)}
+										onchange={() => onToggleBoardSelection(regionId, board.id)}
 									/>
 									<span>{board.id}</span>
 								</label>
@@ -112,41 +108,41 @@
 
 		<button
 			class="preset-picker-button"
-			class:broken-preset={marker.presetName && !$performancePresets.some(p => p.name === marker.presetName)}
-			onclick={() => onOpenPresetPicker(marker.id)}
+			class:broken-preset={cue.presetName && !$performancePresets.some(p => p.name === cue.presetName)}
+			onclick={() => onOpenPresetPicker(regionId)}
 		>
-			{marker.presetName || 'Select Preset'}
+			{cue.presetName || 'Select Preset'}
 			<span class="dropdown-arrow">▼</span>
 		</button>
 		<div class="sync-rate-group" title="BPM sync rate">
 			<button
 				class="sync-rate-btn"
-				class:active={marker.syncRate === 0.25}
-				onclick={() => onUpdateSyncRate(marker.id, 0.25)}
+				class:active={cue.syncRate === 0.25}
+				onclick={() => onUpdateSyncRate(regionId, 0.25)}
 			>¼</button>
 			<button
 				class="sync-rate-btn"
-				class:active={marker.syncRate === 0.5}
-				onclick={() => onUpdateSyncRate(marker.id, 0.5)}
+				class:active={cue.syncRate === 0.5}
+				onclick={() => onUpdateSyncRate(regionId, 0.5)}
 			>½</button>
 			<button
 				class="sync-rate-btn"
-				class:active={(marker.syncRate ?? 1) === 1}
-				onclick={() => onUpdateSyncRate(marker.id, 1)}
+				class:active={(cue.syncRate ?? 1) === 1}
+				onclick={() => onUpdateSyncRate(regionId, 1)}
 			>1</button>
 			<button
 				class="sync-rate-btn"
-				class:active={marker.syncRate === 2}
-				onclick={() => onUpdateSyncRate(marker.id, 2)}
+				class:active={cue.syncRate === 2}
+				onclick={() => onUpdateSyncRate(regionId, 2)}
 			>2</button>
 			<button
 				class="sync-rate-btn"
-				class:active={marker.syncRate === 4}
-				onclick={() => onUpdateSyncRate(marker.id, 4)}
+				class:active={cue.syncRate === 4}
+				onclick={() => onUpdateSyncRate(regionId, 4)}
 			>4</button>
 		</div>
 
-		<button class="btn-delete" onclick={() => onDelete(marker.id)}>
+		<button class="btn-delete" onclick={() => onDelete(regionId)}>
 			✕
 		</button>
 	</div>

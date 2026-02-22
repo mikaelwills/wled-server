@@ -27,7 +27,7 @@ export class Cue implements CueData {
   brightness: number;
   syncRate?: number;
 
-  private constructor(data: CueData) {
+  constructor(data: CueData) {
     this.time = data.time;
     this.type = data.type;
     this.label = data.label;

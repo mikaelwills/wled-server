@@ -147,6 +147,27 @@ pub async fn restart_server() -> Result<StatusCode, (StatusCode, String)> {
     Ok(StatusCode::OK)
 }
 
+pub async fn shutdown_server() -> Result<StatusCode, (StatusCode, String)> {
+    info!("System shutdown requested via API");
+
+    tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        info!("Executing system shutdown...");
+
+        let result = std::process::Command::new("sudo")
+            .args(["shutdown", "now"])
+            .spawn();
+
+        match result {
+            Ok(_) => info!("System shutdown initiated"),
+            Err(e) => warn!("Failed to shutdown system: {}", e),
+        }
+    });
+
+    Ok(StatusCode::OK)
+}
+
 pub async fn get_timecode_settings(
     State(state): State<SharedState>,
 ) -> Result<Json<config::TimecodeConfig>, StatusCode> {

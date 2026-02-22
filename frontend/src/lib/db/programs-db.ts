@@ -248,49 +248,35 @@ export async function duplicateProgram(programId: string): Promise<Program | nul
 
 /**
  * Reorder programs and persist to backend
+ * Only sends id, display_order, and setlist_id — never touches cues
  */
 export async function reorderPrograms(reorderedPrograms: Program[]): Promise<void> {
   if (!browser) return;
 
   try {
-    const updatedPrograms = reorderedPrograms.map((program, index) => {
-      const instance = Program.fromJson(program as any) || program;
-      instance.displayOrder = index;
-      return instance;
+    const entries = reorderedPrograms.map((program, index) => ({
+      id: program.id,
+      display_order: index,
+      setlist_id: program.setlistId || 'default',
+    }));
+
+    programs.update(currentPrograms => {
+      for (const entry of entries) {
+        const p = currentPrograms.find(p => p.id === entry.id);
+        if (p) p.displayOrder = entry.display_order;
+      }
+      return [...currentPrograms];
     });
 
-    programs.set(updatedPrograms);
+    const response = await fetch(`${API_URL}/programs/reorder`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entries)
+    });
 
-    await Promise.all(
-      updatedPrograms.map(program => {
-        const jsonBody = typeof program.toJson === 'function'
-          ? program.toJson()
-          : {
-              id: program.id,
-              song_name: program.songName,
-              loopy_pro_track: program.loopyProTrack,
-              file_name: program.fileName,
-              audio_file: program.audioId,
-              cues: program.cues.map((c: any) => typeof c.toJson === 'function' ? c.toJson() : c),
-              created_at: program.createdAt,
-              default_target_board: program.defaultTargetBoard,
-              next_program_id: program.nextProgramId,
-              transition_type: program.transitionType,
-              transition_duration: program.transitionDuration,
-              audio_duration: program.audioDuration,
-              display_order: program.displayOrder,
-              bpm: program.bpm,
-              grid_offset: program.gridOffset,
-              setlist_id: program.setlistId,
-            };
-
-        return fetch(`${API_URL}/programs/${program.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(jsonBody)
-        });
-      })
-    );
+    if (!response.ok) {
+      throw new Error(`Failed to reorder programs: ${response.statusText}`);
+    }
 
     console.log('[programs-db] Programs reordered successfully');
   } catch (error) {

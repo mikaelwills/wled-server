@@ -583,6 +583,51 @@ pub struct MoveProgramRequest {
     pub setlist_id: String,
 }
 
+fn default_reorder_setlist_id() -> String {
+    "default".to_string()
+}
+
+#[derive(Deserialize)]
+pub struct ReorderEntry {
+    pub id: String,
+    pub display_order: i32,
+    #[serde(default = "default_reorder_setlist_id")]
+    pub setlist_id: String,
+}
+
+pub async fn reorder_programs(
+    State(state): State<SharedState>,
+    Json(entries): Json<Vec<ReorderEntry>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !state.storage_paths.is_available() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage not available".to_string(),
+        ));
+    }
+
+    let mut programs = state.programs.write().await;
+
+    for entry in &entries {
+        if let Some(program) = programs.get_mut(&entry.id) {
+            program.display_order = entry.display_order;
+            program.setlist_id = entry.setlist_id.clone();
+            program
+                .save_to_file(&state.storage_paths.programs)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to save program '{}': {}", entry.id, e),
+                    )
+                })?;
+        } else {
+            warn!("Reorder: program '{}' not found, skipping", entry.id);
+        }
+    }
+
+    Ok(StatusCode::OK)
+}
+
 pub async fn move_program(
     State(state): State<SharedState>,
     Path(id): Path<String>,

@@ -19,21 +19,7 @@
 	import { toggleSlotMute } from '$lib/db/audio-db';
 	import { slotMuted, resamplingProgress as resamplingProgressStore, resamplingComplete as resamplingCompleteStore, type SlotResamplingProgress, setlists, activeSetlistId } from '$lib/stores/store';
 	import { moveProgram, cloneToSetlist } from '$lib/db/setlists-db';
-	import type { MarkerType } from '$lib/models/Cue';
-
-	interface Marker {
-		id: string;
-		time: number;
-		type: MarkerType;
-		label: string;
-		boards: string[];
-		presetName?: string;
-		preset?: number;
-		effect?: number;
-		color?: string;
-		brightness?: number;
-		syncRate?: number;
-	}
+	import { Cue, type MarkerType } from '$lib/models/Cue';
 
 	const backingSlot = getSlot('backing')!;
 	const guideSlot = getSlot('guide')!;
@@ -50,7 +36,10 @@
 
 	let wavesurfer: WaveSurfer | null = $state(null);
 	let regions: ReturnType<typeof RegionsPlugin.create> | null = $state(null);
-	let markers: Marker[] = $state([]);
+	let regionCues: Map<string, Cue> = $state(new Map());
+	let cuesClearedByUser = $state(false);
+	let hadCuesOnLoad = false;
+	let destroying = false;
 	let fileName = $state('');
 	let isLoaded = $state(false);
 	let isPlaying = $state(false);
@@ -161,7 +150,8 @@
 
 	// Edit mode (lighting vs midi markers)
 	let editMode: MarkerType = $state('lighting');
-	let visibleMarkers = $derived(markers.filter(m => m.type === editMode));
+	let allCueEntries = $derived([...regionCues.entries()]);
+	let visibleMarkers = $derived(allCueEntries.filter(([_, c]) => c.type === editMode));
 	let shiftAmount: number = $state(1);
 
 	function openPresetPicker(markerId: string) {
@@ -338,8 +328,7 @@
 		}, 500);
 	}
 
-	// Pending cues to restore after audio loads (component-scoped, not global)
-	let pendingCues: Marker[] = [];
+	let pendingCues: Cue[] = [];
 
 	function stripAudioExtension(id: string): string {
 		return id.replace(/\.(mp3|wav)$/i, '');
@@ -414,11 +403,8 @@
 			} else if (event.code === 'KeyC') {
 				event.preventDefault();
 				const currentTime = getPlayheadTime();
-				addMarker(currentTime);
-				const newMarker = markers[markers.length - 1];
-				if (newMarker) {
-					currentlySelectedMarker = newMarker.id;
-				}
+				const regionId = addMarker(currentTime);
+				currentlySelectedMarker = regionId;
 			}
 		}
 
@@ -432,7 +418,7 @@
 		};
 	});
 
-	function loadProgramData(data: { songName?: string; displayName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Marker[] }) {
+	function loadProgramData(data: { songName?: string; displayName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Cue[] }) {
 		songName = data.songName || '';
 		displayName = data.displayName || '';
 		loopyProTrack = data.loopyProTrack || '';
@@ -442,9 +428,8 @@
 		gridOffset = data.gridOffset || 0;
 		clickRate = data.clickRate ?? 1;
 		guideVolume = data.guideVolume ?? 1.0;
-		// Note: cues will need to be restored after audio file is loaded
-		// Store them temporarily in component-scoped variable
 		pendingCues = data.cues || [];
+		hadCuesOnLoad = pendingCues.length > 0;
 	}
 
 	function initializeWaveSurfer(audioUrl?: string) {
@@ -483,16 +468,14 @@
 				updateBeatGrid();
 			}
 
-			// Restore pending cues if any
 			if (pendingCues && pendingCues.length > 0) {
+				const newMap = new Map(regionCues);
 				pendingCues.forEach(cue => {
-					// Migrate legacy preset ID to preset name
 					let presetName = cue.presetName;
 					if (!presetName && cue.preset && cue.preset > 0) {
 						const preset = $performancePresets.find(p => p.id === cue.preset);
 						if (preset) {
 							presetName = preset.name;
-							console.log(`📦 Migrated cue preset ID ${cue.preset} → "${presetName}"`);
 						}
 					}
 
@@ -507,18 +490,16 @@
 					const labelElement = createRegionLabel(cue.label || '', cue.time, markerRegion.id);
 					markerRegion.element!.replaceChildren(labelElement);
 
-					// Force style reapplication AFTER WaveSurfer's avoidOverlapping() runs (10ms)
 					setTimeout(() => {
 						if (labelElement.parentElement) {
-							labelElement.style.marginTop = ''; // Remove plugin's marginTop
+							labelElement.style.marginTop = '';
 							labelElement.style.position = 'absolute';
 							labelElement.style.top = '50%';
 							labelElement.style.transform = 'translateY(-50%)';
 						}
 					}, 20);
 
-					markers = [...markers, {
-						id: markerRegion.id,
+					const restoredCue = new Cue({
 						time: cue.time,
 						type: cue.type || 'lighting',
 						label: cue.label,
@@ -529,8 +510,10 @@
 						color: cue.color,
 						brightness: cue.brightness,
 						syncRate: cue.syncRate ?? 1
-					}];
+					});
+					newMap.set(markerRegion.id, restoredCue);
 				});
+				regionCues = newMap;
 				pendingCues = [];
 			}
 
@@ -613,29 +596,26 @@
 
 		// Update marker list when regions change
 		regions.on('region-updated', (region) => {
-			const markerIndex = markers.findIndex(m => m.id === region.id);
-			if (markerIndex !== -1) {
-				// Snap to grid if BPM is set
+			const cue = regionCues.get(region.id);
+			if (cue) {
 				const snappedTime = snapToGrid(region.start);
 
-				// If snapped position differs, update the region
 				if (snappedTime !== region.start && bpm) {
 					region.setOptions({ start: snappedTime, end: snappedTime });
 				}
 
-				markers[markerIndex].time = snappedTime;
-
-				// Regenerate label to ensure it's always centered
-				const marker = markers[markerIndex];
-				regenerateMarkerLabel(region.id, marker.label);
-
-				markers = [...markers]; // Trigger reactivity
+				cue.time = snappedTime;
+				regenerateMarkerLabel(region.id, cue.label);
+				regionCues = new Map(regionCues);
 				syncMarkersToStore();
 			}
 		});
 
 		regions.on('region-removed', (region) => {
-			markers = markers.filter(m => m.id !== region.id);
+			const newMap = new Map(regionCues);
+			newMap.delete(region.id);
+			regionCues = newMap;
+			if (regionCues.size === 0) cuesClearedByUser = true;
 			syncMarkersToStore();
 		});
 
@@ -656,9 +636,8 @@
 			wavesurfer.load(audioUrl, cached?.peaks, cached?.duration);
 		}
 
-		// Clear existing markers if not loading program
 		if (!program) {
-			markers = [];
+			regionCues = new Map();
 		}
 	}
 
@@ -843,22 +822,14 @@
 		return label;
 	}
 
-	/**
-	 * Sync markers to the program in the store immediately.
-	 * This ensures that:
-	 * 1. Play button uses the latest cues (reads from store)
-	 * 2. Cues are available for playback without clicking Save first
-	 * 3. Save button only needs to persist store data to backend API
-	 */
 	function syncMarkersToStore() {
 		if (!programId) return;
 
+		const cues = [...regionCues.values()];
 		programsStore.update(programs => {
 			const programIndex = programs.findIndex(p => p.id === programId);
 			if (programIndex !== -1) {
-				const updatedProgram = programs[programIndex];
-				updatedProgram.cues = markers as any;
-				programs[programIndex] = updatedProgram;
+				programs[programIndex].cues = cues;
 			}
 			return [...programs];
 		});
@@ -866,61 +837,53 @@
 		debouncedSave();
 	}
 
-	function addMarker(time: number) {
-		const labelText = 'No Preset';
-
+	function addMarker(time: number): string {
 		const markerRegion = regions!.addRegion({
 			start: time,
-			content: document.createElement('div'), // Temporary placeholder
+			content: document.createElement('div'),
 			color: 'rgba(168, 85, 247, 0.3)',
 			drag: true,
 			resize: false
 		});
 
-		const labelElement = createRegionLabel(labelText, time, markerRegion.id);
+		const labelElement = createRegionLabel('No Preset', time, markerRegion.id);
 		markerRegion.element!.replaceChildren(labelElement);
 
 		setTimeout(() => {
 			if (labelElement.parentElement) {
-				labelElement.style.marginTop = ''; // Remove plugin's marginTop
+				labelElement.style.marginTop = '';
 				labelElement.style.position = 'absolute';
 				labelElement.style.top = '50%';
 				labelElement.style.transform = 'translateY(-50%)';
 			}
 		}, 20);
 
-		// Inherit default target board if set, otherwise empty
 		const initialBoards = defaultTargetBoard ? [defaultTargetBoard] : [];
 
-		const newMarker: Marker = {
-			id: markerRegion.id,
-			time: time,
+		const cue = new Cue({
+			time,
 			type: editMode,
 			label: 'No Preset',
-			presetName: undefined,
 			boards: initialBoards,
 			preset: 0,
 			effect: 0,
 			color: '#ff0000',
 			brightness: 255,
 			syncRate: 1
-		};
+		});
 
-		markers = [...markers, newMarker];
+		const newMap = new Map(regionCues);
+		newMap.set(markerRegion.id, cue);
+		regionCues = newMap;
 		syncMarkersToStore();
+		return markerRegion.id;
 	}
 
-	/**
-	 * Generic function to update any marker property
-	 * @param {string} markerId - Region ID
-	 * @param {string} property - Property name (e.g., 'effect', 'color', 'brightness', etc.)
-	 * @param {any} value - New value for the property
-	 */
-	function updateMarkerProperty(markerId: string, property: keyof Marker, value: unknown) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			(marker as any)[property] = value;
-			markers = [...markers];
+	function updateMarkerProperty(markerId: string, property: keyof Cue, value: unknown) {
+		const cue = regionCues.get(markerId);
+		if (cue) {
+			(cue as any)[property] = value;
+			regionCues = new Map(regionCues);
 			syncMarkersToStore();
 		}
 	}
@@ -956,28 +919,26 @@
 	}
 
 	function updateMarkerPreset(markerId: string, presetName: string) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			marker.presetName = presetName;
-			marker.preset = undefined;
-
-			marker.label = presetName;
+		const cue = regionCues.get(markerId);
+		if (cue) {
+			cue.presetName = presetName;
+			cue.preset = undefined;
+			cue.label = presetName;
 			regenerateMarkerLabel(markerId, presetName);
-
-			markers = [...markers];
+			regionCues = new Map(regionCues);
 			syncMarkersToStore();
 		}
 	}
 
 	function toggleBoardSelection(markerId: string, boardId: string) {
-		const marker = markers.find(m => m.id === markerId);
-		if (marker) {
-			if (marker.boards.includes(boardId)) {
-				marker.boards = marker.boards.filter((id: string) => id !== boardId);
+		const cue = regionCues.get(markerId);
+		if (cue) {
+			if (cue.boards.includes(boardId)) {
+				cue.boards = cue.boards.filter((id: string) => id !== boardId);
 			} else {
-				marker.boards = [...marker.boards, boardId];
+				cue.boards = [...cue.boards, boardId];
 			}
-			markers = [...markers];
+			regionCues = new Map(regionCues);
 			syncMarkersToStore();
 		}
 	}
@@ -1100,13 +1061,11 @@ async function playFullProgram() {
 	function saveProgram() {
 		if (!songName.trim()) return;
 
-		// Generate unique ID or use existing
 		const timestamp = Date.now();
 		const sanitizedSongName = songName.trim().replace(/\s+/g, '-').toLowerCase();
 		const trackSuffix = loopyProTrack.trim() ? `-${loopyProTrack.trim()}` : '';
 		const newProgramId = programId || `${sanitizedSongName}${trackSuffix}-${timestamp}`;
 
-		// Get existing program data to preserve audioId
 		let existingProgram: ProgramModel | undefined;
 		if (programId) {
 			programsStore.subscribe(programs => {
@@ -1114,7 +1073,20 @@ async function playFullProgram() {
 			})();
 		}
 
-		// Create program data
+		const cues = regionCues.size > 0
+			? [...regionCues.values()]
+			: existingProgram?.cues?.length ? existingProgram.cues
+			: program?.cues?.length ? program.cues
+			: null;
+
+		if (!cues && programId && hadCuesOnLoad && !cuesClearedByUser) {
+			console.error('saveProgram: all cue sources empty for program that had cues on load:', programId);
+			if (!destroying) {
+				alert(`Warning: "${songName}" was about to be saved with 0 cues but had cues when loaded. Save was blocked to prevent data loss. Please reload the page and check your cues.`);
+			}
+			return;
+		}
+
 		const programData = {
 			id: newProgramId,
 			songName: songName.trim(),
@@ -1122,17 +1094,7 @@ async function playFullProgram() {
 			fileName: fileName,
 			audioId: existingProgram?.audioId || program?.audioId || programId || newProgramId,
 			guideAudioId: program?.guideAudioId || existingProgram?.guideAudioId,
-			cues: (existingProgram?.cues ?? program?.cues ?? []).map(c => ({
-				time: c.time,
-				type: c.type,
-				label: c.label,
-				boards: c.boards,
-				presetName: c.presetName,
-				color: c.color,
-				effect: c.effect,
-				brightness: c.brightness,
-				syncRate: c.syncRate ?? 1
-			})),
+			cues: cues ?? [],
 			createdAt: existingProgram?.createdAt || new Date().toISOString(),
 			defaultTargetBoard: defaultTargetBoard,
 			audioDuration: audioDuration,
@@ -1161,31 +1123,33 @@ async function playFullProgram() {
 	}
 
 	function clearCues() {
-		const toClear = visibleMarkers;
-		if (toClear.length === 0) return;
+		if (visibleMarkers.length === 0) return;
 
-		// Remove regions for current type only
-		toClear.forEach(marker => {
-			const region = regions!.getRegions().find(r => r.id === marker.id);
+		visibleMarkers.forEach(([regionId]) => {
+			const region = regions!.getRegions().find(r => r.id === regionId);
 			if (region) region.remove();
 		});
 
-		// Keep markers of other types
-		markers = markers.filter(m => m.type !== editMode);
+		const newMap = new Map<string, Cue>();
+		for (const [id, cue] of regionCues) {
+			if (cue.type !== editMode) newMap.set(id, cue);
+		}
+		regionCues = newMap;
+		if (regionCues.size === 0) cuesClearedByUser = true;
 		syncMarkersToStore();
 	}
 
 	function shiftCues(direction: 1 | -1) {
 		if (!bpm || bpm <= 0 || visibleMarkers.length === 0) return;
 		const shiftSeconds = (60 / bpm) * shiftAmount * direction;
-		for (const marker of visibleMarkers) {
-			marker.time = Math.max(0, marker.time + shiftSeconds);
-			const region = regions?.getRegions().find(r => r.id === marker.id);
+		for (const [regionId, cue] of visibleMarkers) {
+			cue.time = Math.max(0, cue.time + shiftSeconds);
+			const region = regions?.getRegions().find(r => r.id === regionId);
 			if (region) {
-				region.setOptions({ start: marker.time, end: marker.time });
+				region.setOptions({ start: cue.time, end: cue.time });
 			}
 		}
-		markers = [...markers];
+		regionCues = new Map(regionCues);
 		syncMarkersToStore();
 	}
 
@@ -1208,9 +1172,9 @@ async function playFullProgram() {
 			const file = input.files?.[0];
 			if (!file) return;
 
-			const savedMarkers = [...markers];
+			const savedCues = [...regionCues.values()];
 
-			markers = [];
+			regionCues = new Map();
 			if (regions) {
 				regions.getRegions().forEach(r => {
 					if (!gridRegionIds.includes(r.id)) r.remove();
@@ -1255,7 +1219,6 @@ async function playFullProgram() {
 
 				if (program) {
 					program.audioId = updated.audio_file;
-					program.audioFile = updated.audio_file;
 					program.audioDuration = null;
 				}
 
@@ -1263,7 +1226,6 @@ async function playFullProgram() {
 					const idx = programs.findIndex(p => p.id === programId);
 					if (idx !== -1) {
 						programs[idx].audioId = updated.audio_file;
-						programs[idx].audioFile = updated.audio_file;
 						programs[idx].audioDuration = undefined;
 					}
 					return [...programs];
@@ -1287,7 +1249,7 @@ async function playFullProgram() {
 					body: JSON.stringify({ peaks, duration: dur })
 				});
 
-				pendingCues = savedMarkers;
+				pendingCues = savedCues;
 				fileName = file.name;
 
 				setTimeout(() => {
@@ -1393,12 +1355,12 @@ async function playFullProgram() {
 			return;
 		}
 
-		// Apply default board to visible cues only
-		markers = markers.map(marker => {
-			if (marker.type !== editMode) return marker;
-			return { ...marker, boards: [defaultTargetBoard!] };
-		});
-
+		for (const [_, cue] of regionCues) {
+			if (cue.type === editMode) {
+				cue.boards = [defaultTargetBoard!];
+			}
+		}
+		regionCues = new Map(regionCues);
 		syncMarkersToStore();
 	}
 
@@ -1441,20 +1403,19 @@ async function playFullProgram() {
 		}
 	});
 
-	// Toggle marker region visibility based on edit mode
 	$effect(() => {
 		const mode = editMode;
-		const allMarkers = markers;
+		const cueMap = regionCues;
 		if (!regions) return;
 
 		for (const region of regions.getRegions()) {
 			if (gridRegionIds.includes(region.id)) continue;
 			if (!region.element) continue;
 
-			const marker = allMarkers.find(m => m.id === region.id);
-			if (!marker) continue;
+			const cue = cueMap.get(region.id);
+			if (!cue) continue;
 
-			const visible = marker.type === mode;
+			const visible = cue.type === mode;
 			region.element.style.visibility = visible ? 'visible' : 'hidden';
 		}
 	});
@@ -1471,6 +1432,7 @@ async function playFullProgram() {
 	});
 
 	onDestroy(() => {
+		destroying = true;
 		stopPlayhead();
 		if (seekDebounceTimeout) {
 			clearTimeout(seekDebounceTimeout);
@@ -1479,6 +1441,9 @@ async function playFullProgram() {
 		if (saveTimeout) {
 			clearTimeout(saveTimeout);
 			saveTimeout = null;
+			if (isLoaded && program) {
+				saveProgram();
+			}
 		}
 	});
 
@@ -1734,13 +1699,15 @@ async function playFullProgram() {
 		{/if}
 
 		{#if editMode === 'lighting' && visibleMarkers.length > 0 && currentlySelectedMarker}
-			{@const marker = visibleMarkers.find(m => m.id === currentlySelectedMarker)}
-			{#if marker}
+			{@const entry = visibleMarkers.find(([id]) => id === currentlySelectedMarker)}
+			{#if entry}
+				{@const [regionId, cue] = entry}
 				<CueEditor
-					{marker}
+					{regionId}
+					{cue}
 					onToggleBoardSelection={toggleBoardSelection}
 					onOpenPresetPicker={openPresetPicker}
-					onUpdateSyncRate={(markerId: string, rate: number) => updateMarkerProperty(markerId, 'syncRate', rate)}
+					onUpdateSyncRate={(id: string, rate: number) => updateMarkerProperty(id, 'syncRate', rate)}
 					onDelete={deleteMarker}
 				/>
 			{/if}

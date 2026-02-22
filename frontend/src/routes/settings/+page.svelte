@@ -39,6 +39,7 @@
 	let storageStatus = $state<StorageStatus | null>(null);
 	let storageLoading = $state(true);
 	let restarting = $state(false);
+	let shuttingDown = $state(false);
 	let reloadingPrograms = $state(false);
 	let audioDevices: AudioDevice[] = $state([]);
 	let audioDevicesLoading = $state(true);
@@ -111,6 +112,18 @@
 		} catch (e) {
 			console.error('Failed to restart server:', e);
 			restarting = false;
+		}
+	}
+
+	async function shutdownServer() {
+		if (!confirm('Shut down the server machine? You will need physical access to turn it back on.')) return;
+
+		shuttingDown = true;
+		try {
+			await fetch(`${API_URL}/server/shutdown`, { method: 'POST' });
+		} catch (e) {
+			console.error('Failed to shutdown server:', e);
+			shuttingDown = false;
 		}
 	}
 
@@ -427,6 +440,9 @@
 
 			<button onclick={restartServer} class="restart-button" disabled={restarting}>
 				{restarting ? 'Restarting...' : 'Restart Server'}
+			</button>
+			<button onclick={shutdownServer} class="shutdown-button" disabled={shuttingDown}>
+				{shuttingDown ? 'Shutting down...' : 'Shut Down Machine'}
 			</button>
 		</div>
 	</div>
@@ -799,6 +815,29 @@
 	}
 
 	.restart-button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.shutdown-button {
+		width: 100%;
+		padding: 0.75rem 1rem;
+		background: #2a1a1a;
+		color: #f87171;
+		border: 1px solid rgba(248, 113, 113, 0.3);
+		border-radius: 0.5rem;
+		font-size: 0.875rem;
+		cursor: pointer;
+		transition: all 0.2s;
+		margin-top: 0.5rem;
+	}
+
+	.shutdown-button:hover:not(:disabled) {
+		background: #3a1a1a;
+		border-color: rgba(248, 113, 113, 0.6);
+	}
+
+	.shutdown-button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
