@@ -272,6 +272,10 @@ impl ProgramEngine {
         let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut current_program_id: Option<String> = None;
         let mut previous_program: Option<Program> = None;
+        // While true, Play triggers are ignored. Set when a stop_with_fade is dispatched
+        // for a looping program; cleared after fade duration elapses. Prevents a re-tap
+        // mid-fade from racing the in-flight fade-to-silence.
+        let stopping_with_fade = Arc::new(AtomicBool::new(false));
 
         loop {
             match command_rx.recv().await {
@@ -279,6 +283,15 @@ impl ProgramEngine {
                     program,
                     start_time,
                 }) => {
+                    if stopping_with_fade.load(Ordering::Acquire) {
+                        info!("Ignoring Play for '{}': stop fade in progress", program.id);
+                        let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
+                            program_id: program.id.clone(),
+                            reason: "Stop fade in progress, please wait".to_string(),
+                        });
+                        continue;
+                    }
+
                     let play_t0 = std::time::Instant::now();
 
                     cue_scheduler.stop();
@@ -755,8 +768,42 @@ impl ProgramEngine {
                             if let Some(ref engine) = audio_engine {
                                 let mut eng = engine.lock().await;
                                 eng.set_looping(false).await;
-                                eng.stop().await;
-                                info!("Stopped local audio engine");
+                                let was_looping = previous_program
+                                    .as_ref()
+                                    .map(|p| p.loop_enabled)
+                                    .unwrap_or(false);
+                                if was_looping {
+                                    let outgoing = previous_program.as_ref().unwrap();
+                                    let fade_ms: u64 = outgoing
+                                        .bpm
+                                        .map(|bpm| 60_000u64 / bpm.max(1) as u64)
+                                        .unwrap_or(500);
+                                    let device_rate = eng.get_device_sample_rate().max(1);
+                                    let track_info = eng.get_track(&outgoing.id);
+                                    let channels = track_info.map(|t| t.channels as u64).unwrap_or(2);
+                                    let fade_samples = fade_ms
+                                        * device_rate as u64
+                                        * channels
+                                        / 1000;
+                                    info!(
+                                        "Stopping looping program '{}' with {}ms fade ({} samples)",
+                                        outgoing.id, fade_ms, fade_samples
+                                    );
+                                    eng.stop_with_fade(fade_samples).await;
+                                    drop(eng);
+
+                                    // Gate Play triggers until the fade completes.
+                                    stopping_with_fade.store(true, Ordering::Release);
+                                    let flag = stopping_with_fade.clone();
+                                    let grace_ms = fade_ms + 50;
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(Duration::from_millis(grace_ms)).await;
+                                        flag.store(false, Ordering::Release);
+                                    });
+                                } else {
+                                    eng.stop().await;
+                                    info!("Stopped local audio engine");
+                                }
                             }
                         }
                     }

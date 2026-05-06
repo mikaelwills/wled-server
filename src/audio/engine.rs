@@ -203,6 +203,9 @@ pub enum PlaybackCommand {
         incoming: Arc<LoadedTrack>,
         fade_samples: u64,
     },
+    StopWithFade {
+        fade_samples: u64,
+    },
 }
 
 #[derive(PartialEq)]
@@ -705,6 +708,19 @@ impl AudioEngine {
             .await;
         self.current_slot_ids[SlotId::Backing as usize] = Some(track_id.to_string());
         true
+    }
+
+    pub async fn stop_with_fade(&mut self, fade_samples: u64) {
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::StopWithFade { fade_samples })
+            .await;
+        // Mirror stop()'s bookkeeping. The audio thread itself sets playing=false and
+        // clears slots when the fade completes; we update the engine-side state now so
+        // higher layers see the program as stopping immediately.
+        self.set_state(PlaybackState::Stopped);
+        self.current_slot_ids = Default::default();
+        self.position.store(0, Ordering::SeqCst);
     }
 
     pub fn get_state(&self) -> PlaybackState {

@@ -104,6 +104,9 @@ pub struct InternalPlaybackState {
     pub crossfade_total_samples: AtomicU64,
     pub crossfade_remaining_samples: AtomicU64,
     pub aux_sample_index: AtomicUsize,
+    pub fade_out_active: AtomicBool,
+    pub fade_out_total_samples: AtomicU64,
+    pub fade_out_remaining_samples: AtomicU64,
 }
 
 impl InternalPlaybackState {
@@ -119,6 +122,9 @@ impl InternalPlaybackState {
             crossfade_total_samples: AtomicU64::new(0),
             crossfade_remaining_samples: AtomicU64::new(0),
             aux_sample_index: AtomicUsize::new(0),
+            fade_out_active: AtomicBool::new(false),
+            fade_out_total_samples: AtomicU64::new(0),
+            fade_out_remaining_samples: AtomicU64::new(0),
         })
     }
 
@@ -353,6 +359,14 @@ fn build_stream(
                         let mut xfade_completed_this_buffer = false;
                         let xfade_step_per_frame = backing_channels;
 
+                        let mut fade_out_active = state.fade_out_active.load(Ordering::Acquire);
+                        let fade_out_total = state.fade_out_total_samples.load(Ordering::Relaxed) as usize;
+                        let mut fade_out_remaining = state
+                            .fade_out_remaining_samples
+                            .load(Ordering::Relaxed) as usize;
+                        let mut fade_out_completed_this_buffer = false;
+                        let fade_out_step_per_frame = backing_channels;
+
                         for frame in data.chunks_mut(output_channels) {
                             if idx >= backing_sample_count {
                                 if looping {
@@ -372,6 +386,17 @@ fn build_stream(
                                 (angle.cos(), angle.sin())
                             } else {
                                 (1.0, 0.0)
+                            };
+
+                            // Fade-out gain (applied to ALL slots equally on top of any
+                            // crossfade gain, so a fade-out triggered mid-crossfade scales the
+                            // already-summed mix down to silence).
+                            let fade_out_gain = if fade_out_active && fade_out_total > 0 {
+                                let t = 1.0
+                                    - (fade_out_remaining as f32 / fade_out_total as f32).clamp(0.0, 1.0);
+                                (t * std::f32::consts::FRAC_PI_2).cos()
+                            } else {
+                                1.0
                             };
 
                             frame.fill($zero);
@@ -421,7 +446,7 @@ fn build_stream(
                                         // Guide / Click for the outgoing program follow the outgoing fade.
                                         outgoing_gain
                                     };
-                                    let vol = slot_routing.volume * crossfade_gain;
+                                    let vol = slot_routing.volume * crossfade_gain * fade_out_gain;
                                     let left =
                                         samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
                                     let right = if channels > 1 {
@@ -456,6 +481,22 @@ fn build_stream(
 
                             samples_written += output_channels as u64;
                             idx += backing_channels;
+
+                            if fade_out_active {
+                                if fade_out_remaining > fade_out_step_per_frame {
+                                    fade_out_remaining -= fade_out_step_per_frame;
+                                } else {
+                                    fade_out_remaining = 0;
+                                    fade_out_active = false;
+                                    fade_out_completed_this_buffer = true;
+                                    // Fade is done. Stop playback cleanly.
+                                    state.playing.store(false, Ordering::Release);
+                                    state.looping.store(false, Ordering::Release);
+                                    state.crossfade_active.store(false, Ordering::Release);
+                                    state.sample_index.store(0, Ordering::Release);
+                                    state.clear_all_slots();
+                                }
+                            }
 
                             if xfade_active {
                                 if aux_channels > 0 && aux_idx + aux_channels <= aux_sample_count {
@@ -498,6 +539,10 @@ fn build_stream(
                             state.crossfade_active.store(xfade_active, Ordering::Release);
                             state.crossfade_remaining_samples.store(xfade_remaining as u64, Ordering::Relaxed);
                             state.aux_sample_index.store(aux_idx, Ordering::Relaxed);
+                        }
+                        if fade_out_completed_this_buffer || fade_out_active {
+                            state.fade_out_active.store(fade_out_active, Ordering::Release);
+                            state.fade_out_remaining_samples.store(fade_out_remaining as u64, Ordering::Relaxed);
                         }
                         health
                             .samples_delivered
@@ -778,6 +823,8 @@ impl AudioThread {
                             state.crossfade_active.store(false, Ordering::Release);
                             state.crossfade_remaining_samples.store(0, Ordering::Release);
                             state.aux_sample_index.store(0, Ordering::Release);
+                            state.fade_out_active.store(false, Ordering::Release);
+                            state.fade_out_remaining_samples.store(0, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.load_slot(SlotId::Backing, track);
                             state.playing.store(true, Ordering::Release);
@@ -799,6 +846,8 @@ impl AudioThread {
                             state.crossfade_active.store(false, Ordering::Release);
                             state.crossfade_remaining_samples.store(0, Ordering::Release);
                             state.aux_sample_index.store(0, Ordering::Release);
+                            state.fade_out_active.store(false, Ordering::Release);
+                            state.fade_out_remaining_samples.store(0, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.clear_all_slots();
                         }
@@ -835,6 +884,15 @@ impl AudioThread {
                         }
                         PlaybackCommand::SetLooping(looping) => {
                             state.looping.store(looping, Ordering::Release);
+                        }
+                        PlaybackCommand::StopWithFade { fade_samples } => {
+                            // Initiate fade-to-silence on whatever is currently playing.
+                            // Per-frame mix multiplies all slots by cos(t·π/2). When the
+                            // fade completes, the callback itself sets playing=false and
+                            // clears slots.
+                            state.fade_out_total_samples.store(fade_samples, Ordering::Release);
+                            state.fade_out_remaining_samples.store(fade_samples, Ordering::Release);
+                            state.fade_out_active.store(true, Ordering::Release);
                         }
                         PlaybackCommand::StartCrossfade { incoming, fade_samples } => {
                             // Load incoming track into Aux. Backing keeps playing the outgoing
