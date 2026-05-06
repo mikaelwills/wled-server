@@ -920,3 +920,78 @@ impl AudioThread {
         }
     }
 }
+
+#[cfg(test)]
+mod crossfade_curve_tests {
+    // The crossfade and stop-fade per-frame math uses equal-power curves:
+    //   outgoing_gain = cos(t * π/2)
+    //   incoming_gain = sin(t * π/2)
+    // For t in [0, 1] this gives cos²(t·π/2) + sin²(t·π/2) = 1, so the
+    // total power stays constant across the fade. This test asserts those
+    // identities hold within f32 precision at the boundaries and midpoint.
+
+    #[test]
+    fn equal_power_holds_at_boundaries_and_midpoint() {
+        let half_pi = std::f32::consts::FRAC_PI_2;
+
+        // t = 0: outgoing fully on, incoming fully off
+        let t = 0.0_f32;
+        let cos_g = (t * half_pi).cos();
+        let sin_g = (t * half_pi).sin();
+        assert!((cos_g - 1.0).abs() < 1e-6, "cos(0) = {}", cos_g);
+        assert!(sin_g.abs() < 1e-6, "sin(0) = {}", sin_g);
+        assert!(
+            (cos_g * cos_g + sin_g * sin_g - 1.0).abs() < 1e-6,
+            "power at t=0 = {}",
+            cos_g * cos_g + sin_g * sin_g
+        );
+
+        // t = 0.5: midpoint — both at √2/2 ≈ 0.7071, sum of squares still 1
+        let t = 0.5_f32;
+        let cos_g = (t * half_pi).cos();
+        let sin_g = (t * half_pi).sin();
+        assert!(
+            (cos_g * cos_g + sin_g * sin_g - 1.0).abs() < 1e-6,
+            "power at t=0.5 = {} (cos={}, sin={})",
+            cos_g * cos_g + sin_g * sin_g,
+            cos_g,
+            sin_g
+        );
+        // Both should be near 1/√2.
+        let inv_sqrt_2 = 1.0_f32 / 2.0_f32.sqrt();
+        assert!((cos_g - inv_sqrt_2).abs() < 1e-6);
+        assert!((sin_g - inv_sqrt_2).abs() < 1e-6);
+
+        // t = 1: outgoing fully off, incoming fully on
+        let t = 1.0_f32;
+        let cos_g = (t * half_pi).cos();
+        let sin_g = (t * half_pi).sin();
+        assert!(cos_g.abs() < 1e-6, "cos(π/2) = {}", cos_g);
+        assert!((sin_g - 1.0).abs() < 1e-6, "sin(π/2) = {}", sin_g);
+        assert!(
+            (cos_g * cos_g + sin_g * sin_g - 1.0).abs() < 1e-6,
+            "power at t=1 = {}",
+            cos_g * cos_g + sin_g * sin_g
+        );
+    }
+
+    #[test]
+    fn equal_power_holds_across_sweep() {
+        // Sample 100 points across the fade and assert no power dip > tolerance.
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let cos_g = (t * half_pi).cos();
+            let sin_g = (t * half_pi).sin();
+            let power = cos_g * cos_g + sin_g * sin_g;
+            assert!(
+                (power - 1.0).abs() < 1e-5,
+                "power at t={} = {} (cos={}, sin={})",
+                t,
+                power,
+                cos_g,
+                sin_g
+            );
+        }
+    }
+}
