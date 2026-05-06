@@ -25,6 +25,7 @@ export interface ProgramData {
   guideVolume?: number;
   setlistId: string;
   displayName?: string;
+  loopEnabled: boolean;
 }
 
 export class Program implements ProgramData {
@@ -49,6 +50,7 @@ export class Program implements ProgramData {
   guideVolume?: number;
   setlistId: string;
   displayName?: string;
+  loopEnabled: boolean;
 
   private constructor(data: ProgramData) {
     this.id = data.id;
@@ -72,6 +74,7 @@ export class Program implements ProgramData {
     this.guideVolume = data.guideVolume;
     this.setlistId = data.setlistId || 'default';
     this.displayName = data.displayName;
+    this.loopEnabled = data.loopEnabled ?? false;
   }
 
   /**
@@ -127,6 +130,7 @@ export class Program implements ProgramData {
       guideVolume: data.guideVolume ?? data.guide_volume,
       setlistId: data.setlistId || data.setlist_id || 'default',
       displayName: data.displayName || data.display_name || undefined,
+      loopEnabled: data.loopEnabled ?? data.loop_enabled ?? false,
     });
   }
 
@@ -156,6 +160,7 @@ export class Program implements ProgramData {
       guide_volume: this.guideVolume,
       setlist_id: this.setlistId,
       display_name: this.displayName || undefined,
+      loop_enabled: this.loopEnabled,
     };
   }
 }

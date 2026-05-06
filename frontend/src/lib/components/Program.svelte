@@ -73,6 +73,7 @@
 	let loopyProTrack = $state('');
 	let audioDuration: number | null = $state(null); // Duration in seconds (extracted from audio)
 	let bpm: number | null = $state(null); // BPM for speed-synced effects
+	let loopEnabled: boolean = $state(false); // When true, audio loops indefinitely; triggering the next program crossfades over one beat
 	let gridOffset = $state(0); // Downbeat position - where beat 1 of bar 1 starts
 	let clickRate = $state(1); // Click track rate (0.5 = half, 1 = normal, 2 = double)
 	let guideVolume = $state(1.0);
@@ -417,7 +418,7 @@
 		};
 	});
 
-	function loadProgramData(data: { songName?: string; displayName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Cue[] }) {
+	function loadProgramData(data: { songName?: string; displayName?: string; loopyProTrack?: string; fileName?: string; defaultTargetBoard?: string | null; bpm?: number | null; gridOffset?: number; clickRate?: number; guideVolume?: number; cues?: Cue[]; loopEnabled?: boolean }) {
 		songName = data.songName || '';
 		displayName = data.displayName || '';
 		loopyProTrack = data.loopyProTrack || '';
@@ -427,6 +428,7 @@
 		gridOffset = data.gridOffset || 0;
 		clickRate = data.clickRate ?? 1;
 		guideVolume = data.guideVolume ?? 1.0;
+		loopEnabled = data.loopEnabled ?? false;
 		pendingCues = data.cues || [];
 		console.log(`[CUE-DEBUG] loadProgramData "${data.songName}" cues: ${pendingCues.length}`);
 	}
@@ -1117,6 +1119,7 @@ async function playFullProgram() {
 			displayOrder: existingProgram?.displayOrder ?? program?.displayOrder ?? 0,
 			setlistId: existingProgram?.setlistId ?? program?.setlistId ?? 'default',
 			displayName: displayName.trim() || undefined,
+			loopEnabled: loopEnabled,
 		};
 
 		const programInstance = ProgramModel.fromJson(programData);
@@ -1840,6 +1843,15 @@ async function playFullProgram() {
 						min="20"
 						max="300"
 						oninput={() => { updateBeatGrid(); debouncedSave(); }}
+					/>
+				</div>
+				<div class="metadata-field metadata-field-loop">
+					<label for="meta-loop">Loop</label>
+					<input
+						id="meta-loop"
+						type="checkbox"
+						bind:checked={loopEnabled}
+						onchange={debouncedSave}
 					/>
 				</div>
 			</div>

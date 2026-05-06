@@ -41,6 +41,8 @@ pub struct Program {
     pub setlist_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub loop_enabled: bool,
 }
 
 fn default_setlist_id() -> String {
