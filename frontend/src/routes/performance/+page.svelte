@@ -328,6 +328,15 @@
 		// Don't hide menu - let user see the change
 	}
 
+	async function toggleLoop() {
+		const program = $programs.find(p => p.id === contextMenu.programId);
+		if (!program) return;
+
+		program.loopEnabled = !program.loopEnabled;
+		await updateProgram(program);
+		// Don't hide menu - let user see the toggle land
+	}
+
 	// Close context menu on click outside
 	function handleClickOutside(event: MouseEvent) {
 		if (contextMenu.visible) {
@@ -427,6 +436,11 @@
 				onmouseleave={() => contextMenu.showTransitionSubmenu = false}
 			>
 				<span>Transition</span>
+			</div>
+
+			<!-- Loop -->
+			<div class="menu-item" onclick={toggleLoop}>
+				<span>{currentProgram?.loopEnabled ? '●' : '○'} Loop</span>
 			</div>
 
 			<!-- Clear Chain -->

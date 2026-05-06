@@ -1845,15 +1845,6 @@ async function playFullProgram() {
 						oninput={() => { updateBeatGrid(); debouncedSave(); }}
 					/>
 				</div>
-				<div class="metadata-field metadata-field-loop">
-					<label for="meta-loop">Loop</label>
-					<input
-						id="meta-loop"
-						type="checkbox"
-						bind:checked={loopEnabled}
-						onchange={debouncedSave}
-					/>
-				</div>
 			</div>
 			{#if fileName}
 				<div class="metadata-modal-footer">
