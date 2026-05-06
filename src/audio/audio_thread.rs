@@ -95,6 +95,7 @@ impl Default for TrackSlot {
 
 pub struct InternalPlaybackState {
     pub playing: AtomicBool,
+    pub looping: AtomicBool,
     pub sample_index: AtomicUsize,
     pub device_sample_rate: AtomicU32,
     pub routing: ArcSwap<RoutingConfig>,
@@ -105,6 +106,7 @@ impl InternalPlaybackState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             playing: AtomicBool::new(false),
+            looping: AtomicBool::new(false),
             sample_index: AtomicUsize::new(0),
             device_sample_rate: AtomicU32::new(0),
             routing: ArcSwap::from_pointee(RoutingConfig::default()),
@@ -328,11 +330,19 @@ fn build_stream(
 
                         let convert = $convert;
 
+                        let looping = state.looping.load(Ordering::Relaxed);
+                        let lead_idx_offset = backing_channels
+                            * ((sample_rate as usize * CLICK_LEAD_MS) / 1000);
+
                         for frame in data.chunks_mut(output_channels) {
                             if idx >= backing_sample_count {
-                                frame.fill($zero);
-                                silence_written += 1;
-                                continue;
+                                if looping {
+                                    idx = lead_idx_offset.min(backing_sample_count.saturating_sub(backing_channels));
+                                } else {
+                                    frame.fill($zero);
+                                    silence_written += 1;
+                                    continue;
+                                }
                             }
 
                             frame.fill($zero);
@@ -679,6 +689,7 @@ impl AudioThread {
                     match cmd {
                         PlaybackCommand::Play(track) => {
                             state.playing.store(false, Ordering::Release);
+                            state.looping.store(false, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.load_slot(SlotId::Backing, track);
                             state.playing.store(true, Ordering::Release);
@@ -696,6 +707,7 @@ impl AudioThread {
                         }
                         PlaybackCommand::Stop => {
                             state.playing.store(false, Ordering::Release);
+                            state.looping.store(false, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.clear_all_slots();
                         }
@@ -729,6 +741,9 @@ impl AudioThread {
                         }
                         PlaybackCommand::ClearSlot(slot) => {
                             state.clear_slot(slot);
+                        }
+                        PlaybackCommand::SetLooping(looping) => {
+                            state.looping.store(looping, Ordering::Release);
                         }
                     }
                 }

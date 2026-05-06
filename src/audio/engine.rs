@@ -195,6 +195,7 @@ pub enum PlaybackCommand {
         track: Arc<LoadedTrack>,
     },
     ClearSlot(SlotId),
+    SetLooping(bool),
 }
 
 #[derive(PartialEq)]
@@ -668,6 +669,13 @@ impl AudioEngine {
         let _ = self
             .command_tx
             .send(PlaybackCommand::SetVolume { slot, volume })
+            .await;
+    }
+
+    pub async fn set_looping(&self, looping: bool) {
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::SetLooping(looping))
             .await;
     }
 

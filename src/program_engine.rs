@@ -595,7 +595,8 @@ impl ProgramEngine {
                                     )
                                     .await
                                 {
-                                    info!("Playing audio via local engine: {} @ {:?} samples (guide: {})", track_id, start_sample_opt, guide_id.is_some());
+                                    eng.set_looping(program.loop_enabled).await;
+                                    info!("Playing audio via local engine: {} @ {:?} samples (guide: {}, loop: {})", track_id, start_sample_opt, guide_id.is_some(), program.loop_enabled);
                                 } else {
                                     warn!("Track not loaded in audio engine: {}", track_id);
                                     cue_scheduler.stop();
@@ -714,6 +715,7 @@ impl ProgramEngine {
                         AudioSource::AudioEngine => {
                             if let Some(ref engine) = audio_engine {
                                 let mut eng = engine.lock().await;
+                                eng.set_looping(false).await;
                                 eng.stop().await;
                                 info!("Stopped local audio engine");
                             }
