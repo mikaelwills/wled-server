@@ -263,86 +263,156 @@ impl CueScheduler {
                         println!("⏩ Starting at cursor {} (skipped {} already-passed cues)", cursor, cursor);
                     }
 
-                    'main_loop: loop {
-                        if stop_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
+                    let seek_threshold = audio_timing.sample_rate as u64 * audio_timing.channels as u64 / 2;
 
-                        let current_position = audio_timing.current_position();
+                    enum Phase {
+                        Firing,
+                        WaitingForEnd,
+                    }
+                    let mut phase = if cursor < sorted_cues.len() {
+                        Phase::Firing
+                    } else {
+                        Phase::WaitingForEnd
+                    };
 
-                        if current_position != last_position {
-                            let jump = if current_position > last_position {
-                                current_position - last_position
-                            } else {
-                                last_position - current_position
-                            };
-                            let seek_threshold = audio_timing.sample_rate as u64 * audio_timing.channels as u64 / 2;
-                            let is_seek = current_position < last_position || jump > seek_threshold;
+                    let mut audio_ended = false;
+                    let mut wait_for_end_announced = false;
 
-                            if is_seek {
-                                let new_cursor = match Self::find_next_cue(&sorted_cues, current_position) {
-                                    Some(idx) => idx,
-                                    None => sorted_cues.len(),
-                                };
-                                let direction = if current_position < last_position { "⏪" } else { "⏩" };
-                                println!("{} Seek detected ({:.2}s → {:.2}s), cursor {} → {}",
-                                    direction,
-                                    audio_timing.samples_to_seconds(last_position),
-                                    audio_timing.samples_to_seconds(current_position),
-                                    cursor, new_cursor);
-                                cursor = new_cursor;
+                    'session: loop {
+                        match phase {
+                            Phase::Firing => {
+                                'firing: loop {
+                                    if stop_flag.load(Ordering::Relaxed) {
+                                        break 'session;
+                                    }
+
+                                    let current_position = audio_timing.current_position();
+
+                                    if current_position != last_position {
+                                        let jump = if current_position > last_position {
+                                            current_position - last_position
+                                        } else {
+                                            last_position - current_position
+                                        };
+                                        let is_seek = current_position < last_position || jump > seek_threshold;
+
+                                        if is_seek {
+                                            let new_cursor = match Self::find_next_cue(&sorted_cues, current_position) {
+                                                Some(idx) => idx,
+                                                None => sorted_cues.len(),
+                                            };
+                                            let direction = if current_position < last_position { "⏪" } else { "⏩" };
+                                            println!("{} Seek detected ({:.2}s → {:.2}s), cursor {} → {}",
+                                                direction,
+                                                audio_timing.samples_to_seconds(last_position),
+                                                audio_timing.samples_to_seconds(current_position),
+                                                cursor, new_cursor);
+                                            cursor = new_cursor;
+                                        }
+                                        last_position = current_position;
+                                        last_position_change = std::time::Instant::now();
+                                    } else if audio_timing.is_paused() {
+                                        last_position_change = std::time::Instant::now();
+                                    } else if last_position_change.elapsed() > POSITION_STALL_TIMEOUT {
+                                        println!("⚠️ Position stalled for {:?} - audio may have stopped", POSITION_STALL_TIMEOUT);
+                                        audio_ended = true;
+                                        break 'session;
+                                    }
+
+                                    if cursor >= sorted_cues.len() {
+                                        phase = Phase::WaitingForEnd;
+                                        break 'firing;
+                                    }
+
+                                    let target_samples = sorted_cues[cursor].fire_at_samples;
+                                    let remaining_samples = target_samples.saturating_sub(current_position);
+
+                                    if remaining_samples > COARSE_THRESHOLD_SAMPLES {
+                                        thread::sleep(COARSE_SLEEP);
+                                        continue;
+                                    } else if remaining_samples > FINE_THRESHOLD_SAMPLES {
+                                        thread::sleep(FINE_SLEEP);
+                                        continue;
+                                    } else if remaining_samples > 0 {
+                                        thread::sleep(POLL_INTERVAL);
+                                    }
+
+                                    let spin_start = std::time::Instant::now();
+                                    let spin_timeout = Duration::from_millis(100);
+                                    while audio_timing.current_position() < target_samples {
+                                        std::hint::spin_loop();
+                                        if stop_flag.load(Ordering::Relaxed) {
+                                            break 'session;
+                                        }
+                                        if spin_start.elapsed() > spin_timeout {
+                                            break;
+                                        }
+                                    }
+
+                                    if stop_flag.load(Ordering::Relaxed) {
+                                        break 'session;
+                                    }
+
+                                    if audio_timing.current_position() >= target_samples {
+                                        Self::fire_cue(
+                                            &sorted_cues[cursor],
+                                            &audio_timing,
+                                            &effects_engine,
+                                            &pattern_engine,
+                                            &timing_metrics,
+                                        );
+                                        cursor += 1;
+                                    }
+                                }
                             }
-                            last_position = current_position;
-                            last_position_change = std::time::Instant::now();
-                        } else if audio_timing.is_paused() {
-                            last_position_change = std::time::Instant::now();
-                        } else if last_position_change.elapsed() > POSITION_STALL_TIMEOUT {
-                            println!("⚠️ Position stalled for {:?} - audio may have stopped", POSITION_STALL_TIMEOUT);
-                            break;
-                        }
+                            Phase::WaitingForEnd => {
+                                if !wait_for_end_announced {
+                                    let final_pos = audio_timing.current_position();
+                                    println!("✅ All cues fired @ {:.2}s - waiting for audio to end...",
+                                        audio_timing.samples_to_seconds(final_pos));
+                                    last_position = final_pos;
+                                    last_position_change = std::time::Instant::now();
+                                    wait_for_end_announced = true;
+                                }
 
-                        if cursor >= sorted_cues.len() {
-                            break;
-                        }
+                                'waiting: loop {
+                                    if stop_flag.load(Ordering::Relaxed) {
+                                        println!("⏹️ Cue scheduler: stopped while waiting for audio end");
+                                        break 'session;
+                                    }
 
-                        let target_samples = sorted_cues[cursor].fire_at_samples;
-                        let remaining_samples = target_samples.saturating_sub(current_position);
+                                    let current_pos = audio_timing.current_position();
+                                    if current_pos != last_position {
+                                        if current_pos < last_position {
+                                            let new_cursor = match Self::find_next_cue(&sorted_cues, current_pos) {
+                                                Some(idx) => idx,
+                                                None => sorted_cues.len(),
+                                            };
+                                            println!("⏪ Loop wrap detected ({:.2}s → {:.2}s), re-arming cursor → {}",
+                                                audio_timing.samples_to_seconds(last_position),
+                                                audio_timing.samples_to_seconds(current_pos),
+                                                new_cursor);
+                                            cursor = new_cursor;
+                                            last_position = current_pos;
+                                            last_position_change = std::time::Instant::now();
+                                            wait_for_end_announced = false;
+                                            phase = Phase::Firing;
+                                            break 'waiting;
+                                        }
+                                        last_position = current_pos;
+                                        last_position_change = std::time::Instant::now();
+                                    } else if audio_timing.is_paused() {
+                                        last_position_change = std::time::Instant::now();
+                                    } else if last_position_change.elapsed() > AUDIO_END_DETECTION {
+                                        println!("🏁 Audio ended @ {:.2}s",
+                                            audio_timing.samples_to_seconds(current_pos));
+                                        audio_ended = true;
+                                        break 'session;
+                                    }
 
-                        if remaining_samples > COARSE_THRESHOLD_SAMPLES {
-                            thread::sleep(COARSE_SLEEP);
-                            continue;
-                        } else if remaining_samples > FINE_THRESHOLD_SAMPLES {
-                            thread::sleep(FINE_SLEEP);
-                            continue;
-                        } else if remaining_samples > 0 {
-                            thread::sleep(POLL_INTERVAL);
-                        }
-
-                        let spin_start = std::time::Instant::now();
-                        let spin_timeout = Duration::from_millis(100);
-                        while audio_timing.current_position() < target_samples {
-                            std::hint::spin_loop();
-                            if stop_flag.load(Ordering::Relaxed) {
-                                break 'main_loop;
+                                    thread::sleep(COARSE_SLEEP);
+                                }
                             }
-                            if spin_start.elapsed() > spin_timeout {
-                                break;
-                            }
-                        }
-
-                        if stop_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
-
-                        if audio_timing.current_position() >= target_samples {
-                            Self::fire_cue(
-                                &sorted_cues[cursor],
-                                &audio_timing,
-                                &effects_engine,
-                                &pattern_engine,
-                                &timing_metrics,
-                            );
-                            cursor += 1;
                         }
                     }
 
@@ -351,37 +421,7 @@ impl CueScheduler {
                         continue;
                     }
 
-                    let final_pos = audio_timing.current_position();
-                    println!("✅ All cues fired @ {:.2}s - waiting for audio to end...",
-                        audio_timing.samples_to_seconds(final_pos));
-
-                    let mut last_pos = final_pos;
-                    let mut last_change = std::time::Instant::now();
-                    let wait_start = std::time::Instant::now();
-
-                    loop {
-                        if stop_flag.load(Ordering::Relaxed) {
-                            println!("⏹️ Cue scheduler: stopped while waiting for audio end");
-                            break;
-                        }
-
-                        let current_pos = audio_timing.current_position();
-                        if current_pos != last_pos {
-                            last_pos = current_pos;
-                            last_change = std::time::Instant::now();
-                        } else if audio_timing.is_paused() {
-                            last_change = std::time::Instant::now();
-                        } else if last_change.elapsed() > AUDIO_END_DETECTION {
-                            println!("🏁 Audio ended @ {:.2}s (waited {:.1}s after last cue)",
-                                audio_timing.samples_to_seconds(current_pos),
-                                wait_start.elapsed().as_secs_f64());
-                            break;
-                        }
-
-                        thread::sleep(COARSE_SLEEP);
-                    }
-
-                    if stop_flag.load(Ordering::Relaxed) { continue; }
+                    if !audio_ended { continue; }
 
                     let Some(ref callback) = on_complete else { continue; };
                     callback();
