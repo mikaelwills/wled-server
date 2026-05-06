@@ -710,6 +710,59 @@ impl AudioEngine {
         true
     }
 
+    /// Load the Guide and Click slots for a track that is already playing as Backing.
+    /// Used after a crossfade swap, so the incoming program's guide/click come online
+    /// once the Aux→Backing handoff has completed. Mirrors the guide/click portion of
+    /// `play_with_guide` without dispatching a Play command.
+    pub async fn load_guide_and_click_for(
+        &mut self,
+        track_id: &str,
+        guide_id: Option<&str>,
+    ) {
+        if let Some(gid) = guide_id {
+            let guide_tracks = &self.slot_tracks[SlotId::Guide as usize];
+            if let Some(guide_track) = guide_tracks.get(gid).cloned() {
+                let _ = self
+                    .command_tx
+                    .send(PlaybackCommand::LoadSlot {
+                        slot: SlotId::Guide,
+                        track: guide_track,
+                    })
+                    .await;
+                self.current_slot_ids[SlotId::Guide as usize] = Some(gid.to_string());
+                tracing::debug!("Post-crossfade: loaded guide track '{}'", gid);
+            } else {
+                tracing::warn!("Post-crossfade: guide track '{}' not found", gid);
+            }
+        } else {
+            let _ = self
+                .command_tx
+                .send(PlaybackCommand::ClearSlot(SlotId::Guide))
+                .await;
+            self.current_slot_ids[SlotId::Guide as usize] = None;
+        }
+
+        let click_id = format!("{}_click", track_id);
+        let click_tracks = &self.slot_tracks[SlotId::Click as usize];
+        if let Some(click_track) = click_tracks.get(&click_id).cloned() {
+            let _ = self
+                .command_tx
+                .send(PlaybackCommand::LoadSlot {
+                    slot: SlotId::Click,
+                    track: click_track,
+                })
+                .await;
+            self.current_slot_ids[SlotId::Click as usize] = Some(click_id);
+            tracing::debug!("Post-crossfade: loaded click track");
+        } else {
+            let _ = self
+                .command_tx
+                .send(PlaybackCommand::ClearSlot(SlotId::Click))
+                .await;
+            self.current_slot_ids[SlotId::Click as usize] = None;
+        }
+    }
+
     pub async fn stop_with_fade(&mut self, fade_samples: u64) {
         let _ = self
             .command_tx

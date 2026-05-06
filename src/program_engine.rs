@@ -272,10 +272,23 @@ impl ProgramEngine {
         let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut current_program_id: Option<String> = None;
         let mut previous_program: Option<Program> = None;
-        // While true, Play triggers are ignored. Set when a stop_with_fade is dispatched
-        // for a looping program; cleared after fade duration elapses. Prevents a re-tap
-        // mid-fade from racing the in-flight fade-to-silence.
-        let stopping_with_fade = Arc::new(AtomicBool::new(false));
+        // Holds the id of a program currently fading to silence (Slice 5 stop_with_fade).
+        // While Some, Play triggers for the SAME program id are ignored (re-tap during
+        // fade). Plays for a DIFFERENT program are allowed through — they cancel the
+        // in-flight fade in the audio thread (StartCrossfade or Play resets fade_out
+        // state) and proceed normally. Cleared after fade duration elapses.
+        let stopping_with_fade: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
+        // When a Stop arrives for a looping program, we don't immediately dispatch the
+        // fade-to-silence. The frontend's "click another song" UX sends Stop+Play in
+        // quick succession (~70ms apart per logs); if a Play follows for a *different*
+        // program within the deferral window, we cancel the pending stop and let the
+        // crossfade decision in the Play arm fire instead. If no Play arrives, the
+        // deferred task dispatches the actual stop_with_fade.
+        const PENDING_STOP_DELAY_MS: u64 = 150;
+        let pending_stop: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
 
         loop {
             match command_rx.recv().await {
@@ -283,13 +296,42 @@ impl ProgramEngine {
                     program,
                     start_time,
                 }) => {
-                    if stopping_with_fade.load(Ordering::Acquire) {
-                        info!("Ignoring Play for '{}': stop fade in progress", program.id);
-                        let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
-                            program_id: program.id.clone(),
-                            reason: "Stop fade in progress, please wait".to_string(),
-                        });
-                        continue;
+                    // Pending-stop check: if a deferred stop is queued (Stop arm saw a
+                    // looping program and is waiting ~150ms for a possible follow-up
+                    // Play), decide what to do based on whether this Play is the same
+                    // program (re-tap → drop) or a different one (transition → cancel
+                    // the pending stop so the crossfade decision below can use the
+                    // looping predecessor).
+                    {
+                        let mut guard = pending_stop.lock().await;
+                        if let Some(ref pending_id) = *guard {
+                            if *pending_id == program.id {
+                                info!("Ignoring Play for '{}': same program has a pending stop", program.id);
+                                *guard = None; // also cancel the pending stop, since user clearly meant to keep playing
+                                continue;
+                            }
+                            info!("[xfade-trace] Play for '{}' cancels pending stop of '{}' — will crossfade", program.id, pending_id);
+                            *guard = None;
+                        }
+                    }
+
+                    {
+                        let mut guard = stopping_with_fade.lock().await;
+                        if let Some(ref fading_id) = *guard {
+                            if *fading_id == program.id {
+                                info!("Ignoring Play for '{}': same program is fading out", program.id);
+                                let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
+                                    program_id: program.id.clone(),
+                                    reason: "Stop fade in progress, please wait".to_string(),
+                                });
+                                continue;
+                            }
+                            info!("[xfade-trace] Play for '{}' overrides in-flight stop fade of '{}'", program.id, fading_id);
+                            // Different program — let it through. Clear the gate so the
+                            // pending unlock task is a no-op and a future stop fade can
+                            // re-arm the gate cleanly.
+                            *guard = None;
+                        }
                     }
 
                     let play_t0 = std::time::Instant::now();
@@ -606,11 +648,11 @@ impl ProgramEngine {
                                 // looping intro, equal-power crossfade from it into the new
                                 // program over one beat at the outgoing program's BPM (fallback
                                 // 500ms if no BPM). Otherwise hard-cut via play_with_guide.
-                                let should_crossfade = previous_program
+                                let prev_was_looping = previous_program
                                     .as_ref()
                                     .map(|p| p.loop_enabled)
-                                    .unwrap_or(false)
-                                    && start_sample == 0;
+                                    .unwrap_or(false);
+                                let should_crossfade = prev_was_looping && start_sample == 0;
 
                                 let played_ok = if should_crossfade {
                                     let outgoing = previous_program.as_ref().unwrap();
@@ -630,6 +672,28 @@ impl ProgramEngine {
                                     let ok = eng.start_crossfade(track_id, fade_samples).await;
                                     if ok {
                                         eng.set_looping(program.loop_enabled).await;
+
+                                        // Schedule guide+click load to coincide with the
+                                        // Aux→Backing swap completing. Without this, the
+                                        // incoming program plays backing-only forever
+                                        // (Slice 4 PC3 gap). One-beat gap on guide/click
+                                        // during the actual fade is acceptable.
+                                        let engine_for_load = engine.clone();
+                                        let track_id_for_load = track_id.to_string();
+                                        let guide_id_for_load = guide_id.clone();
+                                        let load_delay_ms = fade_ms + 20;
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(Duration::from_millis(load_delay_ms)).await;
+                                            let mut eng = engine_for_load.lock().await;
+                                            eng.load_guide_and_click_for(
+                                                &track_id_for_load,
+                                                guide_id_for_load.as_deref(),
+                                            ).await;
+                                            info!(
+                                                "Post-crossfade guide+click loaded for '{}'",
+                                                track_id_for_load
+                                            );
+                                        });
                                     }
                                     ok
                                 } else {
@@ -724,7 +788,23 @@ impl ProgramEngine {
                         });
                     }
                     current_program_id = None;
-                    previous_program = None;
+                    // Preserve previous_program if it was a looping intro: the frontend's
+                    // "trigger another program" UX sends Stop immediately followed by Play,
+                    // so Play needs to see the looping intro as the predecessor to fire the
+                    // crossfade. If the program being stopped was NOT looping, clear it as
+                    // before — so a stale non-looping previous can't cause a spurious xfade.
+                    let preserve_for_xfade = previous_program
+                        .as_ref()
+                        .map(|p| p.loop_enabled)
+                        .unwrap_or(false);
+                    if !preserve_for_xfade {
+                        previous_program = None;
+                    } else {
+                        info!(
+                            "[xfade-trace] Stop arm preserving previous_program for potential crossfade ({})",
+                            previous_program.as_ref().map(|p| p.id.as_str()).unwrap_or("?")
+                        );
+                    }
 
                     cue_scheduler.stop();
 
@@ -766,41 +846,92 @@ impl ProgramEngine {
                         }
                         AudioSource::AudioEngine => {
                             if let Some(ref engine) = audio_engine {
-                                let mut eng = engine.lock().await;
-                                eng.set_looping(false).await;
                                 let was_looping = previous_program
                                     .as_ref()
                                     .map(|p| p.loop_enabled)
                                     .unwrap_or(false);
-                                if was_looping {
-                                    let outgoing = previous_program.as_ref().unwrap();
-                                    let fade_ms: u64 = outgoing
-                                        .bpm
-                                        .map(|bpm| 60_000u64 / bpm.max(1) as u64)
-                                        .unwrap_or(500);
-                                    let device_rate = eng.get_device_sample_rate().max(1);
-                                    let track_info = eng.get_track(&outgoing.id);
-                                    let channels = track_info.map(|t| t.channels as u64).unwrap_or(2);
-                                    let fade_samples = fade_ms
-                                        * device_rate as u64
-                                        * channels
-                                        / 1000;
-                                    info!(
-                                        "Stopping looping program '{}' with {}ms fade ({} samples)",
-                                        outgoing.id, fade_ms, fade_samples
-                                    );
-                                    eng.stop_with_fade(fade_samples).await;
-                                    drop(eng);
 
-                                    // Gate Play triggers until the fade completes.
-                                    stopping_with_fade.store(true, Ordering::Release);
-                                    let flag = stopping_with_fade.clone();
-                                    let grace_ms = fade_ms + 50;
+                                if was_looping {
+                                    // Defer the actual fade-to-silence by PENDING_STOP_DELAY_MS.
+                                    // If a Play arrives in the deferral window for a different
+                                    // program, the Play arm clears pending_stop and the deferred
+                                    // task becomes a no-op — the Play's own crossfade decision
+                                    // takes over (using the still-loaded looping backing audio
+                                    // as outgoing). If no Play arrives, the deferred task fires
+                                    // stop_with_fade as originally intended.
+                                    let outgoing = previous_program.as_ref().unwrap().clone();
+                                    let outgoing_id = outgoing.id.clone();
+                                    {
+                                        let mut guard = pending_stop.lock().await;
+                                        *guard = Some(outgoing_id.clone());
+                                    }
+                                    info!(
+                                        "[xfade-trace] Stop arm deferring stop_with_fade for '{}' by {}ms (looping)",
+                                        outgoing_id, PENDING_STOP_DELAY_MS
+                                    );
+
+                                    let pending_clone = pending_stop.clone();
+                                    let gate_clone = stopping_with_fade.clone();
+                                    let engine_clone = engine.clone();
+                                    let outgoing_id_for_task = outgoing_id.clone();
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(Duration::from_millis(grace_ms)).await;
-                                        flag.store(false, Ordering::Release);
+                                        tokio::time::sleep(Duration::from_millis(PENDING_STOP_DELAY_MS)).await;
+
+                                        // Re-check pending_stop. If it was cancelled (Play
+                                        // arrived for a different program), do nothing.
+                                        let still_pending = {
+                                            let mut guard = pending_clone.lock().await;
+                                            if guard.as_ref() == Some(&outgoing_id_for_task) {
+                                                *guard = None;
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        };
+                                        if !still_pending {
+                                            info!("[xfade-trace] Deferred stop for '{}' was cancelled (Play overrode)", outgoing_id_for_task);
+                                            return;
+                                        }
+
+                                        let mut eng = engine_clone.lock().await;
+                                        eng.set_looping(false).await;
+                                        let fade_ms: u64 = outgoing
+                                            .bpm
+                                            .map(|bpm| 60_000u64 / bpm.max(1) as u64)
+                                            .unwrap_or(500);
+                                        let device_rate = eng.get_device_sample_rate().max(1);
+                                        let track_info = eng.get_track(&outgoing.id);
+                                        let channels = track_info.map(|t| t.channels as u64).unwrap_or(2);
+                                        let fade_samples = fade_ms
+                                            * device_rate as u64
+                                            * channels
+                                            / 1000;
+                                        info!(
+                                            "Stopping looping program '{}' with {}ms fade ({} samples)",
+                                            outgoing.id, fade_ms, fade_samples
+                                        );
+                                        eng.stop_with_fade(fade_samples).await;
+                                        drop(eng);
+
+                                        // Gate same-program re-Play during the actual fade.
+                                        {
+                                            let mut guard = gate_clone.lock().await;
+                                            *guard = Some(outgoing.id.clone());
+                                        }
+                                        let grace_ms = fade_ms + 50;
+                                        let gate_for_clear = gate_clone.clone();
+                                        let outgoing_id_for_clear = outgoing.id.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(Duration::from_millis(grace_ms)).await;
+                                            let mut guard = gate_for_clear.lock().await;
+                                            if guard.as_ref() == Some(&outgoing_id_for_clear) {
+                                                *guard = None;
+                                            }
+                                        });
                                     });
                                 } else {
+                                    let mut eng = engine.lock().await;
+                                    eng.set_looping(false).await;
                                     eng.stop().await;
                                     info!("Stopped local audio engine");
                                 }
