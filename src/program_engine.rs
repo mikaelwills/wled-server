@@ -271,6 +271,7 @@ impl ProgramEngine {
     ) {
         let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut current_program_id: Option<String> = None;
+        let mut previous_program: Option<Program> = None;
 
         loop {
             match command_rx.recv().await {
@@ -587,17 +588,53 @@ impl ProgramEngine {
                                 } else {
                                     None
                                 };
-                                if eng
-                                    .play_with_guide(
-                                        track_id,
-                                        guide_id.as_deref(),
-                                        start_sample_opt,
-                                    )
-                                    .await
-                                {
-                                    eng.set_looping(program.loop_enabled).await;
-                                    info!("Playing audio via local engine: {} @ {:?} samples (guide: {}, loop: {})", track_id, start_sample_opt, guide_id.is_some(), program.loop_enabled);
+
+                                // Crossfade decision: if the previously-played program was a
+                                // looping intro, equal-power crossfade from it into the new
+                                // program over one beat at the outgoing program's BPM (fallback
+                                // 500ms if no BPM). Otherwise hard-cut via play_with_guide.
+                                let should_crossfade = previous_program
+                                    .as_ref()
+                                    .map(|p| p.loop_enabled)
+                                    .unwrap_or(false)
+                                    && start_sample == 0;
+
+                                let played_ok = if should_crossfade {
+                                    let outgoing = previous_program.as_ref().unwrap();
+                                    let fade_ms: u64 = outgoing
+                                        .bpm
+                                        .map(|bpm| 60_000u64 / bpm.max(1) as u64)
+                                        .unwrap_or(500);
+                                    let fade_samples = (fade_ms as f64
+                                        * playback_rate as f64
+                                        * channels as f64
+                                        / 1000.0)
+                                        as u64;
+                                    info!(
+                                        "Crossfading from '{}' (loop) to '{}' over {}ms ({} samples)",
+                                        outgoing.id, program.id, fade_ms, fade_samples
+                                    );
+                                    let ok = eng.start_crossfade(track_id, fade_samples).await;
+                                    if ok {
+                                        eng.set_looping(program.loop_enabled).await;
+                                    }
+                                    ok
                                 } else {
+                                    let ok = eng
+                                        .play_with_guide(
+                                            track_id,
+                                            guide_id.as_deref(),
+                                            start_sample_opt,
+                                        )
+                                        .await;
+                                    if ok {
+                                        eng.set_looping(program.loop_enabled).await;
+                                        info!("Playing audio via local engine: {} @ {:?} samples (guide: {}, loop: {})", track_id, start_sample_opt, guide_id.is_some(), program.loop_enabled);
+                                    }
+                                    ok
+                                };
+
+                                if !played_ok {
                                     warn!("Track not loaded in audio engine: {}", track_id);
                                     cue_scheduler.stop();
                                     let _ = broadcast_tx.send(SseEvent::PlaybackFailed {
@@ -624,6 +661,7 @@ impl ProgramEngine {
                     }
 
                     current_program_id = Some(program.id.clone());
+                    previous_program = Some(program.clone());
                     let duration_secs = program.audio_duration.unwrap_or(0.0);
 
                     let _ = broadcast_tx.send(SseEvent::PlaybackStarted {
@@ -673,6 +711,7 @@ impl ProgramEngine {
                         });
                     }
                     current_program_id = None;
+                    previous_program = None;
 
                     cue_scheduler.stop();
 
@@ -764,6 +803,7 @@ impl ProgramEngine {
                         });
                     }
                     current_program_id = None;
+                    previous_program = None;
 
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
 

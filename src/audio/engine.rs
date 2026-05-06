@@ -109,12 +109,14 @@ impl Default for RoutingConfig {
                     volume: 1.0,
                     is_stereo: false,
                 },
+                // Aux: mirrors Backing routing — used as the second backing slot
+                // during crossfades. Always feeds the same physical output as Backing.
                 SlotRouting {
-                    left_channel: 4,
-                    right_channel: 4,
+                    left_channel: 0,
+                    right_channel: 1,
                     muted: false,
                     volume: 1.0,
-                    is_stereo: false,
+                    is_stereo: true,
                 },
             ],
         }
@@ -154,12 +156,13 @@ impl RoutingConfig {
                     volume: 1.0,
                     is_stereo: false,
                 },
+                // Aux: mirrors Backing routing for crossfades.
                 SlotRouting {
-                    left_channel: 4,
-                    right_channel: 4,
+                    left_channel: (routing.backing_left as usize).saturating_sub(1),
+                    right_channel: (routing.backing_right as usize).saturating_sub(1),
                     muted: false,
                     volume: 1.0,
-                    is_stereo: false,
+                    is_stereo: true,
                 },
             ],
         }
@@ -196,6 +199,10 @@ pub enum PlaybackCommand {
     },
     ClearSlot(SlotId),
     SetLooping(bool),
+    StartCrossfade {
+        incoming: Arc<LoadedTrack>,
+        fade_samples: u64,
+    },
 }
 
 #[derive(PartialEq)]
@@ -677,6 +684,27 @@ impl AudioEngine {
             .command_tx
             .send(PlaybackCommand::SetLooping(looping))
             .await;
+    }
+
+    pub async fn start_crossfade(
+        &mut self,
+        track_id: &str,
+        fade_samples: u64,
+    ) -> bool {
+        let backing_tracks = &self.slot_tracks[SlotId::Backing as usize];
+        let Some(track) = backing_tracks.get(track_id).cloned() else {
+            tracing::warn!("AudioEngine: crossfade target track '{}' not found", track_id);
+            return false;
+        };
+        let _ = self
+            .command_tx
+            .send(PlaybackCommand::StartCrossfade {
+                incoming: track,
+                fade_samples,
+            })
+            .await;
+        self.current_slot_ids[SlotId::Backing as usize] = Some(track_id.to_string());
+        true
     }
 
     pub fn get_state(&self) -> PlaybackState {

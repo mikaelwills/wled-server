@@ -100,6 +100,10 @@ pub struct InternalPlaybackState {
     pub device_sample_rate: AtomicU32,
     pub routing: ArcSwap<RoutingConfig>,
     pub slots: [TrackSlot; SLOT_COUNT],
+    pub crossfade_active: AtomicBool,
+    pub crossfade_total_samples: AtomicU64,
+    pub crossfade_remaining_samples: AtomicU64,
+    pub aux_sample_index: AtomicUsize,
 }
 
 impl InternalPlaybackState {
@@ -111,6 +115,10 @@ impl InternalPlaybackState {
             device_sample_rate: AtomicU32::new(0),
             routing: ArcSwap::from_pointee(RoutingConfig::default()),
             slots: Default::default(),
+            crossfade_active: AtomicBool::new(false),
+            crossfade_total_samples: AtomicU64::new(0),
+            crossfade_remaining_samples: AtomicU64::new(0),
+            aux_sample_index: AtomicUsize::new(0),
         })
     }
 
@@ -334,6 +342,17 @@ fn build_stream(
                         let lead_idx_offset = backing_channels
                             * ((sample_rate as usize * CLICK_LEAD_MS) / 1000);
 
+                        let mut xfade_active = state.crossfade_active.load(Ordering::Acquire);
+                        let xfade_total = state.crossfade_total_samples.load(Ordering::Relaxed) as usize;
+                        let mut xfade_remaining = state
+                            .crossfade_remaining_samples
+                            .load(Ordering::Relaxed) as usize;
+                        let mut aux_idx = state.aux_sample_index.load(Ordering::Relaxed);
+                        let aux_channels = slot_channels[SlotId::Aux as usize];
+                        let aux_sample_count = slot_sample_counts[SlotId::Aux as usize];
+                        let mut xfade_completed_this_buffer = false;
+                        let xfade_step_per_frame = backing_channels;
+
                         for frame in data.chunks_mut(output_channels) {
                             if idx >= backing_sample_count {
                                 if looping {
@@ -344,6 +363,16 @@ fn build_stream(
                                     continue;
                                 }
                             }
+
+                            // Equal-power crossfade gains. cos(0)=1, cos(π/2)=0; sin mirrors.
+                            let (outgoing_gain, incoming_gain) = if xfade_active && xfade_total > 0 {
+                                let t = 1.0
+                                    - (xfade_remaining as f32 / xfade_total as f32).clamp(0.0, 1.0);
+                                let angle = t * std::f32::consts::FRAC_PI_2;
+                                (angle.cos(), angle.sin())
+                            } else {
+                                (1.0, 0.0)
+                            };
 
                             frame.fill($zero);
 
@@ -361,13 +390,20 @@ fn build_stream(
                                     continue;
                                 }
 
-                                let frame_number = idx / backing_channels;
+                                // Aux during crossfade reads from its own cursor.
+                                let is_aux = slot_idx == SlotId::Aux as usize;
+                                let slot_frame_number = if is_aux && xfade_active && aux_channels > 0 {
+                                    aux_idx / aux_channels
+                                } else {
+                                    idx / backing_channels
+                                };
+
                                 let slot_frame = if slot_idx == SlotId::Backing as usize || slot_idx == SlotId::Guide as usize {
                                     let delay_frames = (sample_rate as usize * CLICK_LEAD_MS) / 1000;
-                                    if frame_number < delay_frames { continue; }
-                                    frame_number - delay_frames
+                                    if slot_frame_number < delay_frames { continue; }
+                                    slot_frame_number - delay_frames
                                 } else {
-                                    frame_number
+                                    slot_frame_number
                                 };
                                 let slot_sample_idx = slot_frame * channels;
                                 if slot_sample_idx >= sample_count {
@@ -375,7 +411,17 @@ fn build_stream(
                                 }
 
                                 if let Some(samples) = slot_guards[slot_idx].as_ref() {
-                                    let vol = slot_routing.volume;
+                                    let crossfade_gain = if !xfade_active {
+                                        1.0
+                                    } else if slot_idx == SlotId::Backing as usize {
+                                        outgoing_gain
+                                    } else if is_aux {
+                                        incoming_gain
+                                    } else {
+                                        // Guide / Click for the outgoing program follow the outgoing fade.
+                                        outgoing_gain
+                                    };
+                                    let vol = slot_routing.volume * crossfade_gain;
                                     let left =
                                         samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
                                     let right = if channels > 1 {
@@ -410,10 +456,49 @@ fn build_stream(
 
                             samples_written += output_channels as u64;
                             idx += backing_channels;
+
+                            if xfade_active {
+                                if aux_channels > 0 && aux_idx + aux_channels <= aux_sample_count {
+                                    aux_idx += aux_channels;
+                                }
+                                if xfade_remaining > xfade_step_per_frame {
+                                    xfade_remaining -= xfade_step_per_frame;
+                                } else {
+                                    xfade_remaining = 0;
+                                    xfade_active = false;
+                                    xfade_completed_this_buffer = true;
+                                    // Swap: incoming becomes Backing. Subsequent frames in this
+                                    // buffer continue but slot_guards/slot_sample_counts are stale
+                                    // until next callback — outgoing Backing will keep playing
+                                    // until then, but with outgoing_gain now 1.0 it's audible. To
+                                    // avoid a one-buffer of "outgoing at full gain" before swap is
+                                    // visible to the next callback's snapshots, point idx at where
+                                    // aux_idx had progressed to within the incoming's frame index
+                                    // space; the next callback re-reads slots and sees the swapped
+                                    // contents.
+                                    if let Some(aux_samples) = state.slots[SlotId::Aux as usize].samples.load_full() {
+                                        state.slots[SlotId::Backing as usize].channels.store(aux_channels, Ordering::Relaxed);
+                                        state.slots[SlotId::Backing as usize].samples.store(Some(aux_samples));
+                                        std::sync::atomic::fence(Ordering::Release);
+                                        state.slots[SlotId::Backing as usize].sample_count.store(aux_sample_count, Ordering::Release);
+                                    }
+                                    state.slots[SlotId::Aux as usize].clear();
+                                    // idx is in interleaved samples of Backing's channel count.
+                                    // Convert Aux's progress (in aux_channels) to incoming's
+                                    // (now Backing's) interleaved samples. Same channel count
+                                    // in both since we just moved the buffer over.
+                                    idx = aux_idx;
+                                }
+                            }
                         }
 
                         state.sample_index.store(idx, Ordering::Relaxed);
                         position.store(idx as u64, Ordering::Relaxed);
+                        if xfade_completed_this_buffer || xfade_active {
+                            state.crossfade_active.store(xfade_active, Ordering::Release);
+                            state.crossfade_remaining_samples.store(xfade_remaining as u64, Ordering::Relaxed);
+                            state.aux_sample_index.store(aux_idx, Ordering::Relaxed);
+                        }
                         health
                             .samples_delivered
                             .fetch_add(samples_written, Ordering::Relaxed);
@@ -690,6 +775,9 @@ impl AudioThread {
                         PlaybackCommand::Play(track) => {
                             state.playing.store(false, Ordering::Release);
                             state.looping.store(false, Ordering::Release);
+                            state.crossfade_active.store(false, Ordering::Release);
+                            state.crossfade_remaining_samples.store(0, Ordering::Release);
+                            state.aux_sample_index.store(0, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.load_slot(SlotId::Backing, track);
                             state.playing.store(true, Ordering::Release);
@@ -708,6 +796,9 @@ impl AudioThread {
                         PlaybackCommand::Stop => {
                             state.playing.store(false, Ordering::Release);
                             state.looping.store(false, Ordering::Release);
+                            state.crossfade_active.store(false, Ordering::Release);
+                            state.crossfade_remaining_samples.store(0, Ordering::Release);
+                            state.aux_sample_index.store(0, Ordering::Release);
                             state.sample_index.store(0, Ordering::Release);
                             state.clear_all_slots();
                         }
@@ -744,6 +835,21 @@ impl AudioThread {
                         }
                         PlaybackCommand::SetLooping(looping) => {
                             state.looping.store(looping, Ordering::Release);
+                        }
+                        PlaybackCommand::StartCrossfade { incoming, fade_samples } => {
+                            // Load incoming track into Aux. Backing keeps playing the outgoing
+                            // track; the per-frame mix loop will fade Backing down (cos) and
+                            // Aux up (sin) over fade_samples interleaved samples, then swap
+                            // Aux's contents into Backing and clear Aux.
+                            state.load_slot(SlotId::Aux, incoming);
+                            state.aux_sample_index.store(0, Ordering::Release);
+                            state.crossfade_total_samples.store(fade_samples, Ordering::Release);
+                            state.crossfade_remaining_samples.store(fade_samples, Ordering::Release);
+                            state.crossfade_active.store(true, Ordering::Release);
+                            // Looping for the incoming program is set by the program engine
+                            // separately; for now disable the outgoing program's loop so it
+                            // doesn't wrap mid-fade.
+                            state.looping.store(false, Ordering::Release);
                         }
                     }
                 }
