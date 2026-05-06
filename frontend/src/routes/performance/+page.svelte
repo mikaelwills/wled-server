@@ -334,7 +334,6 @@
 
 		program.loopEnabled = !program.loopEnabled;
 		await updateProgram(program);
-		// Don't hide menu - let user see the toggle land
 	}
 
 	// Close context menu on click outside
@@ -439,9 +438,11 @@
 			</div>
 
 			<!-- Loop -->
-			<div class="menu-item" onclick={toggleLoop}>
-				<span>{currentProgram?.loopEnabled ? '●' : '○'} Loop</span>
-			</div>
+			{#key $programs.find(p => p.id === contextMenu.programId)?.loopEnabled}
+				<div class="menu-item" onclick={toggleLoop}>
+					<span>{$programs.find(p => p.id === contextMenu.programId)?.loopEnabled ? '●' : '○'} Loop</span>
+				</div>
+			{/key}
 
 			<!-- Clear Chain -->
 			{#if currentProgram?.nextProgramId}
