@@ -14,7 +14,15 @@ use crate::sse::SseEvent;
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 const CLICK_LEAD_MS: usize = 20;
-const LOOP_XFADE_MS: usize = 50;
+const LOOP_XFADE_MS: usize = 100;
+// The resampler (rubato SincFixedIn) has a finite-impulse edge artefact at the
+// start and end of the file: the windowed sinc convolves the first and last
+// samples against an implicit zero-pad, producing transients that meet at the
+// loop wrap as a click. Skip a few hundred frames on each side of the splice
+// so the wrap-fade splices between clean samples. sinc_len=128 (Balanced) frames
+// of input + post-resample expansion → ~256 output frames of edge tainting at
+// 96k. 512 gives margin.
+const LOOP_EDGE_TRIM_FRAMES: usize = 512;
 
 pub struct PlaybackHealth {
     pub callback_count: AtomicU64,
@@ -389,18 +397,35 @@ fn build_stream(
                         let mut fade_out_completed_this_buffer = false;
                         let fade_out_step_per_frame = backing_channels;
 
+                        // Loop-aware effective end: skip the resampler's edge artefacts on the
+                        // trailing side. The wrap fires LOOP_EDGE_TRIM_FRAMES short of the
+                        // raw end so tail_frame never reaches the tainted region.
+                        let edge_trim_samples = LOOP_EDGE_TRIM_FRAMES * backing_channels;
+                        let effective_end = backing_sample_count.saturating_sub(edge_trim_samples);
+
                         for frame in data.chunks_mut(output_channels) {
-                            if idx >= backing_sample_count {
+                            if looping && idx >= effective_end {
+                                // After the wrap-fade the head was reading from frame
+                                // LOOP_EDGE_TRIM_FRAMES + loop_xfade_frames, so set idx so the
+                                // next normal Backing read (which applies -delay_frames) lands
+                                // exactly there: idx = (head_end_frame + delay_frames) * channels.
+                                let head_end_frame = LOOP_EDGE_TRIM_FRAMES
+                                    + (loop_xfade_samples / backing_channels.max(1));
+                                let new_idx = (head_end_frame + delay_frames_static) * backing_channels;
+                                tracing::info!(
+                                    "[loop-wrap] WRAP fire: old_idx={} effective_end={} backing_samples={} new_idx={} new_read_frame={}",
+                                    idx,
+                                    effective_end,
+                                    backing_sample_count,
+                                    new_idx,
+                                    (new_idx / backing_channels).saturating_sub(delay_frames_static),
+                                );
+                                idx = new_idx;
+                            } else if idx >= backing_sample_count {
                                 if looping {
-                                    let new_idx = lead_idx_offset + loop_xfade_samples;
-                                    tracing::info!(
-                                        "[loop-wrap] WRAP fire: old_idx={} backing_samples={} new_idx={} new_read_frame={}",
-                                        idx,
-                                        backing_sample_count,
-                                        new_idx,
-                                        (new_idx / backing_channels).saturating_sub(delay_frames_static),
-                                    );
-                                    idx = new_idx;
+                                    let head_end_frame = LOOP_EDGE_TRIM_FRAMES
+                                        + (loop_xfade_samples / backing_channels.max(1));
+                                    idx = (head_end_frame + delay_frames_static) * backing_channels;
                                 } else {
                                     frame.fill($zero);
                                     silence_written += 1;
@@ -460,18 +485,30 @@ fn build_stream(
                                 };
 
                                 let is_backing = slot_idx == SlotId::Backing as usize;
+                                // Wrap window covers the file tail with both edge artefacts
+                                // skipped: tail read stops at (effective_end-1)/channels (the
+                                // last clean frame), head read starts at LOOP_EDGE_TRIM_FRAMES
+                                // (skipping the leading edge artefact). Backing read applies
+                                // -delay_frames so we offset window start by +lead_offset so
+                                // tail_frame reaches effective_end's last clean frame at end of
+                                // the wrap window.
+                                let lead_offset_samples = delay_frames_static * backing_channels;
+                                let wrap_window_start = effective_end
+                                    .saturating_sub(loop_xfade_samples)
+                                    .saturating_add(lead_offset_samples);
                                 let in_loop_wrap = looping
                                     && is_backing
                                     && !xfade_active
                                     && !post_swap_in_buffer
                                     && loop_xfade_samples > 0
-                                    && idx + loop_xfade_samples >= backing_sample_count;
+                                    && idx >= wrap_window_start
+                                    && idx < effective_end;
 
                                 if in_loop_wrap {
                                     if let Some(samples) = slot_guards[slot_idx].as_ref() {
                                         let tail_frame = slot_frame_number.saturating_sub(delay_frames_static);
-                                        let head_progress = idx + loop_xfade_samples - backing_sample_count;
-                                        let head_frame = head_progress / backing_channels;
+                                        let head_progress = idx.saturating_sub(wrap_window_start);
+                                        let head_frame = LOOP_EDGE_TRIM_FRAMES + head_progress / backing_channels;
                                         let t = (head_progress as f32 / loop_xfade_samples as f32).clamp(0.0, 1.0);
                                         let angle = t * std::f32::consts::FRAC_PI_2;
                                         let tail_gain = angle.cos();
