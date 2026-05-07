@@ -176,6 +176,7 @@ impl ProgramEngine {
         playback_history: Option<Arc<PlaybackHistory>>,
         audio_engine: Option<Arc<Mutex<AudioEngine>>>,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        programs: Arc<RwLock<HashMap<String, Program>>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let state = Arc::new(RwLock::new(PlaybackState {
@@ -215,6 +216,7 @@ impl ProgramEngine {
             playback_history,
             audio_engine,
             broadcast_tx,
+            programs,
         ));
 
         Self {
@@ -268,6 +270,7 @@ impl ProgramEngine {
         playback_history: Option<Arc<PlaybackHistory>>,
         audio_engine: Option<Arc<Mutex<AudioEngine>>>,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        programs: Arc<RwLock<HashMap<String, Program>>>,
     ) {
         let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut current_program_id: Option<String> = None;
