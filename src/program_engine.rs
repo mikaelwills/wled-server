@@ -299,32 +299,11 @@ impl ProgramEngine {
                     program,
                     start_time,
                 }) => {
-                    info!(
-                        "[xfade-trace] PLAY arm enter: incoming='{}', current='{:?}', previous='{:?}', start_time={:?}",
-                        program.id,
-                        current_program_id,
-                        previous_program.as_ref().map(|p| (p.id.as_str(), p.loop_enabled)),
-                        start_time
-                    );
-                    {
-                        let mut guard = pending_stop.lock().await;
-                        if let Some(ref pending_id) = *guard {
-                            if *pending_id == program.id {
-                                info!("[xfade-trace] PLAY drop: '{}' has a pending stop (same id) — keep playing", program.id);
-                                *guard = None;
-                                continue;
-                            }
-                            info!("[xfade-trace] PLAY cancels pending stop of '{}' — will transition into '{}'", pending_id, program.id);
-                            *guard = None;
-                        } else {
-                            info!("[xfade-trace] PLAY: no pending_stop");
-                        }
-                    }
-
+                    info!("PLAY '{}' (start_time={})", program.id, start_time);
                     {
                         let mut guard = stopping_with_fade.lock().await;
                         if let Some(ref fading_id) = *guard {
-                            info!("[xfade-trace] Play for '{}' overrides in-flight stop fade of '{}'", program.id, fading_id);
+                            info!("Play for '{}' overrides in-flight stop fade of '{}'", program.id, fading_id);
                             *guard = None;
                         }
                     }
@@ -639,25 +618,32 @@ impl ProgramEngine {
                                     None
                                 };
 
-                                // Crossfade decision: if the previously-played program was a
-                                // looping intro, equal-power crossfade from it into the new
-                                // program over one beat at the outgoing program's BPM (fallback
-                                // 500ms if no BPM). Otherwise hard-cut via play_with_guide.
-                                let prev_was_looping = previous_program
-                                    .as_ref()
-                                    .map(|p| p.loop_enabled)
-                                    .unwrap_or(false);
-                                let should_crossfade = prev_was_looping && start_sample == 0;
-                                info!(
-                                    "[xfade-trace] PLAY decision: prev='{:?}' loop={}, start_sample={}, should_crossfade={}",
-                                    previous_program.as_ref().map(|p| p.id.as_str()),
-                                    prev_was_looping,
-                                    start_sample,
-                                    should_crossfade
-                                );
+                                // Crossfade decision (audio engine is source of truth):
+                                // crossfade only if a different looping program is currently
+                                // playing. is_playing() reflects the cpal callback's atomic
+                                // (cleared on natural fade-out), current_backing_track_id() is
+                                // tokio-side bookkeeping (cleared by stop_with_fade). Both must
+                                // be valid for the outgoing source to actually exist in Backing.
+                                let outgoing_track_id = eng.current_backing_track_id();
+                                let outgoing_playing = eng.is_playing();
+                                let outgoing_looping = outgoing_playing && eng.is_looping();
+                                let outgoing_program: Option<Program> = if outgoing_looping {
+                                    if let Some(ref id) = outgoing_track_id {
+                                        programs.read().await.get(id).cloned()
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+                                let should_crossfade = start_sample == 0
+                                    && outgoing_program
+                                        .as_ref()
+                                        .map(|p| p.id != program.id)
+                                        .unwrap_or(false);
 
                                 let played_ok = if should_crossfade {
-                                    let outgoing = previous_program.as_ref().unwrap();
+                                    let outgoing = outgoing_program.as_ref().unwrap();
                                     let fade_ms: u64 = outgoing
                                         .bpm
                                         .map(|bpm| 60_000u64 / bpm.max(1) as u64)
