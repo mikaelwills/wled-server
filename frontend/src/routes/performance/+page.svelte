@@ -102,17 +102,8 @@
 
 	async function toggleProgram(program: Program) {
 		if (currentPlayingId === program.id) {
-			// Stop the current program
 			await stopProgram(program);
 		} else {
-			// Stop any currently playing program first
-			if (currentPlayingId) {
-				const currentProgram = $programs.find(p => p.id === currentPlayingId);
-				if (currentProgram) {
-					await stopProgram(currentProgram);
-				}
-			}
-			// Play the new program
 			await playProgram(program);
 		}
 	}
