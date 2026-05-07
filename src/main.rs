@@ -87,12 +87,14 @@ async fn main() {
     let audio_thread = if let Some(command_rx) = audio_engine.take_receiver() {
         let position = audio_engine.get_position_arc();
         let health = audio_engine.get_health_arc();
+        let internal_state = audio_engine.internal_state();
         match audio::AudioThread::new(
             command_rx,
             position,
             health,
             device_manager.clone(),
             broadcast_tx.clone(),
+            internal_state,
         ) {
             Ok(thread) => {
                 info!("Audio playback thread started");

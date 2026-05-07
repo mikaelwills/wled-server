@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing;
 
 use super::resampler::{spawn_resampling, ResamplingJob};
-use super::{LoadedTrack, PlaybackHealth, ResamplingProgress};
+use super::{InternalPlaybackState, LoadedTrack, PlaybackHealth, ResamplingProgress};
 use crate::config::ResamplingQuality;
 use crate::sse::SseEvent;
 
@@ -233,6 +233,7 @@ pub struct AudioEngine {
     broadcast_tx: Option<Arc<broadcast::Sender<SseEvent>>>,
     resampling_quality: ResamplingQuality,
     click_cache: HashMap<String, ClickCacheKey>,
+    internal_state: Arc<InternalPlaybackState>,
 }
 
 impl AudioEngine {
@@ -254,7 +255,12 @@ impl AudioEngine {
             broadcast_tx: None,
             resampling_quality: ResamplingQuality::default(),
             click_cache: HashMap::new(),
+            internal_state: InternalPlaybackState::new(),
         }
+    }
+
+    pub fn internal_state(&self) -> Arc<InternalPlaybackState> {
+        self.internal_state.clone()
     }
 
     pub fn set_broadcast_tx(&mut self, tx: Arc<broadcast::Sender<SseEvent>>) {

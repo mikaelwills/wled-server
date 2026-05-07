@@ -8,7 +8,7 @@ mod resampler;
 mod resampling_progress;
 mod track;
 
-pub use audio_thread::{AudioThread, PlaybackHealth};
+pub use audio_thread::{AudioThread, InternalPlaybackState, PlaybackHealth};
 pub use device_manager::{AudioDevice, DeviceManager};
 pub use engine::{
     AudioEngine, PlaybackCommand, PlaybackState, RoutingConfig, SlotId, SLOT_COUNT,

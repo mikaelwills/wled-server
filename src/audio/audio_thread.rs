@@ -725,6 +725,7 @@ impl AudioThread {
         health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        state: Arc<InternalPlaybackState>,
     ) -> Result<Self, String> {
         let handle = thread::Builder::new()
             .name("audio-playback".into())
@@ -740,6 +741,7 @@ impl AudioThread {
                     health,
                     device_manager,
                     broadcast_tx,
+                    state,
                 ));
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
@@ -755,8 +757,8 @@ impl AudioThread {
         health: Arc<PlaybackHealth>,
         device_manager: Arc<DeviceManager>,
         broadcast_tx: Arc<broadcast::Sender<SseEvent>>,
+        state: Arc<InternalPlaybackState>,
     ) {
-        let state = InternalPlaybackState::new();
         let mut current_device_name: Option<String> = None;
 
         loop {
