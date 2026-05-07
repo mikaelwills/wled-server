@@ -14,6 +14,7 @@ use crate::sse::SseEvent;
 
 const STREAM_SWITCH_DELAY_MS: u64 = 50;
 const CLICK_LEAD_MS: usize = 20;
+const LOOP_XFADE_MS: usize = 50;
 
 pub struct PlaybackHealth {
     pub callback_count: AtomicU64,
@@ -108,6 +109,7 @@ pub struct InternalPlaybackState {
     pub fade_out_total_samples: AtomicU64,
     pub fade_out_remaining_samples: AtomicU64,
     pub log_post_swap: AtomicBool,
+    pub loop_wrap_log_remaining: AtomicUsize,
 }
 
 impl InternalPlaybackState {
@@ -127,6 +129,7 @@ impl InternalPlaybackState {
             fade_out_total_samples: AtomicU64::new(0),
             fade_out_remaining_samples: AtomicU64::new(0),
             log_post_swap: AtomicBool::new(false),
+            loop_wrap_log_remaining: AtomicUsize::new(0),
         })
     }
 
@@ -361,6 +364,9 @@ fn build_stream(
                         let looping = state.looping.load(Ordering::Relaxed);
                         let lead_idx_offset = backing_channels
                             * ((sample_rate as usize * CLICK_LEAD_MS) / 1000);
+                        let loop_xfade_samples = backing_channels
+                            * ((sample_rate as usize * LOOP_XFADE_MS) / 1000);
+                        let delay_frames_static = (sample_rate as usize * CLICK_LEAD_MS) / 1000;
 
                         let mut xfade_active = state.crossfade_active.load(Ordering::Acquire);
                         let xfade_total = state.crossfade_total_samples.load(Ordering::Relaxed) as usize;
@@ -386,7 +392,15 @@ fn build_stream(
                         for frame in data.chunks_mut(output_channels) {
                             if idx >= backing_sample_count {
                                 if looping {
-                                    idx = lead_idx_offset.min(backing_sample_count.saturating_sub(backing_channels));
+                                    let new_idx = lead_idx_offset + loop_xfade_samples;
+                                    tracing::info!(
+                                        "[loop-wrap] WRAP fire: old_idx={} backing_samples={} new_idx={} new_read_frame={}",
+                                        idx,
+                                        backing_sample_count,
+                                        new_idx,
+                                        (new_idx / backing_channels).saturating_sub(delay_frames_static),
+                                    );
+                                    idx = new_idx;
                                 } else {
                                     frame.fill($zero);
                                     silence_written += 1;
@@ -445,10 +459,82 @@ fn build_stream(
                                     idx / backing_channels
                                 };
 
+                                let is_backing = slot_idx == SlotId::Backing as usize;
+                                let in_loop_wrap = looping
+                                    && is_backing
+                                    && !xfade_active
+                                    && !post_swap_in_buffer
+                                    && loop_xfade_samples > 0
+                                    && idx + loop_xfade_samples >= backing_sample_count;
+
+                                if in_loop_wrap {
+                                    if let Some(samples) = slot_guards[slot_idx].as_ref() {
+                                        let tail_frame = slot_frame_number.saturating_sub(delay_frames_static);
+                                        let head_progress = idx + loop_xfade_samples - backing_sample_count;
+                                        let head_frame = head_progress / backing_channels;
+                                        let t = (head_progress as f32 / loop_xfade_samples as f32).clamp(0.0, 1.0);
+                                        let angle = t * std::f32::consts::FRAC_PI_2;
+                                        let tail_gain = angle.cos();
+                                        let head_gain = angle.sin();
+                                        let tail_idx = tail_frame * channels;
+                                        let head_idx = head_frame * channels;
+                                        let prev = state.loop_wrap_log_remaining.load(Ordering::Relaxed);
+                                        if prev == 0 {
+                                            tracing::info!(
+                                                "[loop-wrap] ENTER wrap window: idx={} backing_samples={} loop_xfade_samples={} delay_frames={} head_progress={} t={:.3}",
+                                                idx,
+                                                backing_sample_count,
+                                                loop_xfade_samples,
+                                                delay_frames_static,
+                                                head_progress,
+                                                t,
+                                            );
+                                            state.loop_wrap_log_remaining.store(loop_xfade_samples / backing_channels, Ordering::Relaxed);
+                                        } else if prev == 1 {
+                                            tracing::info!(
+                                                "[loop-wrap] LAST frame: idx={} tail_frame={} head_frame={} t={:.3} tail_gain={:.3} head_gain={:.3}",
+                                                idx, tail_frame, head_frame, t, tail_gain, head_gain,
+                                            );
+                                            state.loop_wrap_log_remaining.store(0, Ordering::Relaxed);
+                                        } else {
+                                            state.loop_wrap_log_remaining.store(prev - 1, Ordering::Relaxed);
+                                        }
+                                        let vol = slot_routing.volume * fade_out_gain;
+                                        let left = (
+                                            samples.get(tail_idx).copied().unwrap_or(0.0) * tail_gain
+                                            + samples.get(head_idx).copied().unwrap_or(0.0) * head_gain
+                                        ) * vol;
+                                        let right = if channels > 1 {
+                                            (
+                                                samples.get(tail_idx + 1).copied().unwrap_or(0.0) * tail_gain
+                                                + samples.get(head_idx + 1).copied().unwrap_or(0.0) * head_gain
+                                            ) * vol
+                                        } else {
+                                            left
+                                        };
+                                        if routing.is_stereo_mode() {
+                                            mix_buf[0] += left;
+                                            mix_buf[1] += right;
+                                        } else if slot_routing.is_stereo {
+                                            if slot_routing.left_channel < ch {
+                                                mix_buf[slot_routing.left_channel] += left;
+                                            }
+                                            if slot_routing.right_channel < ch {
+                                                mix_buf[slot_routing.right_channel] += right;
+                                            }
+                                        } else {
+                                            let mono = (left + right) * 0.5;
+                                            if slot_routing.left_channel < ch {
+                                                mix_buf[slot_routing.left_channel] += mono;
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 let slot_frame = if slot_idx == SlotId::Backing as usize || slot_idx == SlotId::Guide as usize {
-                                    let delay_frames = (sample_rate as usize * CLICK_LEAD_MS) / 1000;
-                                    if slot_frame_number < delay_frames { continue; }
-                                    slot_frame_number - delay_frames
+                                    if slot_frame_number < delay_frames_static { continue; }
+                                    slot_frame_number - delay_frames_static
                                 } else {
                                     slot_frame_number
                                 };
