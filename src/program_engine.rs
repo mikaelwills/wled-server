@@ -274,23 +274,11 @@ impl ProgramEngine {
     ) {
         let mut position_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut current_program_id: Option<String> = None;
-        let mut previous_program: Option<Program> = None;
-        // Holds the id of a program currently fading to silence (Slice 5 stop_with_fade).
-        // While Some, Play triggers for the SAME program id are ignored (re-tap during
-        // fade). Plays for a DIFFERENT program are allowed through — they cancel the
-        // in-flight fade in the audio thread (StartCrossfade or Play resets fade_out
-        // state) and proceed normally. Cleared after fade duration elapses.
+        // Tap-debounce for same-program re-press during a fade-out window. Set when a
+        // stop_with_fade is in flight; cleared by a different-program Play (which
+        // overrides) or by a same-program Play (which restarts cleanly via
+        // play_with_guide's reset of fade_out state in the audio thread).
         let stopping_with_fade: Arc<tokio::sync::Mutex<Option<String>>> =
-            Arc::new(tokio::sync::Mutex::new(None));
-
-        // When a Stop arrives for a looping program, we don't immediately dispatch the
-        // fade-to-silence. The frontend's "click another song" UX sends Stop+Play in
-        // quick succession (~70ms apart per logs); if a Play follows for a *different*
-        // program within the deferral window, we cancel the pending stop and let the
-        // crossfade decision in the Play arm fire instead. If no Play arrives, the
-        // deferred task dispatches the actual stop_with_fade.
-        const PENDING_STOP_DELAY_MS: u64 = 150;
-        let pending_stop: Arc<tokio::sync::Mutex<Option<String>>> =
             Arc::new(tokio::sync::Mutex::new(None));
 
         loop {
@@ -726,7 +714,6 @@ impl ProgramEngine {
                     }
 
                     current_program_id = Some(program.id.clone());
-                    previous_program = Some(program.clone());
                     let duration_secs = program.audio_duration.unwrap_or(0.0);
 
                     let _ = broadcast_tx.send(SseEvent::PlaybackStarted {
@@ -764,11 +751,7 @@ impl ProgramEngine {
                 }
 
                 Some(PlaybackCommand::Stop) => {
-                    info!(
-                        "[xfade-trace] STOP arm enter: current='{:?}', previous='{:?}'",
-                        current_program_id,
-                        previous_program.as_ref().map(|p| (p.id.as_str(), p.loop_enabled)),
-                    );
+                    info!("STOP requested");
 
                     if let Some(handle) = position_task.take() {
                         handle.abort();
@@ -780,12 +763,6 @@ impl ProgramEngine {
                         });
                     }
                     current_program_id = None;
-                    if let Some(ref p) = previous_program {
-                        info!(
-                            "[xfade-trace] Stop arm preserving previous_program '{}' (loop={}) for potential follow-up Play",
-                            p.id, p.loop_enabled
-                        );
-                    }
 
                     cue_scheduler.stop();
 
@@ -827,65 +804,40 @@ impl ProgramEngine {
                         }
                         AudioSource::AudioEngine => {
                             if let Some(ref engine) = audio_engine {
-                                let outgoing = match previous_program.as_ref() {
-                                    Some(p) => p.clone(),
-                                    None => {
-                                        info!("Stop received with no previous_program — nothing to fade");
-                                        return;
-                                    }
-                                };
-                                let outgoing_id = outgoing.id.clone();
-                                let was_looping = outgoing.loop_enabled;
-
-                                {
-                                    let mut guard = pending_stop.lock().await;
-                                    *guard = Some(outgoing_id.clone());
-                                }
-                                info!(
-                                    "[xfade-trace] Stop arm deferring stop for '{}' by {}ms (loop={})",
-                                    outgoing_id, PENDING_STOP_DELAY_MS, was_looping
-                                );
-
-                                let pending_clone = pending_stop.clone();
-                                let engine_clone = engine.clone();
-                                let outgoing_id_for_task = outgoing_id.clone();
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(Duration::from_millis(PENDING_STOP_DELAY_MS)).await;
-
-                                    let still_pending = {
-                                        let mut guard = pending_clone.lock().await;
-                                        if guard.as_ref() == Some(&outgoing_id_for_task) {
-                                            *guard = None;
-                                            true
-                                        } else {
-                                            false
-                                        }
+                                let mut eng = engine.lock().await;
+                                let outgoing_id = eng.current_backing_track_id();
+                                let outgoing_playing = eng.is_playing();
+                                if !outgoing_playing {
+                                    info!("Stop with nothing playing — engine state already idle");
+                                    eng.stop().await;
+                                } else {
+                                    let outgoing_program: Option<Program> = if let Some(ref id) = outgoing_id {
+                                        programs.read().await.get(id).cloned()
+                                    } else {
+                                        None
                                     };
-                                    if !still_pending {
-                                        info!("[xfade-trace] Deferred stop for '{}' was cancelled (Play overrode)", outgoing_id_for_task);
-                                        return;
-                                    }
-                                    info!("[xfade-trace] Deferred stop for '{}' FIRING — about to stop_with_fade", outgoing_id_for_task);
-
-                                    let mut eng = engine_clone.lock().await;
-                                    eng.set_looping(false).await;
-                                    let fade_ms: u64 = outgoing
-                                        .bpm
-                                        .map(|bpm| 60_000u64 / bpm.max(1) as u64)
-                                        .unwrap_or(500);
+                                    let bpm: u64 = outgoing_program
+                                        .as_ref()
+                                        .and_then(|p| p.bpm)
+                                        .map(|b| b as u64)
+                                        .unwrap_or(120);
+                                    let fade_ms: u64 = 60_000u64 / bpm.max(1);
                                     let device_rate = eng.get_device_sample_rate().max(1);
-                                    let track_info = eng.get_track(&outgoing.id);
-                                    let channels = track_info.map(|t| t.channels as u64).unwrap_or(2);
-                                    let fade_samples = fade_ms
-                                        * device_rate as u64
-                                        * channels
-                                        / 1000;
+                                    let channels = outgoing_id
+                                        .as_ref()
+                                        .and_then(|id| eng.get_track(id))
+                                        .map(|t| t.channels as u64)
+                                        .unwrap_or(2);
+                                    let fade_samples = fade_ms * device_rate as u64 * channels / 1000;
                                     info!(
                                         "Stopping program '{}' with {}ms fade ({} samples)",
-                                        outgoing.id, fade_ms, fade_samples
+                                        outgoing_id.as_deref().unwrap_or("?"),
+                                        fade_ms,
+                                        fade_samples
                                     );
+                                    eng.set_looping(false).await;
                                     eng.stop_with_fade(fade_samples).await;
-                                });
+                                }
                             }
                         }
                     }
@@ -932,7 +884,6 @@ impl ProgramEngine {
                         });
                     }
                     current_program_id = None;
-                    previous_program = None;
 
                     let _ = pattern_engine.send_command(PatternCommand::Stop);
 
