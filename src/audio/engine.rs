@@ -263,6 +263,18 @@ impl AudioEngine {
         self.internal_state.clone()
     }
 
+    pub fn is_playing(&self) -> bool {
+        self.internal_state.playing.load(Ordering::Relaxed)
+    }
+
+    pub fn is_looping(&self) -> bool {
+        self.internal_state.looping.load(Ordering::Relaxed)
+    }
+
+    pub fn current_backing_track_id(&self) -> Option<String> {
+        self.current_slot_ids[SlotId::Backing as usize].clone()
+    }
+
     pub fn set_broadcast_tx(&mut self, tx: Arc<broadcast::Sender<SseEvent>>) {
         self.broadcast_tx = Some(tx);
     }
