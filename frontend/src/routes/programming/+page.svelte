@@ -5,6 +5,8 @@
 	import { saveProgram, deleteProgram } from '$lib/db/programs-db';
 	import { Program as ProgramModel } from '$lib/models/Program';
 	import { createSetlist, activateSetlist, renameSetlist, deleteSetlist, cloneToSetlist } from '$lib/db/setlists-db';
+	import { computePeaksFromBuffer } from '$lib/db/audio-db';
+	import { cachedPeaks } from '$lib/stores/store';
 	import { get } from 'svelte/store';
 
 	let isDragging = $state(false);
@@ -74,81 +76,6 @@
 			createNewProgram(files[0]);
 		}
 		input.value = '';
-	}
-
-	async function compressAudio(file: File): Promise<string> {
-		console.log('Compressing audio file to MP3...');
-
-		try {
-			// @ts-ignore
-			if (!window.lamejs) {
-				const script = document.createElement('script');
-				script.src = '/lame.min.js';
-				await new Promise((resolve, reject) => {
-					script.onload = resolve;
-					script.onerror = reject;
-					document.head.appendChild(script);
-				});
-			}
-
-			// @ts-ignore
-			const Mp3Encoder = window.lamejs.Mp3Encoder;
-
-			const arrayBuffer = await file.arrayBuffer();
-			const audioContext = new AudioContext();
-			const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-			const channels = audioBuffer.numberOfChannels;
-			const sampleRate = audioBuffer.sampleRate;
-			const samples = audioBuffer.length;
-
-			let left, right;
-			if (channels === 2) {
-				left = audioBuffer.getChannelData(0);
-				right = audioBuffer.getChannelData(1);
-			} else {
-				left = audioBuffer.getChannelData(0);
-				right = left;
-			}
-
-			const leftInt16 = new Int16Array(samples);
-			const rightInt16 = new Int16Array(samples);
-			for (let i = 0; i < samples; i++) {
-				leftInt16[i] = Math.max(-32768, Math.min(32767, left[i] * 32768));
-				rightInt16[i] = Math.max(-32768, Math.min(32767, right[i] * 32768));
-			}
-
-			const mp3encoder = new Mp3Encoder(channels, sampleRate, 128);
-			const mp3Data = [];
-
-			const chunkSize = 1152;
-			for (let i = 0; i < samples; i += chunkSize) {
-				const leftChunk = leftInt16.subarray(i, i + chunkSize);
-				const rightChunk = rightInt16.subarray(i, i + chunkSize);
-				const mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
-				if (mp3buf.length > 0) {
-					mp3Data.push(mp3buf);
-				}
-			}
-
-			const mp3buf = mp3encoder.flush();
-			if (mp3buf.length > 0) {
-				mp3Data.push(mp3buf);
-			}
-
-			const mp3Blob = new Blob(mp3Data, { type: 'audio/mp3' });
-			console.log(`Compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB -> ${(mp3Blob.size / 1024 / 1024).toFixed(2)}MB (${((1 - mp3Blob.size / file.size) * 100).toFixed(1)}% reduction)`);
-
-			const reader = new FileReader();
-			return new Promise<string>((resolve, reject) => {
-				reader.onloadend = () => resolve(reader.result as string);
-				reader.onerror = reject;
-				reader.readAsDataURL(mp3Blob);
-			});
-		} catch (err) {
-			console.error('MP3 compression failed:', err);
-			throw err;
-		}
 	}
 
 	function dataURLToBlob(dataURL: string): Blob {
@@ -259,6 +186,30 @@
 
 			const { audio_file } = await uploadResponse.json();
 			console.log('Audio uploaded:', audio_file);
+
+			try {
+				const arrayBuffer = await file.arrayBuffer();
+				const audioCtx = new AudioContext();
+				const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+				audioCtx.close();
+
+				const peaks = computePeaksFromBuffer(audioBuffer);
+				const dur = audioBuffer.duration;
+
+				cachedPeaks.update(cache => ({
+					...cache,
+					[programId]: { peaks, duration: dur }
+				}));
+
+				await fetch(`${API_URL}/audio/${encodeURIComponent(audio_file)}/peaks`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ peaks, duration: dur })
+				});
+				console.log('Peaks computed and saved');
+			} catch (peakErr) {
+				console.warn('Failed to compute peaks (program still saved):', peakErr);
+			}
 
 			const newProgramData = {
 				id: programId,

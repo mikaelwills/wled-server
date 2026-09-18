@@ -9,6 +9,52 @@ import { API_URL } from '$lib/api';
 // Track programs currently being loaded to prevent duplicate fetches
 const loadingPrograms = new Set<string>();
 
+type PeaksData = { peaks: Array<number[]>; duration: number };
+
+/**
+ * Fetch peaks from backend; if missing (404), self-heal by decoding the audio
+ * file and POSTing freshly computed peaks back. Returns null on hard failure.
+ */
+async function fetchOrGeneratePeaks(audioId: string, label: string): Promise<PeaksData | null> {
+	try {
+		const peaksResponse = await fetch(`${API_URL}/audio/${audioId}/peaks`);
+		if (peaksResponse.ok) {
+			return await peaksResponse.json();
+		}
+		if (peaksResponse.status !== 404) {
+			console.warn(`[${label}] ${audioId} - peaks fetch failed: ${peaksResponse.status}`);
+			return null;
+		}
+
+		console.log(`[${label}] ${audioId} - peaks missing, generating from audio file`);
+		const audioResponse = await fetch(`${API_URL}/audio/${audioId}`);
+		if (!audioResponse.ok) {
+			console.warn(`[${label}] ${audioId} - audio fetch failed: ${audioResponse.status}`);
+			return null;
+		}
+
+		const arrayBuffer = await audioResponse.arrayBuffer();
+		const audioCtx = new AudioContext();
+		const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+		audioCtx.close();
+
+		const peaks = computePeaksFromBuffer(audioBuffer);
+		const duration = audioBuffer.duration;
+
+		fetch(`${API_URL}/audio/${encodeURIComponent(audioId)}/peaks`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ peaks, duration })
+		}).catch(err => console.warn(`[${label}] ${audioId} - failed to persist peaks:`, err));
+
+		console.log(`[${label}] ${audioId} - peaks generated and cached`);
+		return { peaks, duration };
+	} catch (err) {
+		console.warn(`[${label}] ${audioId} - error loading peaks:`, err);
+		return null;
+	}
+}
+
 // Shared AudioContext for decoding
 let audioContext: AudioContext | null = null;
 
@@ -183,14 +229,10 @@ export async function loadAudioForProgram(programId: string, audioId: string): P
 	loadingPrograms.add(programId);
 
 	try {
-		const peaksResponse = await fetch(`${API_URL}/audio/${audioId}/peaks`);
-		if (peaksResponse.ok) {
-			const peaksData = await peaksResponse.json();
+		const peaksData = await fetchOrGeneratePeaks(audioId, 'loadAudio');
+		if (peaksData) {
 			cachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
-			console.log(`[loadAudio] ${programId} - peaks loaded`);
 		}
-	} catch (err) {
-		console.warn(`Error loading peaks for program ${programId}:`, err);
 	} finally {
 		loadingPrograms.delete(programId);
 	}
@@ -271,14 +313,10 @@ export async function loadGuideAudioForProgram(programId: string, guideAudioId: 
 	loadingGuides.add(programId);
 
 	try {
-		const peaksResponse = await fetch(`${API_URL}/audio/${guideAudioId}/peaks`);
-		if (peaksResponse.ok) {
-			const peaksData = await peaksResponse.json();
+		const peaksData = await fetchOrGeneratePeaks(guideAudioId, 'loadGuide');
+		if (peaksData) {
 			guideCachedPeaks.update(cache => ({ ...cache, [programId]: peaksData }));
-			console.log(`[loadGuide] ${programId} - guide peaks loaded`);
 		}
-	} catch (err) {
-		console.warn(`Error loading guide peaks for program ${programId}:`, err);
 	} finally {
 		loadingGuides.delete(programId);
 	}

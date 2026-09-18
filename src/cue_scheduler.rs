@@ -223,6 +223,12 @@ impl CueScheduler {
                         audio_timing.channels,
                         initial_position
                     );
+                    println!(
+                        "[seek-trace] cue-scheduler Start: initial_position={} ({:.2}s) — first cue at samples {}",
+                        initial_position,
+                        audio_timing.samples_to_seconds(initial_position),
+                        sorted_cues.first().map(|c| c.fire_at_samples).unwrap_or(0),
+                    );
 
                     for (i, cue) in sorted_cues.iter().take(5).enumerate() {
                         println!(
@@ -262,6 +268,10 @@ impl CueScheduler {
                     if cursor > 0 {
                         println!("⏩ Starting at cursor {} (skipped {} already-passed cues)", cursor, cursor);
                     }
+
+                    // Outer rearm loop: lets the wait-for-end stage jump back into the
+                    // main scheduling loop if a backward seek re-arms cues.
+                    'rearm: loop {
 
                     'main_loop: loop {
                         if stop_flag.load(Ordering::Relaxed) {
@@ -348,7 +358,7 @@ impl CueScheduler {
 
                     if stop_flag.load(Ordering::Relaxed) {
                         println!("⏹️ Cue scheduler: stopped");
-                        continue;
+                        break 'rearm;
                     }
 
                     let final_pos = audio_timing.current_position();
@@ -359,14 +369,41 @@ impl CueScheduler {
                     let mut last_change = std::time::Instant::now();
                     let wait_start = std::time::Instant::now();
 
-                    loop {
+                    let rearmed = loop {
                         if stop_flag.load(Ordering::Relaxed) {
                             println!("⏹️ Cue scheduler: stopped while waiting for audio end");
-                            break;
+                            break false;
                         }
 
                         let current_pos = audio_timing.current_position();
                         if current_pos != last_pos {
+                            // Detect a seek that re-arms cues. Backward seek always counts;
+                            // forward seek only if it crosses the seek_threshold (matches
+                            // the main-loop heuristic).
+                            let seek_threshold = audio_timing.sample_rate as u64 * audio_timing.channels as u64 / 2;
+                            let backward = current_pos < last_pos;
+                            let big_forward = current_pos > last_pos
+                                && (current_pos - last_pos) > seek_threshold;
+                            if backward || big_forward {
+                                let new_cursor = match Self::find_next_cue(&sorted_cues, current_pos) {
+                                    Some(idx) => idx,
+                                    None => sorted_cues.len(),
+                                };
+                                if new_cursor < sorted_cues.len() {
+                                    let direction = if backward { "⏪" } else { "⏩" };
+                                    println!(
+                                        "{} Seek-during-wait re-arms cues ({:.2}s → {:.2}s), cursor → {}",
+                                        direction,
+                                        audio_timing.samples_to_seconds(last_pos),
+                                        audio_timing.samples_to_seconds(current_pos),
+                                        new_cursor,
+                                    );
+                                    cursor = new_cursor;
+                                    last_position = current_pos;
+                                    last_position_change = std::time::Instant::now();
+                                    break true;
+                                }
+                            }
                             last_pos = current_pos;
                             last_change = std::time::Instant::now();
                         } else if audio_timing.is_paused() {
@@ -375,16 +412,22 @@ impl CueScheduler {
                             println!("🏁 Audio ended @ {:.2}s (waited {:.1}s after last cue)",
                                 audio_timing.samples_to_seconds(current_pos),
                                 wait_start.elapsed().as_secs_f64());
-                            break;
+                            break false;
                         }
 
                         thread::sleep(COARSE_SLEEP);
+                    };
+
+                    if rearmed {
+                        continue 'rearm;
                     }
 
-                    if stop_flag.load(Ordering::Relaxed) { continue; }
+                    if stop_flag.load(Ordering::Relaxed) { break 'rearm; }
 
-                    let Some(ref callback) = on_complete else { continue; };
+                    let Some(ref callback) = on_complete else { break 'rearm; };
                     callback();
+                    break 'rearm;
+                    } // end 'rearm
                 }
                 Err(_) => break,
             }

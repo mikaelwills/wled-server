@@ -93,6 +93,34 @@ impl BoardActor {
         let _ = self.broadcast_tx.send(event);
     }
 
+    async fn ensure_default_boot_preset(&self) -> Result<(), reqwest::Error> {
+        let client = reqwest::Client::new();
+        let base = format!("http://{}", self.ip);
+
+        client
+            .post(format!("{base}/json/state"))
+            .json(&serde_json::json!({"seg": {"col": [[0, 199, 255]]}}))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        client
+            .post(format!("{base}/json/state"))
+            .json(&serde_json::json!({"psave": 1, "n": "Default Cyan"}))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        client
+            .post(format!("{base}/json/cfg"))
+            .json(&serde_json::json!({"def": {"ps": 1}}))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(())
+    }
+
     async fn send_ws_message<S>(
         &mut self,
         write: &mut futures_util::stream::SplitSink<S, Message>,
@@ -257,6 +285,21 @@ impl BoardActor {
             } else {
                 self.state.transition = 0;
                 self.broadcast_state();
+            }
+
+            // Push the default boot preset (cyan) if the board isn't already on it.
+            // A fresh WLED flash boots on its own stock default (orange), not our
+            // "board is ready" signal color, so this brings every reconnect back
+            // to a known state without re-writing flash on boards already correct.
+            const DEFAULT_COLOR: [u8; 3] = [0, 199, 255];
+            if self.state.color != DEFAULT_COLOR {
+                info!(board_id = %self.id, "Pushing default cyan boot preset");
+                if let Err(e) = self.ensure_default_boot_preset().await {
+                    warn!(board_id = %self.id, error = %e, "Failed to push default boot preset");
+                } else {
+                    self.state.color = DEFAULT_COLOR;
+                    self.broadcast_state();
+                }
             }
 
             // Create ping interval for keepalive (5 seconds)

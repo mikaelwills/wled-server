@@ -118,6 +118,7 @@ pub struct InternalPlaybackState {
     pub fade_out_remaining_samples: AtomicU64,
     pub log_post_swap: AtomicBool,
     pub loop_wrap_log_remaining: AtomicUsize,
+    pub log_post_wrap: AtomicBool,
 }
 
 impl InternalPlaybackState {
@@ -138,6 +139,7 @@ impl InternalPlaybackState {
             fade_out_remaining_samples: AtomicU64::new(0),
             log_post_swap: AtomicBool::new(false),
             loop_wrap_log_remaining: AtomicUsize::new(0),
+            log_post_wrap: AtomicBool::new(false),
         })
     }
 
@@ -405,21 +407,36 @@ fn build_stream(
 
                         for frame in data.chunks_mut(output_channels) {
                             if looping && idx >= effective_end {
-                                // After the wrap-fade the head was reading from frame
-                                // LOOP_EDGE_TRIM_FRAMES + loop_xfade_frames, so set idx so the
-                                // next normal Backing read (which applies -delay_frames) lands
-                                // exactly there: idx = (head_end_frame + delay_frames) * channels.
+                                // After the wrap-fade the head read advanced by exactly the
+                                // wrap-window width (effective_end - wrap_window_start_local).
+                                // Set idx so the next normal Backing read (which applies
+                                // -delay_frames) lands at LOOP_EDGE_TRIM_FRAMES + that width.
+                                let lead_offset_samples = delay_frames_static * backing_channels;
+                                let wrap_window_start_local = effective_end
+                                    .saturating_sub(loop_xfade_samples)
+                                    .saturating_add(lead_offset_samples);
+                                let xfade_window_samples = effective_end
+                                    .saturating_sub(wrap_window_start_local)
+                                    .max(1);
                                 let head_end_frame = LOOP_EDGE_TRIM_FRAMES
-                                    + (loop_xfade_samples / backing_channels.max(1));
+                                    + (xfade_window_samples / backing_channels.max(1));
                                 let new_idx = (head_end_frame + delay_frames_static) * backing_channels;
+                                let next_read_frame = (new_idx / backing_channels).saturating_sub(delay_frames_static);
+                                let backing_slot = SlotId::Backing as usize;
+                                let sample_at_next = slot_guards[backing_slot]
+                                    .as_ref()
+                                    .and_then(|s| s.get(next_read_frame * backing_channels).copied())
+                                    .unwrap_or(0.0);
                                 tracing::info!(
-                                    "[loop-wrap] WRAP fire: old_idx={} effective_end={} backing_samples={} new_idx={} new_read_frame={}",
+                                    "[loop-wrap] WRAP fire: old_idx={} effective_end={} backing_samples={} new_idx={} next_read_frame={} sample_at_next_read_frame={:.5}",
                                     idx,
                                     effective_end,
                                     backing_sample_count,
                                     new_idx,
-                                    (new_idx / backing_channels).saturating_sub(delay_frames_static),
+                                    next_read_frame,
+                                    sample_at_next,
                                 );
+                                state.log_post_wrap.store(true, Ordering::Relaxed);
                                 idx = new_idx;
                             } else if idx >= backing_sample_count {
                                 if looping {
@@ -509,7 +526,8 @@ fn build_stream(
                                         let tail_frame = slot_frame_number.saturating_sub(delay_frames_static);
                                         let head_progress = idx.saturating_sub(wrap_window_start);
                                         let head_frame = LOOP_EDGE_TRIM_FRAMES + head_progress / backing_channels;
-                                        let t = (head_progress as f32 / loop_xfade_samples as f32).clamp(0.0, 1.0);
+                                        let xfade_window_samples = effective_end.saturating_sub(wrap_window_start).max(1);
+                                        let t = (head_progress as f32 / xfade_window_samples as f32).clamp(0.0, 1.0);
                                         let angle = t * std::f32::consts::FRAC_PI_2;
                                         let tail_gain = angle.cos();
                                         let head_gain = angle.sin();
@@ -526,11 +544,14 @@ fn build_stream(
                                                 head_progress,
                                                 t,
                                             );
-                                            state.loop_wrap_log_remaining.store(loop_xfade_samples / backing_channels, Ordering::Relaxed);
+                                            state.loop_wrap_log_remaining.store(xfade_window_samples / backing_channels.max(1), Ordering::Relaxed);
                                         } else if prev == 1 {
+                                            let head_sample = samples.get(head_idx).copied().unwrap_or(0.0);
+                                            let tail_sample = samples.get(tail_idx).copied().unwrap_or(0.0);
+                                            let mixed = tail_sample * tail_gain + head_sample * head_gain;
                                             tracing::info!(
-                                                "[loop-wrap] LAST frame: idx={} tail_frame={} head_frame={} t={:.3} tail_gain={:.3} head_gain={:.3}",
-                                                idx, tail_frame, head_frame, t, tail_gain, head_gain,
+                                                "[loop-wrap] LAST frame: idx={} tail_frame={} head_frame={} t={:.3} tail_gain={:.3} head_gain={:.3} tail_sample={:.5} head_sample={:.5} mixed={:.5}",
+                                                idx, tail_frame, head_frame, t, tail_gain, head_gain, tail_sample, head_sample, mixed,
                                             );
                                             state.loop_wrap_log_remaining.store(0, Ordering::Relaxed);
                                         } else {
@@ -593,14 +614,23 @@ fn build_stream(
                                         outgoing_gain
                                     };
                                     let vol = slot_routing.volume * crossfade_gain * fade_out_gain;
-                                    let left =
-                                        samples.get(slot_sample_idx).copied().unwrap_or(0.0) * vol;
+                                    let raw_sample = samples.get(slot_sample_idx).copied().unwrap_or(0.0);
+                                    let left = raw_sample * vol;
                                     let right = if channels > 1 {
                                         samples.get(slot_sample_idx + 1).copied().unwrap_or(0.0)
                                             * vol
                                     } else {
                                         left
                                     };
+
+                                    if slot_idx == SlotId::Backing as usize
+                                        && state.log_post_wrap.swap(false, Ordering::Relaxed)
+                                    {
+                                        tracing::info!(
+                                            "[loop-wrap] FIRST post-slam frame: idx={} read_frame={} raw_sample={:.5} output_left={:.5}",
+                                            idx, slot_frame, raw_sample, left,
+                                        );
+                                    }
 
                                     if routing.is_stereo_mode() {
                                         mix_buf[0] += left;
@@ -982,6 +1012,7 @@ impl AudioThread {
                     };
                     match cmd {
                         PlaybackCommand::Play(track) => {
+                            let prev_idx = state.sample_index.load(Ordering::Acquire);
                             state.playing.store(false, Ordering::Release);
                             state.looping.store(false, Ordering::Release);
                             state.crossfade_active.store(false, Ordering::Release);
@@ -992,6 +1023,8 @@ impl AudioThread {
                             state.sample_index.store(0, Ordering::Release);
                             state.load_slot(SlotId::Backing, track);
                             state.playing.store(true, Ordering::Release);
+                            tracing::info!("[seek-trace] audio-thread Play: sample_index reset {} -> 0; position atomic={}",
+                                prev_idx, position.load(Ordering::SeqCst));
 
                             let routing = state.routing.load();
                             debug!("PLAY started - output_channels={}, stereo_mode={}",
@@ -1022,8 +1055,11 @@ impl AudioThread {
                             state.playing.store(true, Ordering::Release);
                         }
                         PlaybackCommand::Seek(pos) => {
+                            let prev_idx = state.sample_index.load(Ordering::Acquire);
                             state.sample_index.store(pos as usize, Ordering::Release);
                             position.store(pos, Ordering::Release);
+                            tracing::info!("[seek-trace] audio-thread Seek: sample_index {} -> {}; position atomic <- {}",
+                                prev_idx, pos, pos);
                         }
                         PlaybackCommand::SetDevice(device_id) => {
                             state.playing.store(false, Ordering::Release);

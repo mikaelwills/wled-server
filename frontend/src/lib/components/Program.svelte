@@ -1267,8 +1267,9 @@ async function playFullProgram() {
 				pendingCues = savedCues;
 				fileName = file.name;
 
+				const newAudioUrl = URL.createObjectURL(file);
 				setTimeout(() => {
-					initializeWaveSurfer();
+					initializeWaveSurfer(newAudioUrl);
 				}, 100);
 			} catch (err) {
 				console.error('Failed to replace audio:', err);

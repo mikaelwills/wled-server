@@ -578,7 +578,10 @@ impl ProgramEngine {
                                 info!("Scheduling {} cues (AudioEngine, absolute)", scheduled_cues.len());
 
                                 let position_arc = eng.get_position_arc();
+                                let pos_before = position_arc.load(Ordering::SeqCst);
                                 position_arc.store(start_sample, Ordering::SeqCst);
+                                info!("[seek-trace] PLAY-handler: start_sample={} (pos_before={} pos_after={})",
+                                    start_sample, pos_before, position_arc.load(Ordering::SeqCst));
 
                                 let audio_timing = AudioTimingConfig {
                                     position: position_arc,
@@ -587,6 +590,8 @@ impl ProgramEngine {
                                     channels,
                                 };
 
+                                info!("[seek-trace] PLAY-handler: about to start cue_scheduler with position_arc={}",
+                                    audio_timing.position.load(Ordering::SeqCst));
                                 let _ = cue_scheduler.start(scheduled_cues, audio_timing);
 
                                 if audio_sync_delay_ms > 0 {
